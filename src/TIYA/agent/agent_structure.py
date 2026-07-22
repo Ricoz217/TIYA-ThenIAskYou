@@ -756,7 +756,7 @@ class AgentScheTaskManage:
         return False
 
     def to_dict(self) -> dict:
-        return {k: v.to_dict() for k, v in self.pending_task.items()}
+        return {k: v.to_dict() for k, v in self.pending_task.copy().items()}
 
     def from_dict(self, data: dict, function_mapping: dict):
         self.tasks.clear()

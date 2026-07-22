@@ -501,12 +501,12 @@ class BaseAgent:
     # 持久化，存储和读取本地文件还原Agent
     # =========================================================
 
-    def _save_history(self, dt: datetime = None):
+    def _save_history(self, dt: datetime = None, snapshot: list[AgentHistory] = None):
         if dt is None:
             dt = datetime.now()
 
         save_path = self._history.history_file
-        history = list(self._history.history)
+        history = snapshot or list(self._history.history)
         dump_content = {
             "update": f"{dt:%x_%X}",
             "description": "此文件为Agent的操作历史",
@@ -567,16 +567,17 @@ class BaseAgent:
             self._logger.error(f"{self._log_prefix()} 保存当前上下文出错: {E}")
             self._logger.debug(traceback.format_exc())
 
-    def _save_context_history(self, dt: datetime = None):
+    def _save_context_history(self, dt: datetime = None, snapshot: dict[str, Context] = None):
         if dt is None:
             dt = datetime.now()
 
+        context_history = snapshot or self._context.window_history.copy()
         save_path = self._history.context_history_file
         dump_content = {
             "update": f"{dt:%x_%X}",
             "description": "此文件为Agent的历史上下文",
             "version": "0.1.0",
-            "data": {key: context.to_dict() for key, context in self._context.window_history.items()}
+            "data": {key: context.to_dict() for key, context in context_history.items()}
         }
         try:
             atomic_save_json(dump_content, save_path)
@@ -585,20 +586,32 @@ class BaseAgent:
             self._logger.error(f"{self._log_prefix()} 保存历史上下文出错: {E}")
             self._logger.debug(traceback.format_exc())
 
-    def _save_checkpoint(self, dt: datetime = None):
+    def _save_checkpoint(self, dt: datetime = None, snapshot: dict = None):
         if dt is None:
             dt = datetime.now()
 
+        if snapshot is not None:
+            pending_tasks: dict[str, AgentTask] = snapshot["tasks"]
+            pending_accomplished: dict[str, AgentTask] = snapshot["accomplished"]
+            pending_history: list[AgentHistory] = snapshot["history"]
+            pending_context_history: dict[str, Context] = snapshot["context_history"]
+
+        else:
+            pending_tasks = self._task_queue.tasks.copy()
+            pending_accomplished = self._task_queue.accomplished_task.copy()
+            pending_history = list(self._history.history)
+            pending_context_history = self._context.window_history.copy()
+
         tasks = {
-            "tasks": {k: v.status.value for k, v in self._task_queue.tasks.items()},
-            "accomplished": {k: v.status.value for k, v in self._task_queue.accomplished_task.items()}
+            "tasks": {k: v.status.value for k, v in pending_tasks.items()},
+            "accomplished": {k: v.status.value for k, v in pending_accomplished.items()}
         }
         history = {
-            "history": [h.id for h in self._history.history]
+            "history": [h.id for h in pending_history]
         }
         context = {
             "current": self._context.current_window.to_dict(),
-            "history": list(self._context.window_history.keys())
+            "history": list(pending_context_history.keys())
         }
         dump_content = {
             "update": f"{dt:%x_%X}",
@@ -647,10 +660,17 @@ class BaseAgent:
 
     async def _save_checkpoint_async(self):
         async with self._persistence_lock:
+            snapshot = {
+                "tasks": self._task_queue.tasks.copy(),
+                "accomplished": self._task_queue.accomplished_task.copy(),
+                "history": list(self._history.history),
+                "context_history": self._context.window_history.copy()
+            }
             loop = asyncio.get_running_loop()
+            func = partial(self._save_checkpoint, snapshot=snapshot)
 
             # noinspection PyTypeChecker
-            await loop.run_in_executor(AGENT_EXECUTOR, self._save_checkpoint)
+            await loop.run_in_executor(AGENT_EXECUTOR, func)
 
     async def _load_task(self):
         task_path = self._history.task_file

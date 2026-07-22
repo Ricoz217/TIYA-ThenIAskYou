@@ -38,6 +38,9 @@ common_test.py
 
 # data
 data/*
+data/character/抹布/fav_index.json
+data/character/EVIL/fav_index.json
+!data/builtin_resources
 !data/character
 !data/dictionary
 !data/prompt

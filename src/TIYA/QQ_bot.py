@@ -23,6 +23,7 @@ from TIYA.qq_group import QQGroup
 from TIYA.setu.setu import AsyncPixivApi
 from TIYA.relatedness import close_relatedness_runtime
 from TIYA.storage_cleanup import run_auto_storage_cleanup
+from TIYA.storage_runtime import close_storage_runtime, start_storage_runtime
 from TIYA.executor import shutdown_all as shutdown_executors
 from TIYA.event_loop_monitor import EventLoopLagMonitor
 from TIYA.runtime_control import (
@@ -252,6 +253,21 @@ def main():
         pause_before_exit("获取事件循环失败")
         return
 
+    storage_future = asyncio.run_coroutine_threadsafe(
+        start_storage_runtime(_log),
+        mybot.event_loop,
+    )
+    try:
+        storage_future.result(timeout=60)
+
+    except Exception as error:
+        storage_future.cancel()
+        _log.error(f"文件缓存启动失败: {error}")
+        _log.debug(traceback.format_exc())
+        mybot.request_stop()
+        pause_before_exit(f"文件缓存启动失败:\n{error}")
+        return
+
     async def start_event_loop_monitor() -> EventLoopLagMonitor:
         monitor = EventLoopLagMonitor(
             logger=_log,
@@ -282,6 +298,14 @@ def main():
     if mybot.startup_error is not None:
         if event_loop_monitor is not None:
             event_loop_monitor.stop()
+        close_future = asyncio.run_coroutine_threadsafe(
+            close_storage_runtime(),
+            mybot.event_loop,
+        )
+        try:
+            close_future.result(timeout=10)
+        except Exception as error:
+            _log.error(f"初始化失败后关闭文件缓存失败: {error}")
         mybot.request_stop()
         pause_before_exit(f"程序初始化失败:\n{mybot.startup_error}")
         return
@@ -344,6 +368,12 @@ def main():
 
         except Exception as _error:
             _log.error(f"记忆系统关闭失败: {_error}")
+
+        try:
+            await close_storage_runtime()
+
+        except Exception as _error:
+            _log.error(f"文件缓存关闭失败: {_error}")
 
         monitor = event_loop_monitor
         event_loop_monitor = None

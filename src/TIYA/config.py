@@ -36,6 +36,7 @@ ROOT_DIR = Path(__file__).parents[2]
 SRC_DIR = Path(__file__).parent
 LOGS_DIR = ROOT_DIR / "logs"
 DATA_DIR = ROOT_DIR / "data"
+BUILTIN_RESOURCES_DIR = DATA_DIR / "builtin_resources"
 TIME_ID_STATE_FILE = DATA_DIR / "time_id_state.json"
 PROMPTS_DIR = DATA_DIR / "prompt"
 GROUPS_DIR = DATA_DIR / "groups_data"
