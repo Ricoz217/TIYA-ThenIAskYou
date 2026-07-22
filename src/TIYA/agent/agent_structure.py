@@ -637,9 +637,11 @@ class AgentTaskQueue:
             self._condition.notify()
 
     def to_dict(self) -> dict:
+        tasks = self.tasks.copy()
+        accomplished_task = self.accomplished_task.copy()
         return {
-            "pending": {k: v.to_dict() for k, v in self.tasks.items()},
-            "accomplished": {k: v.to_dict() for k, v in self.accomplished_task.items()}
+            "pending": {k: v.to_dict() for k, v in tasks.items()},
+            "accomplished": {k: v.to_dict() for k, v in accomplished_task.items()}
         }
 
     async def from_dict(self, data: dict, function_mapping: dict):

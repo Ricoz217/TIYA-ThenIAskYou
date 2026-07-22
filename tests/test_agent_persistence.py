@@ -9,6 +9,7 @@ from TIYA.agent.agent_structure import (
     AgentContext,
     AgentHistory,
     AgentHistoryManager,
+    AgentTaskQueue,
     HistoryType,
 )
 
@@ -22,6 +23,25 @@ class _Logger:
 
     def debug(self, _message: str) -> None:
         pass
+
+
+class _SerializedTask:
+    def __init__(
+            self,
+            value: str,
+            started: threading.Event | None = None,
+            resume: threading.Event | None = None,
+    ) -> None:
+        self.value = value
+        self.started = started
+        self.resume = resume
+
+    def to_dict(self) -> dict[str, str]:
+        if self.started is not None:
+            self.started.set()
+        if self.resume is not None and not self.resume.wait(timeout=1):
+            raise TimeoutError("task serialization did not resume")
+        return {"value": self.value}
 
 
 def _context(text: str) -> Context:
@@ -142,3 +162,49 @@ def test_async_saves_use_agent_executor_and_serialize_per_agent() -> None:
         assert max_active == 1
 
     asyncio.run(run_test())
+
+
+def test_task_queue_serialization_copies_pending_tasks_before_iteration() -> None:
+    queue = AgentTaskQueue(max_accomplished_task=10)
+    started = threading.Event()
+    resume = threading.Event()
+    queue.tasks["first"] = _SerializedTask("first", started, resume)
+    queue.tasks["second"] = _SerializedTask("second")
+
+    def mutate() -> None:
+        if started.wait(timeout=1):
+            queue.tasks["late"] = _SerializedTask("late")
+        resume.set()
+
+    mutation = threading.Thread(target=mutate)
+    mutation.start()
+    try:
+        snapshot = queue.to_dict()
+    finally:
+        resume.set()
+        mutation.join(timeout=1)
+
+    assert set(snapshot["pending"]) == {"first", "second"}
+
+
+def test_task_queue_serialization_copies_accomplished_tasks_before_iteration() -> None:
+    queue = AgentTaskQueue(max_accomplished_task=10)
+    started = threading.Event()
+    resume = threading.Event()
+    queue.accomplished_task["first"] = _SerializedTask("first", started, resume)
+    queue.accomplished_task["second"] = _SerializedTask("second")
+
+    def mutate() -> None:
+        if started.wait(timeout=1):
+            queue.accomplished_task["late"] = _SerializedTask("late")
+        resume.set()
+
+    mutation = threading.Thread(target=mutate)
+    mutation.start()
+    try:
+        snapshot = queue.to_dict()
+    finally:
+        resume.set()
+        mutation.join(timeout=1)
+
+    assert set(snapshot["accomplished"]) == {"first", "second"}
