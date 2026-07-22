@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "TIYA-ThenIAskYou"
+version = "0.4.0"
+description = "一个QQ聊天机器人，带有完整Agent"
+requires-python = ">=3.12,<3.13"
+authors = [
+  { name = "RicoZ", email = "fiwrst@163.com" }
+]
+license = "MIT"
+license-files = ["LICENSE"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["TIYA*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

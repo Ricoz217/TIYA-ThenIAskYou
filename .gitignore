@@ -1,0 +1,47 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local runtime data
+logs/*
+config/*
+tests_data/*
+version/*
+scripts/*
+outputs/*
+notepad/*
+review_guides/*
+old_code/*
+codex_prompt/*
+common_test.py
+
+# data
+data/*
+!data/character
+!data/dictionary
+!data/prompt
+!data/skill
+
+
+
