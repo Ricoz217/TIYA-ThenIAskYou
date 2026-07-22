@@ -35,6 +35,7 @@ _CREATE_LOCK = Lock()
 @dataclass(slots=True)
 class AutoFavView:
     _mapping: dict[str, set[str]]
+    hosts: list[AutoFav]
 
     def get_fav(self, title: str) -> str:
         """
@@ -46,7 +47,23 @@ class AutoFavView:
         if not favs:
             return ""
 
-        return random.choice(list(favs))
+        chosen = random.choice(list(favs))
+        for host in self.hosts:
+            host.renew_fav_hash(title, chosen)
+
+        return chosen
+
+    def __or__(self, other):
+        if not isinstance(other, AutoFav):
+            return NotImplemented
+
+        self_mapping = self._mapping
+        other_mapping = other._mapping.mapping()
+        combined_mapping = self_mapping.copy()
+        for k, v in other_mapping.items():
+            combined_mapping[k] = combined_mapping.get(k, set()).union(v)
+
+        return AutoFavView(combined_mapping, [*self.hosts, other])
 
 
 class AutoFav:
@@ -341,6 +358,13 @@ class AutoFav:
 
         return random.choice(list(favs))
 
+    def renew_fav_hash(self,fav_title: str, fav_hash: str):
+        """通过哈希名续期表情"""
+        if not fav_hash in self._hash_names:
+            return
+
+        self._mapping.get(fav_title)
+
     @property
     def fav_list(self) -> dict[str, set[str]]:
         return {k: set(v) for k, v in self._mapping.items()}
@@ -361,7 +385,7 @@ class AutoFav:
         for k, v in other_mapping.items():
             combined_mapping[k] = combined_mapping.get(k, set()).union(v)
 
-        return AutoFavView(combined_mapping)
+        return AutoFavView(combined_mapping, [self, other])
 
 
 _AUTO_FAV_STORAGE: dict[str, AutoFav] = {}

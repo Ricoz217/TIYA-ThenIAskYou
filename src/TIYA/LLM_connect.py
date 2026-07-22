@@ -1209,12 +1209,12 @@ class Context:
         return last_round
 
     def to_dict(self):
-        messages = {prompt.id: prompt.to_dict() for prompt in self._messages}
-        tools = {prompt.id: prompt.to_dict() for prompt in self._tools}
+        messages = {prompt.id: prompt.to_dict() for prompt in self._messages.copy()}
+        tools = {prompt.id: prompt.to_dict() for prompt in self._tools.copy()}
         system = self._system_prompt.id if self._system_prompt is not None else ""
         usage = self._usage_accumulation.to_dict()
         rounds = {}
-        for r, data in self._rounds.items():
+        for r, data in self._rounds.copy().items():
             round_data = {
                 "messages": [p.id for p in data.prompts],
                 "usage": data.usage.to_dict() if data.usage is not None else {}
