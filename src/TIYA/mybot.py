@@ -1,6 +1,7 @@
 import asyncio
 import traceback
 import websockets
+from websockets.exceptions import ConnectionClosed
 import datetime
 import json as j
 from threading import Event, Thread
@@ -68,6 +69,22 @@ class CustomWsRoute(WsRoute):
 class CustomWebsocket(Websocket):
     def __init__(self, client, config=None):
         super().__init__(client, config)
+
+    async def ws_connect(self):
+        while True:
+            try:
+                await super().ws_connect()
+
+            except asyncio.CancelledError:
+                raise
+
+            except (
+                ConnectionClosed,
+                OSError,
+                asyncio.TimeoutError,
+            ) as error:
+                _log.warning(f"WebSocket 已断开，3 秒后重新连接: {error}")
+                await asyncio.sleep(3)
 
     async def receive(self, message):
         msg = j.loads(message)
