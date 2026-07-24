@@ -30,6 +30,10 @@ class Worker:
         self.live = True
         self.running_loop = asyncio.create_task(self.worker_loop())
 
+    @property
+    def is_alive(self) -> bool:
+        return not self.running_loop.done()
+
     def _callback(self, task: AgentTask):
         if task.callback.value == "NEVER":
             asyncio.create_task(self._host.callback(run=False, call_from=task.id))
@@ -182,6 +186,11 @@ class AgentWorkerManager:
     async def adjust_worker(self, max_worker: int = None):
         if max_worker:
             self.max_worker = max_worker
+
+        for worker in self.workers.copy():
+            if not worker.is_alive:
+                if worker in self.workers:
+                    self.workers.remove(worker)
 
         if len(self.workers) > self.max_worker:
             del_workers = self.workers[self.max_worker:]

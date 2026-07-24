@@ -88,7 +88,7 @@ _SETU_GLOBAL_PERMISSION = CommandPermission.BOT_ADMIN
 _PARAPHRASE_WORDS = {"这波", "确实", "搁这", "属实", "是吧", "这操作", "太狠了", "太骚了", "太真实", "太草了", "属于是"}
 
 
-class SetuHelp(BaseException):
+class SetuHelp(Exception):
     """并非错误，而是返回帮助"""
     ...
 
@@ -2741,6 +2741,9 @@ class GroupMainDialog(BaseDialog, GroupDialogAttrs):
                 raise RuntimeError("色图模块内部错误，获取失败")
 
             await _process_payload(result)
+
+        except SetuHelp:
+            raise
 
         except CommandError as exc:
             self.logger.error(f"色图指令错误: {exc}")
