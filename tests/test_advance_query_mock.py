@@ -42,9 +42,9 @@ class TestAdvanceQueryMock(unittest.TestCase):
             mock_tool = ToolInput(lambda: "ok", "noop")
 
             with (
-                patch.object(eng._advance_query_service, "_advance_payload_tokens", return_value=1),
+                patch.object(eng._advance, "_advance_payload_tokens", return_value=1),
                 patch.object(
-                    eng._advance_query_service,
+                    eng._advance,
                     "_advance_llm_request",
                     new=AsyncMock(return_value=mocked_response),
                 ) as req_mock,
@@ -70,9 +70,9 @@ class TestAdvanceQueryMock(unittest.TestCase):
             threshold = int(eng.max_context_window * 0.8)
 
             with (
-                patch.object(eng._advance_query_service, "_advance_payload_tokens", return_value=threshold + 1),
+                patch.object(eng._advance, "_advance_payload_tokens", return_value=threshold + 1),
                 patch.object(
-                    eng._advance_query_service,
+                    eng._advance,
                     "_advance_run_best_effort_node",
                     new=AsyncMock(return_value=mocked_response),
                 ) as best_effort_mock,

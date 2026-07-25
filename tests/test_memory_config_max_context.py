@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from TIYA.memory import config as memory_config
 from TIYA.memory import engine as memory_engine
 
 
@@ -10,7 +11,7 @@ def test_empty_llm_preset_uses_default_max_context_window(
     def fail_get_llm(_preset_name: str):
         raise AssertionError("empty llm_preset should not resolve LLM config")
 
-    monkeypatch.setattr(memory_engine, "get_llm", fail_get_llm)
+    monkeypatch.setattr(memory_config, "get_llm", fail_get_llm)
 
     engine = memory_engine.ContextMemoryEngineV3(
         config=memory_engine.ContextMemoryConfig(
@@ -38,7 +39,7 @@ def test_apply_config_reloads_max_context_window_from_llm_preset(
     def fake_get_llm(preset_name: str):
         return SimpleNamespace(max_context=preset_windows[preset_name])
 
-    monkeypatch.setattr(memory_engine, "get_llm", fake_get_llm)
+    monkeypatch.setattr(memory_config, "get_llm", fake_get_llm)
 
     engine = memory_engine.ContextMemoryEngineV3(
         config=memory_engine.ContextMemoryConfig(
