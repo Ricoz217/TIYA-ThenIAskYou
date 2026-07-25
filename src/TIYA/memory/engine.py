@@ -1,7 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 __version__ = "0.3.3"
-__data_version__ = 3
+__data_version__ = 4
 import json
 import asyncio
 import hashlib
@@ -272,7 +272,11 @@ class BucketHandle:
     async def resolve_alias(self, alias: str, *, expected_type: str | None = None) -> str:
         """Resolve an alias through the current canonical bucket's alias map."""
         bucket_id = await self._refresh_bucket_id()
-        return self._engine.resolve_alias(bucket_id, alias, expected_type=expected_type)
+        return await self._engine._resolve_alias_from_resolved_bucket(
+            bucket_id,
+            alias,
+            expected_type=expected_type,
+        )
 
     async def resolve_aliases(
         self,
@@ -791,6 +795,10 @@ class ContextMemoryEngineV3:
             max_workers=2,
             thread_name_prefix="come-query-cpu",
         )
+        self._storage_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="context-memory-storage",
+        )
 
         self._negative_delete_threshold = 0.10
         self._enable_forgetting = bool(enable_forgetting)
@@ -850,7 +858,11 @@ class ContextMemoryEngineV3:
     def _bind_storage(self, base_dir: str | Path, *, evidence_versions: int) -> None:
         self._evidence_versions = max(1, int(evidence_versions))
         self.base_dir = Path(base_dir)
-        self.storage = MemoryStorageV3(self.base_dir, evidence_versions=self._evidence_versions)
+        self.storage = MemoryStorageV3(
+            self.base_dir,
+            evidence_versions=self._evidence_versions,
+            prefer_v4=int(__data_version__) >= 4,
+        )
         self.alias_codec = AliasCodec(self.storage)
         self._migrate_if_needed(force=False, dry_run=False)
         self._last_sealed_link_repair_version = -1
@@ -1144,6 +1156,12 @@ class ContextMemoryEngineV3:
                 )
                 apply_out = step.apply(storage=workspace_storage, context=context) or {}
                 validate_out = step.validate(storage=workspace_storage, context=context) or {}
+                workspace_storage.write_schema_version(
+                    schema_version=int(step.to_version),
+                    engine_version=__version__,
+                )
+                if int(step.to_version) >= 4 and workspace_storage.sqlite_index_file.exists():
+                    workspace_storage.activate_v4()
                 step_info = {
                     "id": str(step.id),
                     "from_version": int(step.from_version),
@@ -1153,7 +1171,6 @@ class ContextMemoryEngineV3:
                     "completed_at": utc_now_iso(),
                 }
                 step_results.append(step_info)
-                workspace_storage.write_schema_version(schema_version=int(step.to_version), engine_version=__version__)
                 checkpoint_dir = checkpoints_root / f"step_{idx:03d}_{str(step.id).replace('/', '_')}"
                 workspace_storage.clone_live_dataset(checkpoint_dir)
                 workspace_storage.append_event(
@@ -1190,6 +1207,7 @@ class ContextMemoryEngineV3:
                     "steps": step_results,
                 },
             )
+            workspace_storage.close()
 
             switch = self.storage.replace_live_dataset_from_workspace(
                 workspace_root=workspace_root,
@@ -1198,6 +1216,8 @@ class ContextMemoryEngineV3:
             if not bool(switch.get("success", False)):
                 raise RuntimeError(f"dataset switch failed: {switch}")
 
+            if self.storage.sqlite_index_file.exists():
+                self.storage.activate_v4()
             self.storage.write_schema_version(schema_version=code_version, engine_version=__version__)
             self.storage.save_migration_journal(
                 {
@@ -1282,7 +1302,7 @@ class ContextMemoryEngineV3:
             info = self.storage.get_bucket_info(resolved)
             if info is None:
                 return {"success": False, "bucket_id": resolved, "message": f"bucket not found: {resolved}"}
-            self.storage.set_active_bucket_id(resolved)
+            await self._run_storage_task(self.storage.set_active_bucket_id, resolved)
             return {"success": True, "bucket_id": resolved, "message": "active bucket updated"}
 
     async def switch_active_bucket(self, bucket_id: str) -> dict[str, Any]:
@@ -1363,6 +1383,20 @@ class ContextMemoryEngineV3:
     def resolve_alias(self, bucket_id: str, alias: str, expected_type: str | None = None) -> str:
         return self._alias_table(bucket_id).to_real(alias, expected_type=expected_type)
 
+    async def _resolve_alias_from_resolved_bucket(
+        self,
+        bucket_id: str,
+        alias: str,
+        *,
+        expected_type: str | None = None,
+    ) -> str:
+        table = self.alias_codec.store.open(bucket_id)
+        return await self._run_storage_task(
+            table.to_real,
+            alias,
+            expected_type=expected_type,
+        )
+
     async def _resolve_aliases_from_resolved_bucket(
         self,
         bucket_id: str,
@@ -1372,8 +1406,10 @@ class ContextMemoryEngineV3:
         strict: bool = False,
     ) -> dict[str, str]:
         table = self.alias_codec.store.open(bucket_id)
-        return await table.resolve_many(
-            aliases,
+        alias_batch = tuple(aliases)
+        return await self._run_storage_task(
+            table.to_real_many,
+            alias_batch,
             expected_type=expected_type,
             strict=strict,
         )
@@ -1426,7 +1462,25 @@ class ContextMemoryEngineV3:
         allow_create: bool = True,
     ) -> Any:
         """Build and persist an alias-only payload without blocking the event loop."""
-        return await self._alias_table(bucket_id).prepare(
+        prepared, _ = await self._prepare_alias_payload_with_version(
+            bucket_id,
+            real_payload,
+            allow_create=allow_create,
+            map_version=map_version,
+        )
+        return prepared
+
+    async def _prepare_alias_payload_with_version(
+        self,
+        bucket_id: str,
+        real_payload: Any,
+        map_version: int | None = None,
+        *,
+        allow_create: bool = True,
+    ) -> tuple[Any, int]:
+        table = self._alias_table(bucket_id)
+        return await self._run_storage_task(
+            table.encode_tree_with_version,
             real_payload,
             allow_create=allow_create,
             map_version=map_version,
@@ -1441,11 +1495,17 @@ class ContextMemoryEngineV3:
         strict_unknown: bool = True,
     ) -> Any:
         """Restore a structured LLM response through the bucket's AliasTable."""
-        return await self._alias_table(bucket_id).restore(
+        table = self._alias_table(bucket_id)
+        return await self._run_storage_task(
+            table.decode_tree,
             alias_payload,
             map_version=map_version,
             strict_unknown=strict_unknown,
         )
+
+    async def _assert_alias_payload_safe(self, bucket_id: str, payload: Any) -> None:
+        table = self._alias_table(bucket_id)
+        await self._run_storage_task(table.assert_safe, payload)
 
     def resolve_llm_output(self, bucket_id: str, alias_output: Any, map_version: int | None = None) -> Any:
         resolved = self._resolve_bucket_id(bucket_id)
@@ -1488,7 +1548,9 @@ class ContextMemoryEngineV3:
         try:
             self._query_side_effect_queue.put_nowait((str(op), dict(payload)))
         except asyncio.QueueFull:
-            self.storage.record_query_side_effect_drop()
+            executor = self._storage_executor
+            if executor is not None:
+                executor.submit(self.storage.record_query_side_effect_drop)
 
     def _enqueue_query_side_effects(self, ops: list[tuple[str, dict[str, Any]]]) -> None:
         for op, payload in ops:
@@ -1500,40 +1562,41 @@ class ContextMemoryEngineV3:
             try:
                 async with self._query_side_effect_lock:
                     try:
-                        if op == "set_query_cache":
-                            bid = str(payload.get("bucket_id", "")).strip() or self.active_bucket_id()
-                            self.storage.set_query_cache(
-                                str(payload.get("cache_key", "")),
-                                dict(payload.get("result", {})),
-                                bucket_id=bid,
-                            )
-                        elif op == "record_recall_batch":
-                            keys = payload.get("keys", [])
-                            if isinstance(keys, list):
-                                for key in keys:
-                                    token = str(key).strip()
-                                    if token:
-                                        self.storage.record_recall(token)
-                        elif op == "record_query_degraded":
-                            self.storage.record_query_degraded()
-                        elif op == "record_llm_usage":
-                            self._record_llm_usage_values(payload.get("usage", {}))
-                        elif op == "record_llm_diag":
-                            self._record_llm_diag_values(payload.get("diag", {}))
-                        elif op == "record_overflow_query":
-                            self.storage.record_context_overflow("query")
-                        elif op == "record_alias_miss_build":
-                            repeat = max(1, int(payload.get("count", 1)))
-                            for _ in range(repeat):
-                                self.storage.record_query_alias_miss_build()
-                        elif op == "record_alias_miss_resolve":
-                            repeat = max(1, int(payload.get("count", 1)))
-                            for _ in range(repeat):
-                                self.storage.record_query_alias_miss_resolve()
+                        await self._run_storage_task(self._apply_query_side_effect_sync, op, payload)
                     except Exception:
-                        self.storage.record_query_side_effect_drop()
+                        await self._run_storage_task(self.storage.record_query_side_effect_drop)
             finally:
                 self._query_side_effect_queue.task_done()
+
+    def _apply_query_side_effect_sync(self, op: str, payload: dict[str, Any]) -> None:
+        if op == "set_query_cache":
+            bid = str(payload.get("bucket_id", "")).strip() or self.active_bucket_id()
+            self.storage.set_query_cache(
+                str(payload.get("cache_key", "")),
+                dict(payload.get("result", {})),
+                bucket_id=bid,
+            )
+        elif op == "record_recall_batch":
+            keys = payload.get("keys", [])
+            if isinstance(keys, list):
+                for key in keys:
+                    token = str(key).strip()
+                    if token:
+                        self.storage.record_recall(token)
+        elif op == "record_query_degraded":
+            self.storage.record_query_degraded()
+        elif op == "record_llm_usage":
+            self._record_llm_usage_values(payload.get("usage", {}))
+        elif op == "record_llm_diag":
+            self._record_llm_diag_values(payload.get("diag", {}))
+        elif op == "record_overflow_query":
+            self.storage.record_context_overflow("query")
+        elif op == "record_alias_miss_build":
+            for _ in range(max(1, int(payload.get("count", 1)))):
+                self.storage.record_query_alias_miss_build()
+        elif op == "record_alias_miss_resolve":
+            for _ in range(max(1, int(payload.get("count", 1)))):
+                self.storage.record_query_alias_miss_resolve()
 
     def _begin_alias_session(self) -> None:
         begin = getattr(self.storage, "begin_alias_session", None)
@@ -1545,7 +1608,25 @@ class ContextMemoryEngineV3:
         if callable(end):
             end(flush=flush)
 
-    def _audit_alias_llm_call(
+    async def _audit_alias_llm_call(
+        self,
+        *,
+        tool: str,
+        bucket_id: str,
+        map_version: int,
+        alias_input: Any,
+        alias_output: Any,
+    ) -> None:
+        await self._run_storage_task(
+            self._append_alias_llm_audit_sync,
+            tool=tool,
+            bucket_id=bucket_id,
+            map_version=map_version,
+            alias_input=alias_input,
+            alias_output=alias_output,
+        )
+
+    def _append_alias_llm_audit_sync(
         self,
         *,
         tool: str,
@@ -1566,12 +1647,12 @@ class ContextMemoryEngineV3:
             }
         )
 
-    def _bucket_context(self, bucket_id: str):
+    async def _bucket_context(self, bucket_id: str):
         cache_key = f"ctx:{bucket_id}"
         cached = self.memory_manager.get(cache_key)
         if cached is not None:
             return cached
-        ctx = self.storage.load_bucket_context(bucket_id)
+        ctx = await self._run_storage_task(self.storage.load_bucket_context, bucket_id)
         if ctx is not None:
             try:
                 size = len(str(ctx.to_dict())) * 2
@@ -1594,8 +1675,8 @@ class ContextMemoryEngineV3:
         )
         return usage.context_tokens
 
-    def _record_llm_usage(self) -> None:
-        self._record_llm_usage_values(self.pipeline.last_usage)
+    async def _record_llm_usage(self) -> None:
+        await self._run_storage_task(self._record_llm_usage_values, self.pipeline.last_usage)
 
     def _record_llm_usage_values(self, usage: dict[str, Any]) -> None:
         self.storage.record_llm_usage(
@@ -1610,7 +1691,43 @@ class ContextMemoryEngineV3:
         call = partial(fn, *args, **kwargs)
         return await loop.run_in_executor(self._cpu_executor, call)  # type: ignore
 
+    async def _run_storage_task(self, fn: Callable[..., TCPU], /, *args: Any, **kwargs: Any) -> TCPU:
+        loop = asyncio.get_running_loop()
+        call = partial(fn, *args, **kwargs)
+        return await loop.run_in_executor(self._storage_executor, call)  # type: ignore
+
+    @staticmethod
+    def _write_text_file(path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    @staticmethod
+    def _scan_directory_files(root_dir: Path) -> tuple[bool, list[Path], int]:
+        if not root_dir.exists() or not root_dir.is_dir():
+            return False, [], 0
+        files = sorted(path for path in root_dir.rglob("*") if path.is_file())
+        max_depth = 0
+        for file_path in files:
+            relative_parent = file_path.parent.relative_to(root_dir)
+            depth = 0 if str(relative_parent) in {".", ""} else len(relative_parent.parts)
+            max_depth = max(max_depth, depth)
+        return True, files, max_depth
+
     def shutdown(self, *, wait: bool = False) -> None:
+        worker = getattr(self, "_query_side_effect_worker", None)
+        if worker is not None and not worker.done():
+            worker.cancel()
+        self._query_side_effect_worker = None
+        storage_executor = getattr(self, "_storage_executor", None)
+        if storage_executor is not None:
+            self._storage_executor = None
+            try:
+                storage_executor.shutdown(wait=wait, cancel_futures=True)
+            except TypeError:
+                storage_executor.shutdown(wait=wait)
+        storage = getattr(self, "storage", None)
+        if storage is not None:
+            storage.close()
         executor = getattr(self, "_cpu_executor", None)
         if executor is None:
             return
@@ -1621,10 +1738,19 @@ class ContextMemoryEngineV3:
             executor.shutdown(wait=wait)
 
     async def close(self, *, wait: bool = False) -> None:
+        worker = getattr(self, "_query_side_effect_worker", None)
+        if worker is not None and not worker.done():
+            await self._query_side_effect_queue.join()
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+            self._query_side_effect_worker = None
         self.shutdown(wait=wait)
 
-    def _record_llm_diag(self) -> None:
-        self._record_llm_diag_values(self.pipeline.last_diagnostics)
+    async def _record_llm_diag(self) -> None:
+        await self._run_storage_task(self._record_llm_diag_values, self.pipeline.last_diagnostics)
 
     def _record_llm_diag_values(self, diag: dict[str, Any]) -> None:
         if diag.get("parse_failed", False):
@@ -1638,14 +1764,19 @@ class ContextMemoryEngineV3:
     def _is_context_overflow_diag(self, diag: dict[str, Any]) -> bool:
         return self._diag_failure_stage(diag) == "context_overflow"
 
-    def _record_overflow(self, *, stage: str) -> None:
-        self.storage.record_context_overflow(stage)
+    async def _record_overflow(self, *, stage: str) -> None:
+        await self._run_storage_task(self.storage.record_context_overflow, stage)
 
-    def _bucket_memory_count(self, bucket_id: str) -> int:
+    async def _bucket_memory_count(self, bucket_id: str) -> int:
+        records = await self._run_storage_task(
+            self.storage.load_bucket_snapshot,
+            bucket_id,
+            include_gray=False,
+        )
         return len(
             [
                 r
-                for r in self.storage.list_bucket_records(bucket_id, include_gray=False)
+                for r in records
                 if r.kind == BUCKET_KIND_MEMORY
             ]
         )
@@ -1695,10 +1826,10 @@ class ContextMemoryEngineV3:
                 "split_index": ingest_kwargs.get("split_index"),
                 "raw_text": ingest_kwargs.get("raw_text", ""),
             }
-            alias_payload = await self.prepare_alias_payload(bucket_id, raw_payload)
-            alias_table = self._alias_table(bucket_id)
-            map_ver = alias_table.map_version()
-            alias_table.assert_safe(alias_payload)
+            alias_payload, map_ver = await self._prepare_alias_payload_with_version(
+                bucket_id,
+                raw_payload,
+            )
             kwargs = dict(ingest_kwargs)
             for name in (
                 "event",
@@ -1721,7 +1852,7 @@ class ContextMemoryEngineV3:
 
         alias_kwargs, alias_input, map_ver = await _aliasize_ingest_call()
         result_alias = await pipeline.ingest(**alias_kwargs)
-        self._audit_alias_llm_call(
+        await self._audit_alias_llm_call(
             tool="ingest",
             bucket_id=bucket_id,
             map_version=map_ver,
@@ -1729,13 +1860,13 @@ class ContextMemoryEngineV3:
             alias_output=result_alias,
         )
         result = await self.restore_alias_payload(bucket_id, result_alias, map_version=map_ver)
-        self._record_llm_usage_values(pipeline.last_usage)
-        self._record_llm_diag_values(pipeline.last_diagnostics)
+        await self._run_storage_task(self._record_llm_usage_values, pipeline.last_usage)
+        await self._run_storage_task(self._record_llm_diag_values, pipeline.last_diagnostics)
         overflow_seen = self._is_context_overflow_diag(pipeline.last_diagnostics)
         if not overflow_seen:
             return result, False, False
 
-        self._record_overflow(stage="ingest")
+        await self._record_overflow(stage="ingest")
         if not allow_retry:
             return result, True, True
         try:
@@ -1745,7 +1876,7 @@ class ContextMemoryEngineV3:
 
         alias_kwargs_retry, alias_input_retry, map_ver_retry = await _aliasize_ingest_call()
         retry_alias = await pipeline.ingest(**alias_kwargs_retry)
-        self._audit_alias_llm_call(
+        await self._audit_alias_llm_call(
             tool="ingest",
             bucket_id=bucket_id,
             map_version=map_ver_retry,
@@ -1753,11 +1884,11 @@ class ContextMemoryEngineV3:
             alias_output=retry_alias,
         )
         retry = await self.restore_alias_payload(bucket_id, retry_alias, map_version=map_ver_retry)
-        self._record_llm_usage_values(pipeline.last_usage)
-        self._record_llm_diag_values(pipeline.last_diagnostics)
+        await self._run_storage_task(self._record_llm_usage_values, pipeline.last_usage)
+        await self._run_storage_task(self._record_llm_diag_values, pipeline.last_diagnostics)
         overflow_still = self._is_context_overflow_diag(pipeline.last_diagnostics)
         if overflow_still:
-            self._record_overflow(stage="ingest")
+            await self._record_overflow(stage="ingest")
         return retry, True, overflow_still
 
     async def _ingest_with_overflow_retry(
@@ -1796,7 +1927,24 @@ class ContextMemoryEngineV3:
             }
         )
 
-    def _append_context_event(
+    async def _append_context_event(
+        self,
+        *,
+        bucket_id: str,
+        event_type: str,
+        record: MemoryRecord,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        await self._run_storage_task(
+            self._append_context_event_sync,
+            bucket_id=bucket_id,
+            event_type=event_type,
+            record=record,
+            payload=payload,
+        )
+        self._invalidate_bucket_context_cache(bucket_id)
+
+    def _append_context_event_sync(
         self,
         *,
         bucket_id: str,
@@ -1870,24 +2018,33 @@ class ContextMemoryEngineV3:
             )
         except Exception:
             pass
-        self._invalidate_bucket_context_cache(bucket_id)
 
-    def _has_duplicate_memory_in_bucket(self, bucket_id: str, raw_text: str) -> bool:
+    async def _has_duplicate_memory_in_bucket(self, bucket_id: str, raw_text: str) -> bool:
         target = str(raw_text or "")
         if not target:
             return False
-        for rec in self.storage.list_bucket_records(bucket_id, include_gray=False):
+        records = await self._run_storage_task(
+            self.storage.load_bucket_snapshot,
+            bucket_id,
+            include_gray=False,
+        )
+        for rec in records:
             if rec.kind != BUCKET_KIND_MEMORY:
                 continue
             if str(rec.content or "") == target:
                 return True
         return False
 
-    def _filter_duplicate_chunks_in_bucket(self, bucket_id: str, chunks: list[str]) -> list[str]:
+    async def _filter_duplicate_chunks_in_bucket(self, bucket_id: str, chunks: list[str]) -> list[str]:
         if not chunks:
             return []
         existing_contents: set[str] = set()
-        for rec in self.storage.list_bucket_records(bucket_id, include_gray=False):
+        records = await self._run_storage_task(
+            self.storage.load_bucket_snapshot,
+            bucket_id,
+            include_gray=False,
+        )
+        for rec in records:
             if rec.kind != BUCKET_KIND_MEMORY:
                 continue
             existing_contents.add(str(rec.content or ""))
@@ -1937,7 +2094,7 @@ class ContextMemoryEngineV3:
 
     def _repair_sealed_child_links_unlocked(self) -> int:
         changed = 0
-        records = self.storage.list_latest_records(include_gray=True)
+        records = self.storage.load_all_records_snapshot(include_gray=True)
         for rec in records:
             if rec.kind != BUCKET_KIND_BUCKET:
                 continue
@@ -1982,7 +2139,7 @@ class ContextMemoryEngineV3:
                 confidence_type=rec.confidence_type,
             )
             self.storage.write_memory_record(patched)
-            self._append_context_event(
+            self._append_context_event_sync(
                 bucket_id=rec.bucket_id,
                 event_type="UPDATE",
                 record=patched,
@@ -1997,7 +2154,7 @@ class ContextMemoryEngineV3:
         return changed
 
     def _maybe_repair_sealed_child_links_unlocked(self, *, force: bool = False) -> int:
-        meta = self.storage.load_meta()
+        meta = self.storage.metadata_snapshot()
         try:
             version = int(meta.get("context_version", 0))
         except Exception:
@@ -2005,7 +2162,7 @@ class ContextMemoryEngineV3:
         if not force and version == self._last_sealed_link_repair_version:
             return 0
         changed = self._repair_sealed_child_links_unlocked()
-        meta_after = self.storage.load_meta()
+        meta_after = self.storage.metadata_snapshot()
         try:
             self._last_sealed_link_repair_version = int(meta_after.get("context_version", version))
         except Exception:
@@ -2025,7 +2182,7 @@ class ContextMemoryEngineV3:
             raise ValueError(f"bucket not found: {resolved}")
         return resolved
 
-    def _create_bucket_unlocked(
+    async def _create_bucket_unlocked(
         self,
         parent_bucket_id: str,
         *,
@@ -2047,7 +2204,8 @@ class ContextMemoryEngineV3:
         summary_text = summary.strip()
         summary_status = "ready" if summary_text else "pending"
         child_summary = summary_text or self._pending_bucket_summary
-        child = self.storage.create_bucket(
+        child = await self._run_storage_task(
+            self.storage.create_bucket,
             parent_bucket_id=parent.bucket_id,
             level=parent.level + 1,
             title=title.strip() or "child bucket",
@@ -2076,8 +2234,8 @@ class ContextMemoryEngineV3:
             kind=BUCKET_KIND_BUCKET,
             child_bucket_id=child.bucket_id,
         )
-        self.storage.write_memory_record(node_record)
-        self._append_context_event(
+        await self._run_storage_task(self.storage.write_memory_record, node_record)
+        await self._append_context_event(
             bucket_id=parent.bucket_id,
             event_type="ADD",
             record=node_record,
@@ -2123,20 +2281,22 @@ class ContextMemoryEngineV3:
                         and resolved_existing in parent_info.children
                     ):
                         if exist_bucket_id != resolved_existing:
-                            self.storage.set_child_title_target(
+                            await self._run_storage_task(
+                                self.storage.set_child_title_target,
                                 parent_bucket_id=resolved_parent,
                                 title=title,
                                 child_bucket_id=resolved_existing,
                             )
                         await self._run_memory_gc()
                         return BucketHandle(self, resolved_existing)
-                    self.storage.remove_child_title_refs(
+                    await self._run_storage_task(
+                        self.storage.remove_child_title_refs,
                         parent_bucket_id=resolved_parent,
                         child_bucket_id=exist_bucket_id,
                     )
 
                 # Create bucket under lock to keep setdefault semantics under concurrency.
-                child = self._create_bucket_unlocked(
+                child = await self._create_bucket_unlocked(
                     resolved_parent,
                     title=title,
                     summary=summary,
@@ -2176,7 +2336,7 @@ class ContextMemoryEngineV3:
         """Create a child bucket under the given parent bucket."""
         async with self._bucket_write_lock(parent_bucket_id) as resolved_parent:
             async with self._global_meta_lock:
-                child = self._create_bucket_unlocked(
+                child = await self._create_bucket_unlocked(
                     resolved_parent,
                     title=title,
                     summary=summary,
@@ -2221,7 +2381,8 @@ class ContextMemoryEngineV3:
         if parent is None:
             raise ValueError("source parent bucket missing")
         node_key = self.storage.generate_key()
-        sibling = self.storage.create_bucket(
+        sibling = await self._run_storage_task(
+            self.storage.create_bucket,
             parent_bucket_id=parent.bucket_id,
             level=source.level,
             title=title.strip() or "sibling bucket",
@@ -2248,8 +2409,8 @@ class ContextMemoryEngineV3:
             kind=BUCKET_KIND_BUCKET,
             child_bucket_id=sibling.bucket_id,
         )
-        self.storage.write_memory_record(node_record)
-        self._append_context_event(
+        await self._run_storage_task(self.storage.write_memory_record, node_record)
+        await self._append_context_event(
             bucket_id=parent.bucket_id,
             event_type="ADD",
             record=node_record,
@@ -2269,7 +2430,7 @@ class ContextMemoryEngineV3:
         if source is None:
             raise ValueError(f"bucket not found: {target_bucket_id}")
         if source.level < self._max_depth:
-            return self._create_bucket_unlocked(
+            return await self._create_bucket_unlocked(
                 source.bucket_id,
                 title=title,
                 summary=summary,
@@ -2287,10 +2448,10 @@ class ContextMemoryEngineV3:
         r = str(reason or "").strip().lower()
         return r.startswith("auto_") or "post_compress_split" in r or "context_overflow" in r
 
-    def _can_auto_split_now(self, *, bucket_id: str) -> bool:
+    async def _can_auto_split_now(self, *, bucket_id: str) -> bool:
         if self._auto_split_cooldown_sec <= 0:
             return True
-        last_at_raw = self.storage.get_last_auto_split_at(bucket_id)
+        last_at_raw = await self._run_storage_task(self.storage.get_last_auto_split_at, bucket_id)
         last_at = parse_iso_or_none(last_at_raw)
         if last_at is None:
             return True
@@ -2299,20 +2460,22 @@ class ContextMemoryEngineV3:
         now = datetime.now(timezone.utc)
         return (now - last_at).total_seconds() >= self._auto_split_cooldown_sec
 
-    def _seal_bucket_unlocked(self, *, source_bucket_id: str, successor_bucket_id: str) -> None:
+    async def _seal_bucket_unlocked(self, *, source_bucket_id: str, successor_bucket_id: str) -> None:
         source_alias_table = self._alias_table(source_bucket_id, resolve_successor=False)
-        old_map_hash = source_alias_table.snapshot_hash()
+        old_map_hash = await self._run_storage_task(source_alias_table.snapshot_hash)
         source = self.storage.get_bucket_info(source_bucket_id)
         if source is None:
             return
-        self.storage.seal_bucket_successor(
+        await self._run_storage_task(
+            self.storage.seal_bucket_successor,
             source_bucket_id=source_bucket_id,
             successor_bucket_id=successor_bucket_id,
         )
         # Freeze the source map by exact id; do not resolve redirects to successor here.
-        source_alias_table.freeze()
-        new_map_hash = self._alias_table(successor_bucket_id).snapshot_hash()
-        self.storage.append_alias_audit(
+        await self._run_storage_task(source_alias_table.freeze)
+        new_map_hash = await self._run_storage_task(self._alias_table(successor_bucket_id).snapshot_hash)
+        await self._run_storage_task(
+            self.storage.append_alias_audit,
             {
                 "request_id": self._next_alias_request_id("seal_switch"),
                 "tool": "seal_switch",
@@ -2337,7 +2500,8 @@ class ContextMemoryEngineV3:
             raise ValueError(f"bucket not found: {source_bucket_id}")
 
         # Successor lives at same level as source.
-        successor = self.storage.create_bucket(
+        successor = await self._run_storage_task(
+            self.storage.create_bucket,
             parent_bucket_id=source.parent_bucket_id,
             level=source.level,
             title=f"{source.title}_successor",
@@ -2352,7 +2516,8 @@ class ContextMemoryEngineV3:
             binfo = self.storage.get_bucket_info(bid)
             if binfo is None:
                 continue
-            self.storage.reparent_bucket(
+            await self._run_storage_task(
+                self.storage.reparent_bucket,
                 bucket_id=bid,
                 new_parent_bucket_id=successor.bucket_id,
                 preserve_old_title_map=True,
@@ -2369,13 +2534,14 @@ class ContextMemoryEngineV3:
             dedup_keep.append(ks)
 
         for key in dedup_keep:
-            rec = self.storage.get_record(key)
+            rec = await self._run_storage_task(self.storage.get_record, key)
             if rec is None or rec.gray:
                 continue
             if rec.bucket_id != source_bucket_id:
                 continue
             if rec.kind == BUCKET_KIND_BUCKET and rec.child_bucket_id:
-                self.storage.reparent_bucket(
+                await self._run_storage_task(
+                    self.storage.reparent_bucket,
                     bucket_id=rec.child_bucket_id,
                     new_parent_bucket_id=successor.bucket_id,
                     preserve_old_title_map=True,
@@ -2407,8 +2573,8 @@ class ContextMemoryEngineV3:
                 child_bucket_id=rec.child_bucket_id,
                 confidence_type=rec.confidence_type,
             )
-            self.storage.write_memory_record(out_rec)
-            self._append_context_event(
+            await self._run_storage_task(self.storage.write_memory_record, out_rec)
+            await self._append_context_event(
                 bucket_id=source_bucket_id,
                 event_type="GRAY_SET",
                 record=out_rec,
@@ -2441,15 +2607,18 @@ class ContextMemoryEngineV3:
                 child_bucket_id=rec.child_bucket_id,
                 confidence_type=rec.confidence_type,
             )
-            self.storage.write_memory_record(in_rec)
-            self._append_context_event(
+            await self._run_storage_task(self.storage.write_memory_record, in_rec)
+            await self._append_context_event(
                 bucket_id=successor.bucket_id,
                 event_type="MOVE_IN",
                 record=in_rec,
                 payload={"from_bucket": source_bucket_id, "from_revision": out_rec.revision_id, "reason": reason},
             )
 
-        self._seal_bucket_unlocked(source_bucket_id=source_bucket_id, successor_bucket_id=successor.bucket_id)
+        await self._seal_bucket_unlocked(
+            source_bucket_id=source_bucket_id,
+            successor_bucket_id=successor.bucket_id,
+        )
 
         # Update routing pointers independently:
         # - source==ROOT: ROOT must follow successor
@@ -2458,12 +2627,16 @@ class ContextMemoryEngineV3:
         root_id = self.root_bucket_id()
         active_id = self.active_bucket_id()
         if source_bucket_id == root_id:
-            self.storage.set_root_bucket_id(successor.bucket_id)
+            await self._run_storage_task(self.storage.set_root_bucket_id, successor.bucket_id)
         if source_bucket_id == active_id:
-            self.storage.set_active_bucket_id(successor.bucket_id)
+            await self._run_storage_task(self.storage.set_active_bucket_id, successor.bucket_id)
 
         if self._is_auto_split_reason(reason):
-            self.storage.mark_auto_split(source_bucket_id=source_bucket_id, successor_bucket_id=successor.bucket_id)
+            await self._run_storage_task(
+                self.storage.mark_auto_split,
+                source_bucket_id=source_bucket_id,
+                successor_bucket_id=successor.bucket_id,
+            )
         return successor.bucket_id
 
     async def refresh_bucket_summary(self, bucket_id: str, *, force: bool = False) -> dict[str, Any]:
@@ -2491,13 +2664,17 @@ class ContextMemoryEngineV3:
                 "summary_status": info.summary_status,
             }
 
-        records = self.storage.list_bucket_records(bucket_id, include_gray=False)
+        records = await self._run_storage_task(
+            self.storage.load_bucket_snapshot,
+            bucket_id,
+            include_gray=False,
+        )
         if not records:
             if info.summary != self._pending_bucket_summary or info.summary_status != "pending":
                 info.summary = self._pending_bucket_summary
                 info.summary_status = "pending"
-                self.storage.update_bucket_info(info)
-                self._append_bucket_summary_update_event_unlocked(
+                await self._run_storage_task(self.storage.update_bucket_info, info)
+                await self._append_bucket_summary_update_event_unlocked(
                     info=info,
                     summary=info.summary,
                     content=info.summary,
@@ -2511,16 +2688,15 @@ class ContextMemoryEngineV3:
                 "summary_status": info.summary_status,
             }
 
-        alias_records = (await self.prepare_alias_payload(
+        prepared_alias, map_ver = await self._prepare_alias_payload_with_version(
             bucket_id,
             {"records": [r.to_dict() for r in records]},
-        )).get("records", [])
-        alias_table = self._alias_table(bucket_id)
-        map_ver = alias_table.map_version()
+        )
+        alias_records = prepared_alias.get("records", [])
         summary_alias_payload = {"records": alias_records, "reason": reason}
-        alias_table.assert_safe(summary_alias_payload)
+        await self._assert_alias_payload_safe(bucket_id, summary_alias_payload)
         summary_out_alias = await self.pipeline.summarize_bucket(records=alias_records, reason=reason)
-        self._audit_alias_llm_call(
+        await self._audit_alias_llm_call(
             tool="bucket_summary",
             bucket_id=bucket_id,
             map_version=map_ver,
@@ -2528,17 +2704,17 @@ class ContextMemoryEngineV3:
             alias_output=summary_out_alias,
         )
         summary_out = await self.restore_alias_payload(bucket_id, summary_out_alias, map_version=map_ver)
-        self._record_llm_usage()
-        self._record_llm_diag()
+        await self._record_llm_usage()
+        await self._record_llm_diag()
         if self._is_context_overflow_diag(self.pipeline.last_diagnostics):
-            self._record_overflow(stage="compress")
+            await self._record_overflow(stage="compress")
 
         new_summary = str(summary_out.get("summary", "")).strip()[:140] or info.summary
         new_content = str(summary_out.get("content", "")).strip()[:1000] or new_summary
         info.summary = new_summary
         info.summary_status = "ready"
-        self.storage.update_bucket_info(info)
-        self._append_bucket_summary_update_event_unlocked(
+        await self._run_storage_task(self.storage.update_bucket_info, info)
+        await self._append_bucket_summary_update_event_unlocked(
             info=info,
             summary=new_summary,
             content=new_content,
@@ -2552,7 +2728,7 @@ class ContextMemoryEngineV3:
             "summary_status": info.summary_status,
         }
 
-    def _append_bucket_summary_update_event_unlocked(
+    async def _append_bucket_summary_update_event_unlocked(
         self,
         *,
         info: BucketInfo,
@@ -2562,7 +2738,7 @@ class ContextMemoryEngineV3:
     ) -> None:
         if not info.node_key or not info.parent_bucket_id:
             return
-        current = self.storage.get_record(info.node_key)
+        current = await self._run_storage_task(self.storage.get_record, info.node_key)
         if current is None or current.gray:
             return
         target_bucket_id = current.bucket_id
@@ -2602,8 +2778,8 @@ class ContextMemoryEngineV3:
             child_bucket_id=current.child_bucket_id,
             confidence_type=current.confidence_type,
         )
-        self.storage.write_memory_record(updated)
-        self._append_context_event(
+        await self._run_storage_task(self.storage.write_memory_record, updated)
+        await self._append_context_event(
             bucket_id=target_bucket_id,
             event_type="UPDATE",
             record=updated,
@@ -2629,7 +2805,7 @@ class ContextMemoryEngineV3:
             post_manage_buckets: list[str] = []
             result: AddResult | None = None
             async with self._bucket_write_lock(bucket_id) as bucket:
-                memory_count_before = self._bucket_memory_count(bucket)
+                memory_count_before = await self._bucket_memory_count(bucket)
                 text = str(raw_text or "")
                 effective_force_split = bool(force_split)
                 effective_create_new_bucket = bool(create_new_bucket) if effective_force_split else False
@@ -2667,23 +2843,27 @@ class ContextMemoryEngineV3:
                     evidence_ref = ""
                     evidence_text = ""
                     if evidence_path:
-                        evidence_ref = self.storage.copy_evidence(evidence_path, key=memory_key)
-                        evidence_text = self.storage.read_evidence(evidence_ref)
+                        evidence_ref = await self._run_storage_task(
+                            self.storage.copy_evidence,
+                            evidence_path,
+                            key=memory_key,
+                        )
+                        evidence_text = await self._run_storage_task(self.storage.read_evidence, evidence_ref)
         
                     clean_result = await self.pipeline.clean(raw_text=text, evidence_text=evidence_text)
-                    self._record_llm_usage()
-                    self._record_llm_diag()
+                    await self._record_llm_usage()
+                    await self._record_llm_diag()
                     diag = self.pipeline.last_diagnostics
                     if str(diag.get("degraded_reason", "")) == "clean_fallback":
-                        self.storage.record_clean_fallback()
-        
+                        await self._run_storage_task(self.storage.record_clean_fallback)
+
                     if not bool(clean_result.get("accept", True)):
-                        self.storage.record_clean_reject()
-                        self.storage.record_ingest_blocked_by_clean()
+                        await self._run_storage_task(self.storage.record_clean_reject)
+                        await self._run_storage_task(self.storage.record_ingest_blocked_by_clean)
                         reason = str(clean_result.get("reject_reason", "")).strip() or "clean rejected input"
                         return AddResult(success=False, key=memory_key, message=f"memory rejected: {reason}")
 
-                    if dedup_in_bucket and self._has_duplicate_memory_in_bucket(bucket, text):
+                    if dedup_in_bucket and await self._has_duplicate_memory_in_bucket(bucket, text):
                         return AddResult(success=False, key=memory_key, message="duplicate_in_bucket")
         
                     clean_type = str(clean_result.get("input_type", "")).strip().lower()
@@ -2694,7 +2874,7 @@ class ContextMemoryEngineV3:
                         pipeline=self.pipeline,
                         bucket_id=bucket,
                         ingest_kwargs={
-                            "bucket_context": self._bucket_context(bucket),
+                            "bucket_context": await self._bucket_context(bucket),
                             "key": memory_key,
                             "event": "ADD",
                             "raw_text": ingest_input,
@@ -2715,8 +2895,8 @@ class ContextMemoryEngineV3:
                         kind=BUCKET_KIND_MEMORY,
                         child_bucket_id="",
                     )
-                    self.storage.write_memory_record(record)
-                    self._append_context_event(bucket_id=bucket, event_type="ADD", record=record, payload={"topic": topic})
+                    await self._run_storage_task(self.storage.write_memory_record, record)
+                    await self._append_context_event(bucket_id=bucket, event_type="ADD", record=record, payload={"topic": topic})
                     if memory_count_before == 0:
                         info = self.storage.get_bucket_info(bucket)
                         if not self._should_skip_auto_summary(info):
@@ -2768,14 +2948,14 @@ class ContextMemoryEngineV3:
         preserve_literal = False
         if apply_clean_gate:
             clean_result = await self.pipeline.clean(raw_text=source_text, evidence_text="")
-            self._record_llm_usage()
-            self._record_llm_diag()
+            await self._record_llm_usage()
+            await self._record_llm_diag()
             diag = self.pipeline.last_diagnostics
             if str(diag.get("degraded_reason", "")) == "clean_fallback":
-                self.storage.record_clean_fallback()
+                await self._run_storage_task(self.storage.record_clean_fallback)
             if not bool(clean_result.get("accept", True)):
-                self.storage.record_clean_reject()
-                self.storage.record_ingest_blocked_by_clean()
+                await self._run_storage_task(self.storage.record_clean_reject)
+                await self._run_storage_task(self.storage.record_ingest_blocked_by_clean)
                 reason = str(clean_result.get("reject_reason", "")).strip() or "clean rejected input"
                 return AddResult(success=False, key="", message=f"memory rejected: {reason}")
             input_type = str(clean_result.get("input_type", "")).strip().lower() or "plain"
@@ -2791,8 +2971,8 @@ class ContextMemoryEngineV3:
                 "content": source_text[:2000],
             }
             bucket_summary = await self.pipeline.summarize_bucket(records=[sample_record], reason="text_chunk_target_bucket")
-            self._record_llm_usage()
-            self._record_llm_diag()
+            await self._record_llm_usage()
+            await self._record_llm_diag()
             new_bucket = await self._create_bucket_auto(
                 target_bucket_id=target_bucket_id,
                 title=(topic or "split_bucket")[:80],
@@ -2808,8 +2988,8 @@ class ContextMemoryEngineV3:
             chunk_overlap_chars=chunk_overlap_chars,
             reason=split_reason,
         )
-        self._record_llm_usage()
-        self._record_llm_diag()
+        await self._record_llm_usage()
+        await self._record_llm_diag()
         chunks = chunk_plan.get("chunks", [])
         if not isinstance(chunks, list):
             chunks = []
@@ -2819,7 +2999,7 @@ class ContextMemoryEngineV3:
 
         if dedup_in_bucket:
             bucket_for_dedup = self._resolve_bucket_id_soft(target_bucket_id)
-            chunk_texts = self._filter_duplicate_chunks_in_bucket(bucket_for_dedup, chunk_texts)
+            chunk_texts = await self._filter_duplicate_chunks_in_bucket(bucket_for_dedup, chunk_texts)
             if not chunk_texts:
                 return AddResult(success=False, message="duplicate_in_bucket")
 
@@ -2834,8 +3014,12 @@ class ContextMemoryEngineV3:
         seed_evidence_ref = ""
         evidence_text = ""
         if evidence_path:
-            seed_evidence_ref = self.storage.copy_evidence(evidence_path, key=chunk_keys[0])
-            evidence_text = self.storage.read_evidence(seed_evidence_ref)
+            seed_evidence_ref = await self._run_storage_task(
+                self.storage.copy_evidence,
+                evidence_path,
+                key=chunk_keys[0],
+            )
+            evidence_text = await self._run_storage_task(self.storage.read_evidence, seed_evidence_ref)
 
         source_hash = hashlib.sha1(source_text.encode("utf-8")).hexdigest()
         batch_id = f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid4().hex}"
@@ -2849,25 +3033,27 @@ class ContextMemoryEngineV3:
         rebuilt_once = False
         current_bucket_id = target_bucket
 
-        def _build_split_chunks_payload() -> list[dict[str, Any]]:
+        async def _build_split_chunks_payload() -> list[dict[str, Any]]:
+            statuses = await self._run_storage_task(self.storage.record_statuses, chunk_keys)
             payload: list[dict[str, Any]] = []
             for idx in range(chunk_total):
                 key_i = chunk_keys[idx]
-                rec_i = self.storage.get_record(key_i)
+                status = statuses.get(key_i, {})
                 payload.append(
                     {
                         "index": idx + 1,
                         "key": key_i,
                         "content": chunk_texts[idx],
-                        "stored": bool(rec_i is not None and not rec_i.gray),
-                        "bucket_id": str(rec_i.bucket_id) if rec_i is not None else "",
-                        "revision_id": str(rec_i.revision_id) if rec_i is not None else "",
+                        "stored": bool(status.get("stored", False)),
+                        "bucket_id": str(status.get("bucket_id", "")),
+                        "revision_id": str(status.get("revision_id", "")),
                     }
                 )
             return payload
 
-        def _save_job(status: str, *, message: str = "") -> None:
-            self.storage.save_job_journal(
+        async def _save_job(status: str, *, message: str = "") -> None:
+            await self._run_storage_task(
+                self.storage.save_job_journal,
                 {
                     "batch_id": batch_id,
                     "target_bucket_id": target_bucket,
@@ -2893,7 +3079,7 @@ class ContextMemoryEngineV3:
                 }
             )
 
-        _save_job("running")
+        await _save_job("running")
 
         results: list[dict[str, Any] | None] = [None for _ in range(chunk_total)]
         result_bucket_ids: list[str] = ["" for _ in range(chunk_total)]
@@ -2910,7 +3096,7 @@ class ContextMemoryEngineV3:
         drain_event.set()
         inflight = 0
         fatal_recoverable_error = ""
-        generation_context = self._bucket_context(current_bucket_id)
+        generation_context = await self._bucket_context(current_bucket_id)
         current_split_chunks = list(base_split_chunks)
 
         parallelism = max(1, min(self._split_ingest_parallelism, chunk_total))
@@ -3073,14 +3259,14 @@ class ContextMemoryEngineV3:
                     generation = 1
                     rebuilt_once = True
                     current_bucket_id = new_bucket_id
-                    generation_context = self._bucket_context(current_bucket_id)
-                    current_split_chunks = _build_split_chunks_payload()
+                    generation_context = await self._bucket_context(current_bucket_id)
+                    current_split_chunks = await _build_split_chunks_payload()
                     pending = [i for i in range(chunk_total) if i not in done_indices]
                     queue = asyncio.Queue()
                     for i in pending:
                         queue.put_nowait(i)
                     pause_event.set()
-                _save_job("running", message="payload rebuilt once after overflow")
+                await _save_job("running", message="payload rebuilt once after overflow")
         finally:
             for t in worker_tasks:
                 if not t.done():
@@ -3100,7 +3286,11 @@ class ContextMemoryEngineV3:
                 if idx == 0 and seed_evidence_ref:
                     evidence_ref = seed_evidence_ref
                 else:
-                    evidence_ref = self.storage.copy_evidence(evidence_path, key=memory_key)
+                    evidence_ref = await self._run_storage_task(
+                        self.storage.copy_evidence,
+                        evidence_path,
+                        key=memory_key,
+                    )
             ingested = results[idx]
             resolved_bucket = self._resolve_bucket_id(result_bucket_ids[idx] or current_bucket_id)
             if not resolved_bucket:
@@ -3145,8 +3335,8 @@ class ContextMemoryEngineV3:
                     note="split_sequence_next",
                 )
             rec = replace(rec, relations=rel)
-            self.storage.write_memory_record(rec)
-            self._append_context_event(
+            await self._run_storage_task(self.storage.write_memory_record, rec)
+            await self._append_context_event(
                 bucket_id=resolved_bucket,
                 event_type="ADD",
                 record=rec,
@@ -3164,11 +3354,11 @@ class ContextMemoryEngineV3:
                 first_revision = rec.revision_id
             committed_indices.add(idx)
             committed_keys.add(memory_key)
-            _save_job("running")
+            await _save_job("running")
 
         pending_after = [i for i in range(chunk_total) if i not in committed_indices]
         if fatal_recoverable_error:
-            _save_job("paused", message=fatal_recoverable_error)
+            await _save_job("paused", message=fatal_recoverable_error)
             if deferred_auto_manage is None:
                 await self._run_memory_gc()
             return AddResult(
@@ -3194,7 +3384,7 @@ class ContextMemoryEngineV3:
                 force=False,
                 reason=f"auto_split_batch:{split_reason}",
             )
-        _save_job("completed", message="ok")
+        await _save_job("completed", message="ok")
         if deferred_auto_manage is None:
             await self._run_memory_gc()
         return AddResult(
@@ -3240,7 +3430,7 @@ class ContextMemoryEngineV3:
         if not current_bucket_id:
             return {"batch_id": batch_id, "success": False, "message": "missing target bucket"}
 
-        def _save(status: str, message: str = "") -> None:
+        async def _save(status: str, message: str = "") -> None:
             payload = dict(job)
             payload["current_bucket_id"] = current_bucket_id
             payload["generation"] = generation
@@ -3250,20 +3440,21 @@ class ContextMemoryEngineV3:
             payload["status"] = status
             payload["message"] = message
             payload["updated_at"] = utc_now_iso()
-            self.storage.save_job_journal(payload)
+            await self._run_storage_task(self.storage.save_job_journal, payload)
 
-        def _build_split_chunks_payload() -> list[dict[str, Any]]:
+        async def _build_split_chunks_payload() -> list[dict[str, Any]]:
+            statuses = await self._run_storage_task(self.storage.record_statuses, chunk_keys)
             out: list[dict[str, Any]] = []
             for idx in range(chunk_total):
-                rec = self.storage.get_record(chunk_keys[idx])
+                status = statuses.get(chunk_keys[idx], {})
                 out.append(
                     {
                         "index": idx + 1,
                         "key": chunk_keys[idx],
                         "content": chunk_texts[idx],
-                        "stored": bool(rec is not None and not rec.gray),
-                        "bucket_id": str(rec.bucket_id) if rec is not None else "",
-                        "revision_id": str(rec.revision_id) if rec is not None else "",
+                        "stored": bool(status.get("stored", False)),
+                        "bucket_id": str(status.get("bucket_id", "")),
+                        "revision_id": str(status.get("revision_id", "")),
                     }
                 )
             return out
@@ -3271,11 +3462,11 @@ class ContextMemoryEngineV3:
         seed_evidence_ref = str(job.get("evidence_ref_seed", "")).strip()
         evidence_text = ""
         if seed_evidence_ref:
-            evidence_text = self.storage.read_evidence(seed_evidence_ref)
+            evidence_text = await self._run_storage_task(self.storage.read_evidence, seed_evidence_ref)
 
         pending_indices = [idx for idx in range(chunk_total) if idx not in done_indices]
         if not pending_indices:
-            _save("completed", "already completed")
+            await _save("completed", "already completed")
             return {"batch_id": batch_id, "success": True, "completed": chunk_total, "pending": 0}
 
         for idx in pending_indices:
@@ -3283,8 +3474,8 @@ class ContextMemoryEngineV3:
             ingested: dict[str, Any] | None = None
             while attempts < 2:
                 attempts += 1
-                context_snapshot = self._bucket_context(current_bucket_id)
-                split_chunks_payload = _build_split_chunks_payload()
+                context_snapshot = await self._bucket_context(current_bucket_id)
+                split_chunks_payload = await _build_split_chunks_payload()
                 out, overflow_seen, _ = await self._ingest_with_overflow_retry_detail(
                     pipeline=self.pipeline,
                     bucket_id=current_bucket_id,
@@ -3324,9 +3515,9 @@ class ContextMemoryEngineV3:
                     current_bucket_id = self._resolve_bucket_id(current_bucket_id) or current_bucket_id
                     generation = 1
                     rebuilt_once = True
-                    _save("running", "payload rebuilt once during resume")
+                    await _save("running", "payload rebuilt once during resume")
                     continue
-                _save(
+                await _save(
                     "paused",
                     (
                         "recoverable_split_ingest_overflow_after_rebuild;"
@@ -3342,7 +3533,7 @@ class ContextMemoryEngineV3:
                 }
 
             if ingested is None:
-                _save("paused", f"resume failed without ingest result; chunk_index={idx + 1}")
+                await _save("paused", f"resume failed without ingest result; chunk_index={idx + 1}")
                 return {
                     "batch_id": batch_id,
                     "success": False,
@@ -3358,7 +3549,11 @@ class ContextMemoryEngineV3:
                     if idx == 0 and seed_evidence_ref:
                         evidence_ref = seed_evidence_ref
                     else:
-                        evidence_ref = self.storage.copy_evidence(path_obj, key=chunk_keys[idx])
+                        evidence_ref = await self._run_storage_task(
+                            self.storage.copy_evidence,
+                            path_obj,
+                            key=chunk_keys[idx],
+                        )
 
             rec = self._build_record(
                 key=chunk_keys[idx],
@@ -3400,8 +3595,8 @@ class ContextMemoryEngineV3:
                     note="split_sequence_next",
                 )
             rec = replace(rec, relations=rel)
-            self.storage.write_memory_record(rec)
-            self._append_context_event(
+            await self._run_storage_task(self.storage.write_memory_record, rec)
+            await self._append_context_event(
                 bucket_id=rec.bucket_id,
                 event_type="ADD",
                 record=rec,
@@ -3417,9 +3612,9 @@ class ContextMemoryEngineV3:
             )
             done_indices.add(idx)
             done_keys.add(chunk_keys[idx])
-            _save("running", f"resumed chunk {idx + 1}/{chunk_total}")
+            await _save("running", f"resumed chunk {idx + 1}/{chunk_total}")
 
-        _save("completed", "ok")
+        await _save("completed", "ok")
         await self._auto_manage_bucket(current_bucket_id)
         await self._run_memory_gc()
         return {"batch_id": batch_id, "success": True, "completed": len(done_indices), "pending": 0}
@@ -3480,7 +3675,11 @@ class ContextMemoryEngineV3:
         # effective_image_hint = str(image_extract_hint or "").strip() or str(query_hint or "").strip()
         effective_image_hint = str(image_extract_hint or "").strip()
         root_dir = Path(dir_path).expanduser()
-        if not root_dir.exists() or not root_dir.is_dir():
+        directory_exists, files, max_rel_depth = await self._run_storage_task(
+            self._scan_directory_files,
+            root_dir,
+        )
+        if not directory_exists:
             return {
                 "success": False,
                 "message": f"directory not found: {dir_path}",
@@ -3504,7 +3703,6 @@ class ContextMemoryEngineV3:
                 "per_file_added_keys": {},
             }
 
-        files = sorted([p for p in root_dir.rglob("*") if p.is_file()])
         if not files:
             return {
                 "success": True,
@@ -3519,12 +3717,6 @@ class ContextMemoryEngineV3:
             }
 
         if auto_create_sub_buckets:
-            max_rel_depth = 0
-            for file in files:
-                rel_parent = file.parent.relative_to(root_dir)
-                depth = 0 if str(rel_parent) in {".", ""} else len(rel_parent.parts)
-                if depth > max_rel_depth:
-                    max_rel_depth = depth
             if int(root_info.level) + int(max_rel_depth) > int(self._max_depth):
                 return {
                     "success": False,
@@ -3539,7 +3731,11 @@ class ContextMemoryEngineV3:
                     "per_file_added_keys": {},
                 }
 
-        llm_before = self.storage.load_meta() if collect_token_usage else {}
+        llm_before = (
+            await self._run_storage_task(self.storage.metadata_snapshot)
+            if collect_token_usage
+            else {}
+        )
         usage_before = {
             "llm_calls_total": int(llm_before.get("llm_calls_total", 0)),
             "llm_input_tokens_total": int(llm_before.get("llm_input_tokens_total", 0)),
@@ -3630,7 +3826,7 @@ class ContextMemoryEngineV3:
             "per_file_added_keys": per_file_added_keys,
         }
         if collect_token_usage:
-            llm_after = self.storage.load_meta()
+            llm_after = await self._run_storage_task(self.storage.metadata_snapshot)
             out["token_usage_delta"] = {
                 "llm_calls_total": int(llm_after.get("llm_calls_total", 0)) - usage_before["llm_calls_total"],
                 "llm_input_tokens_total": int(llm_after.get("llm_input_tokens_total", 0))
@@ -3649,11 +3845,12 @@ class ContextMemoryEngineV3:
         with_evidence: bool = False,
         revision: str | None = None,
     ) -> MemoryRecord | None:
-        rec = self.storage.get_record(key, revision)
+        rec = await self._run_storage_task(self.storage.get_record, key, revision)
         if rec is None:
             return None
         if with_evidence and rec.evidence_ref:
-            return replace(rec, evidence_content=self.storage.read_evidence(rec.evidence_ref))
+            evidence_content = await self._run_storage_task(self.storage.read_evidence, rec.evidence_ref)
+            return replace(rec, evidence_content=evidence_content)
         return rec
 
     async def export_memory_to_markdown(self, memory_id: str) -> dict[str, Any]:
@@ -3668,26 +3865,24 @@ class ContextMemoryEngineV3:
             if self.storage.get_bucket_info(key) is not None:
                 return {"success": False, "memory_id": key, "path": "", "message": "bucket id is not allowed"}
 
-            rec = self.storage.get_record(key)
+            rec = await self._run_storage_task(self.storage.get_record, key)
             if rec is None:
                 return {"success": False, "memory_id": key, "path": "", "message": "memory id not found"}
 
-            export_root = self.base_dir / "exports" / "memory_md"
-            export_root.mkdir(parents=True, exist_ok=True)
-            out_path = export_root / f"{key}.md"
+            out_path = self.base_dir / "exports" / "memory_md" / f"{key}.md"
 
             metadata = rec.to_dict()
             body = str(metadata.pop("content", "") or "")
             frontmatter = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
             markdown_text = f"---\n{frontmatter}\n---\n\n{body}"
-            out_path.write_text(markdown_text, encoding="utf-8")
+            await self._run_storage_task(self._write_text_file, out_path, markdown_text)
 
         final_path = str(out_path.resolve())
         print(final_path)
         return {"success": True, "memory_id": key, "path": final_path, "message": "markdown exported"}
 
     async def get_evidence_content(self, key: str, *, revision: str | None = None) -> str:
-        return self.storage.get_evidence_content_by_key(key, revision)
+        return await self._run_storage_task(self.storage.get_evidence_content_by_key, key, revision)
 
     async def list_memories(
         self,
@@ -3711,11 +3906,11 @@ class ContextMemoryEngineV3:
         try:
             post_manage_bucket: str | None = None
             result: UpdateResult | None = None
-            current0 = self.storage.get_record(key)
+            current0 = await self._run_storage_task(self.storage.get_record, key)
             if current0 is None:
                 return UpdateResult(success=False, key=key, message="memory key not found")
             async with self._bucket_write_lock(current0.bucket_id):
-                current = self.storage.get_record(key)
+                current = await self._run_storage_task(self.storage.get_record, key)
                 if current is None:
                     return UpdateResult(success=False, key=key, message="memory key not found")
                 if current.kind != BUCKET_KIND_MEMORY:
@@ -3724,21 +3919,25 @@ class ContextMemoryEngineV3:
                 evidence_ref = current.evidence_ref
                 evidence_text = ""
                 if evidence_path:
-                    evidence_ref = self.storage.copy_evidence(evidence_path, key=key)
-                    evidence_text = self.storage.read_evidence(evidence_ref)
+                    evidence_ref = await self._run_storage_task(
+                        self.storage.copy_evidence,
+                        evidence_path,
+                        key=key,
+                    )
+                    evidence_text = await self._run_storage_task(self.storage.read_evidence, evidence_ref)
                 elif evidence_ref:
-                    evidence_text = self.storage.read_evidence(evidence_ref)
+                    evidence_text = await self._run_storage_task(self.storage.read_evidence, evidence_ref)
     
                 clean_result = await self.pipeline.clean(raw_text=patch_text, evidence_text=evidence_text)
-                self._record_llm_usage()
-                self._record_llm_diag()
+                await self._record_llm_usage()
+                await self._record_llm_diag()
                 diag = self.pipeline.last_diagnostics
                 if str(diag.get("degraded_reason", "")) == "clean_fallback":
-                    self.storage.record_clean_fallback()
-    
+                    await self._run_storage_task(self.storage.record_clean_fallback)
+
                 if not bool(clean_result.get("accept", True)):
-                    self.storage.record_clean_reject()
-                    self.storage.record_ingest_blocked_by_clean()
+                    await self._run_storage_task(self.storage.record_clean_reject)
+                    await self._run_storage_task(self.storage.record_ingest_blocked_by_clean)
                     reason = str(clean_result.get("reject_reason", "")).strip() or "clean rejected input"
                     return UpdateResult(success=False, key=key, message=f"memory update rejected: {reason}")
     
@@ -3750,7 +3949,7 @@ class ContextMemoryEngineV3:
                     pipeline=self.pipeline,
                     bucket_id=current.bucket_id,
                     ingest_kwargs={
-                        "bucket_context": self._bucket_context(current.bucket_id),
+                        "bucket_context": await self._bucket_context(current.bucket_id),
                         "key": key,
                         "event": "UPDATE",
                         "raw_text": ingest_input,
@@ -3783,8 +3982,8 @@ class ContextMemoryEngineV3:
                     kind=current.kind,
                     child_bucket_id=current.child_bucket_id,
                 )
-                self.storage.write_memory_record(record)
-                self._append_context_event(
+                await self._run_storage_task(self.storage.write_memory_record, record)
+                await self._append_context_event(
                     bucket_id=current.bucket_id,
                     event_type="UPDATE",
                     record=record,
@@ -3800,11 +3999,11 @@ class ContextMemoryEngineV3:
             self._end_alias_session(flush=True)
 
     async def set_gray(self, key: str, *, gray: bool, reason: str = "manual") -> UpdateResult:
-        current0 = self.storage.get_record(key)
+        current0 = await self._run_storage_task(self.storage.get_record, key)
         if current0 is None:
             return UpdateResult(success=False, key=key, message="memory key not found")
         async with self._bucket_write_lock(current0.bucket_id):
-            current = self.storage.get_record(key)
+            current = await self._run_storage_task(self.storage.get_record, key)
             if current is None:
                 return UpdateResult(success=False, key=key, message="memory key not found")
             if current.gray == gray:
@@ -3834,8 +4033,8 @@ class ContextMemoryEngineV3:
                 child_bucket_id=current.child_bucket_id,
                 confidence_type=current.confidence_type,
             )
-            self.storage.write_memory_record(record)
-            self._append_context_event(
+            await self._run_storage_task(self.storage.write_memory_record, record)
+            await self._append_context_event(
                 bucket_id=current.bucket_id,
                 event_type=event,
                 record=record,
@@ -3900,7 +4099,7 @@ class ContextMemoryEngineV3:
         if not target_key:
             return DeleteResult(success=False, key="", message="invalid delete target")
 
-        current = self.storage.get_record(target_key)
+        current = await self._run_storage_task(self.storage.get_record, target_key)
         info: BucketInfo | None = None
         if current is not None and current.kind == BUCKET_KIND_BUCKET:
             child_id = str(current.child_bucket_id or "").strip()
@@ -3911,7 +4110,8 @@ class ContextMemoryEngineV3:
 
         res = await self.set_gray(target_key, gray=True, reason=reason or "delete")
         if res.success and info is not None and info.parent_bucket_id:
-            self.storage.remove_child_title_refs(
+            await self._run_storage_task(
+                self.storage.remove_child_title_refs,
                 parent_bucket_id=info.parent_bucket_id,
                 child_bucket_id=info.bucket_id,
             )
@@ -4143,15 +4343,21 @@ class ContextMemoryEngineV3:
         if source.sealed:
             return CompressResult(success=False, message="sealed bucket is read-only")
 
-        latest_all = self.storage.list_bucket_records(bucket_id, include_gray=True)
+        latest_all = await self._run_storage_task(
+            self.storage.load_bucket_snapshot,
+            bucket_id,
+            include_gray=True,
+        )
         latest = [r for r in latest_all if not r.gray]
         if not latest:
             return CompressResult(success=True, message="bucket is empty")
 
         records = [r.to_dict() for r in latest_all]
-        alias_records = (await self.prepare_alias_payload(bucket_id, {"records": records})).get("records", [])
-        alias_table = self._alias_table(bucket_id)
-        map_ver = alias_table.map_version()
+        prepared_alias, map_ver = await self._prepare_alias_payload_with_version(
+            bucket_id,
+            {"records": records},
+        )
+        alias_records = prepared_alias.get("records", [])
         payload_base = {
             "reason": reason,
             "max_context_window": self.max_context_window,
@@ -4167,15 +4373,15 @@ class ContextMemoryEngineV3:
             "max_context_window": self.max_context_window,
             "records": alias_records,
         }
-        alias_table.assert_safe(compress_alias_payload)
+        await self._assert_alias_payload_safe(bucket_id, compress_alias_payload)
         plan_alias = await self.pipeline.compress(
-            bucket_context=self._bucket_context(bucket_id),
+            bucket_context=await self._bucket_context(bucket_id),
             records=alias_records,
             reason=reason,
             payload_tokens=payload_tokens,
             max_context_window=self.max_context_window,
         )
-        self._audit_alias_llm_call(
+        await self._audit_alias_llm_call(
             tool="compress",
             bucket_id=bucket_id,
             map_version=map_ver,
@@ -4183,10 +4389,10 @@ class ContextMemoryEngineV3:
             alias_output=plan_alias,
         )
         plan = await self.restore_alias_payload(bucket_id, plan_alias, map_version=map_ver)
-        self._record_llm_usage()
-        self._record_llm_diag()
+        await self._record_llm_usage()
+        await self._record_llm_diag()
         if self._is_context_overflow_diag(self.pipeline.last_diagnostics):
-            self._record_overflow(stage="compress")
+            await self._record_overflow(stage="compress")
 
         drop_keys = [str(k) for k in plan.get("drop_keys", []) if str(k).strip()]
         drop_set = set(drop_keys)
@@ -4245,8 +4451,12 @@ class ContextMemoryEngineV3:
                 changed += 1
                 rewritten_count += 1
 
+        evidence_status = await self._run_storage_task(
+            self.storage.evidence_exists_many,
+            [rec.evidence_ref for rec in survivors.values() if rec.evidence_ref],
+        )
         for key, rec in list(survivors.items()):
-            if rec.evidence_ref and (not self.storage.evidence_exists(rec.evidence_ref)):
+            if rec.evidence_ref and not evidence_status.get(rec.evidence_ref, False):
                 survivors.pop(key, None)
                 drop_set.add(key)
 
@@ -4254,7 +4464,8 @@ class ContextMemoryEngineV3:
             if key not in survivors:
                 dropped += 1
 
-        snapshot_path = self.storage.create_snapshot(
+        snapshot_path = await self._run_storage_task(
+            self.storage.create_snapshot,
             summary=str(plan.get("merged_summary", "")),
             bucket_id=bucket_id,
             reason=reason,
@@ -4277,13 +4488,13 @@ class ContextMemoryEngineV3:
                 message="compress estimated overflow; split executed",
             )
 
-        successor = self._create_successor_bucket_shallow_unlocked(
+        successor = await self._create_successor_bucket_shallow_unlocked(
             source_bucket_id=bucket_id,
             title=f"{source.title}_compress",
             summary=(str(plan.get("merged_summary", "")).strip() or source.summary or "compressed successor"),
         )
         for rec in survivors.values():
-            self._write_rebuilt_record_unlocked(
+            await self._write_rebuilt_record_unlocked(
                 source_record=rec,
                 dst_bucket_id=successor.bucket_id,
                 event="COMPRESS_REBUILD",
@@ -4296,24 +4507,25 @@ class ContextMemoryEngineV3:
             if merged_summary:
                 successor_info.summary = merged_summary[:140]
                 successor_info.summary_status = "ready"
-                self.storage.update_bucket_info(successor_info)
-                self._append_bucket_summary_update_event_unlocked(
+                await self._run_storage_task(self.storage.update_bucket_info, successor_info)
+                await self._append_bucket_summary_update_event_unlocked(
                     info=successor_info,
                     summary=successor_info.summary,
                     content=merged_summary[:1000],
                     reason=f"compress:{reason}",
                 )
 
-        self._seal_and_switch_bucket_unlocked(
+        await self._seal_and_switch_bucket_unlocked(
             source_bucket_id=bucket_id,
             successor_bucket_id=successor.bucket_id,
             reason=reason,
         )
 
         for key in (set(all_keys) - set(survivors.keys())):
-            self.storage.purge_evidence_for_key(key)
+            await self._run_storage_task(self.storage.purge_evidence_for_key, key)
 
-        self.storage.append_event(
+        await self._run_storage_task(
+            self.storage.append_event,
             event_type="COMPRESS_DONE",
             bucket_id=bucket_id,
             payload={
@@ -4344,13 +4556,21 @@ class ContextMemoryEngineV3:
 
     async def _compress_remove_missing_evidence(self, bucket_id: str) -> int:
         changed = 0
-        latest = self.storage.list_bucket_records(bucket_id, include_gray=False)
+        latest = await self._run_storage_task(
+            self.storage.load_bucket_snapshot,
+            bucket_id,
+            include_gray=False,
+        )
+        evidence_status = await self._run_storage_task(
+            self.storage.evidence_exists_many,
+            [rec.evidence_ref for rec in latest if rec.evidence_ref],
+        )
         for rec in latest:
             if rec.gray:
                 continue
             if not rec.evidence_ref:
                 continue
-            if self.storage.evidence_exists(rec.evidence_ref):
+            if evidence_status.get(rec.evidence_ref, False):
                 continue
             relations = normalize_relations(rec.relations)
             relations["lifecycle_links"].append(
@@ -4374,8 +4594,8 @@ class ContextMemoryEngineV3:
                 child_bucket_id=rec.child_bucket_id,
                 confidence_type=rec.confidence_type,
             )
-            self.storage.write_memory_record(tomb)
-            self._append_context_event(
+            await self._run_storage_task(self.storage.write_memory_record, tomb)
+            await self._append_context_event(
                 bucket_id=bucket_id,
                 event_type="GRAY_SET",
                 record=tomb,
@@ -4426,7 +4646,7 @@ class ContextMemoryEngineV3:
     ) -> MoveResult:
         self._begin_alias_session()
         try:
-            current = self.storage.get_record(key)
+            current = await self._run_storage_task(self.storage.get_record, key)
             source_bucket_id = current.bucket_id if current is not None else ""
             target_resolved = self._resolve_bucket_id_soft(target_bucket_id)
             async with self._multi_bucket_write_lock([source_bucket_id, target_resolved]):
@@ -4436,7 +4656,11 @@ class ContextMemoryEngineV3:
 
     async def gc_storage(self, *, dry_run: bool = True, reason: str = "manual_gc") -> GCResult:
         async with self._global_meta_lock:
-            return await self._gc_storage_unlocked(dry_run=dry_run, reason=reason)
+            return await self._run_storage_task(
+                self._gc_storage_unlocked,
+                dry_run=dry_run,
+                reason=reason,
+            )
 
     async def _split_bucket_unlocked(
         self,
@@ -4451,21 +4675,24 @@ class ContextMemoryEngineV3:
             return {"success": False, "message": f"bucket not found: {bucket_id}"}
 
         if self._is_auto_split_reason(reason):
-            if not self._can_auto_split_now(bucket_id=bucket_id):
-                self.storage.record_auto_split_cooldown_skip()
+            if not await self._can_auto_split_now(bucket_id=bucket_id):
+                await self._run_storage_task(self.storage.record_auto_split_cooldown_skip)
                 return {"success": False, "created_buckets": 0, "moved_memories": 0, "message": "split skipped by cooldown"}
 
-        records = self.storage.list_bucket_records(bucket_id, include_gray=False)
+        records = await self._run_storage_task(
+            self.storage.load_bucket_snapshot,
+            bucket_id,
+            include_gray=False,
+        )
         if len(records) < 2:
             return {"success": True, "created_buckets": 0, "moved_memories": 0, "message": "not enough records to split"}
 
         pressure_before, _ = await self._bucket_pressure(bucket_id)
-        alias_records = (await self.prepare_alias_payload(
+        prepared_alias, map_ver = await self._prepare_alias_payload_with_version(
             bucket_id,
             {"records": [r.to_dict() for r in records]},
-        )).get("records", [])
-        alias_table = self._alias_table(bucket_id)
-        map_ver = alias_table.map_version()
+        )
+        alias_records = prepared_alias.get("records", [])
         split_alias_payload = {
             "reason": reason,
             "split_plan_target_items": self._split_plan_target_items,
@@ -4474,9 +4701,9 @@ class ContextMemoryEngineV3:
             "target_groups_max": target_groups_max,
             "records": alias_records,
         }
-        alias_table.assert_safe(split_alias_payload)
+        await self._assert_alias_payload_safe(bucket_id, split_alias_payload)
         split_plan_alias = await self.pipeline.bucket_split(
-            bucket_context=self._bucket_context(bucket_id),
+            bucket_context=await self._bucket_context(bucket_id),
             records=alias_records,
             split_plan_target_items=self._split_plan_target_items,
             split_plan_hard_cap=self._split_plan_hard_cap,
@@ -4484,7 +4711,7 @@ class ContextMemoryEngineV3:
             target_groups_max=target_groups_max,
             reason=reason,
         )
-        self._audit_alias_llm_call(
+        await self._audit_alias_llm_call(
             tool="split_bucket",
             bucket_id=bucket_id,
             map_version=map_ver,
@@ -4492,8 +4719,8 @@ class ContextMemoryEngineV3:
             alias_output=split_plan_alias,
         )
         split_plan = await self.restore_alias_payload(bucket_id, split_plan_alias, map_version=map_ver)
-        self._record_llm_usage()
-        self._record_llm_diag()
+        await self._record_llm_usage()
+        await self._record_llm_diag()
 
         merge_groups_raw = split_plan.get("merge_groups", [])
         keep_items_raw = split_plan.get("keep_items", [])
@@ -4563,11 +4790,11 @@ class ContextMemoryEngineV3:
 
         merge_item_count = len(merge_groups) + len(keep_items_raw)
         if merge_item_count > self._split_plan_hard_cap:
-            self.storage.record_split_plan_warn()
+            await self._run_storage_task(self.storage.record_split_plan_warn)
             merge_groups = []
             keep_keys_set.clear()
         elif merge_item_count > self._split_plan_target_items:
-            self.storage.record_split_plan_warn()
+            await self._run_storage_task(self.storage.record_split_plan_warn)
 
         if not merge_groups:
             # Local fallback: only split memory-like records into clusters.
@@ -4581,16 +4808,15 @@ class ContextMemoryEngineV3:
                 if not g:
                     continue
                 keys = [r.key for r in g]
-                alias_records = (await self.prepare_alias_payload(
+                prepared_alias, map_ver = await self._prepare_alias_payload_with_version(
                     bucket_id,
                     {"records": [x.to_dict() for x in g]},
-                )).get("records", [])
-                alias_table = self._alias_table(bucket_id)
-                map_ver = alias_table.map_version()
+                )
+                alias_records = prepared_alias.get("records", [])
                 summary_alias_payload = {"records": alias_records, "reason": "louvain_split"}
-                alias_table.assert_safe(summary_alias_payload)
+                await self._assert_alias_payload_safe(bucket_id, summary_alias_payload)
                 summary_alias = await self.pipeline.summarize_bucket(records=alias_records, reason="louvain_split")
-                self._audit_alias_llm_call(
+                await self._audit_alias_llm_call(
                     tool="bucket_summary",
                     bucket_id=bucket_id,
                     map_version=map_ver,
@@ -4598,8 +4824,8 @@ class ContextMemoryEngineV3:
                     alias_output=summary_alias,
                 )
                 summary = await self.restore_alias_payload(bucket_id, summary_alias, map_version=map_ver)
-                self._record_llm_usage()
-                self._record_llm_diag()
+                await self._record_llm_usage()
+                await self._record_llm_diag()
                 merge_groups.append(
                     {
                         "title": f"cluster_{idx+1}",
@@ -4623,7 +4849,7 @@ class ContextMemoryEngineV3:
 
         for g in merge_groups:
             if source.level < self._max_depth:
-                new_bucket = self._create_bucket_unlocked(
+                new_bucket = await self._create_bucket_unlocked(
                     source.bucket_id,
                     title=g["title"],
                     summary=g["summary"],
@@ -4642,13 +4868,14 @@ class ContextMemoryEngineV3:
                 target_map[k] = new_bucket.bucket_id
 
         for key, dst_bucket in target_map.items():
-            rec = self.storage.get_record(key)
+            rec = await self._run_storage_task(self.storage.get_record, key)
             if rec is None or rec.gray:
                 continue
             if rec.bucket_id != source.bucket_id:
                 continue
             if rec.kind == BUCKET_KIND_BUCKET and str(rec.child_bucket_id or "").strip():
-                self.storage.reparent_bucket(
+                await self._run_storage_task(
+                    self.storage.reparent_bucket,
                     bucket_id=str(rec.child_bucket_id).strip(),
                     new_parent_bucket_id=dst_bucket,
                 )
@@ -4676,8 +4903,8 @@ class ContextMemoryEngineV3:
                 child_bucket_id=rec.child_bucket_id,
                 confidence_type=rec.confidence_type,
             )
-            self.storage.write_memory_record(out_rec)
-            self._append_context_event(
+            await self._run_storage_task(self.storage.write_memory_record, out_rec)
+            await self._append_context_event(
                 bucket_id=source.bucket_id,
                 event_type="GRAY_SET",
                 record=out_rec,
@@ -4706,8 +4933,8 @@ class ContextMemoryEngineV3:
                 child_bucket_id=rec.child_bucket_id,
                 confidence_type=rec.confidence_type,
             )
-            self.storage.write_memory_record(in_rec)
-            self._append_context_event(
+            await self._run_storage_task(self.storage.write_memory_record, in_rec)
+            await self._append_context_event(
                 bucket_id=dst_bucket,
                 event_type="MOVE_IN",
                 record=in_rec,
@@ -4734,7 +4961,8 @@ class ContextMemoryEngineV3:
             reason=reason,
         )
 
-        self.storage.append_event(
+        await self._run_storage_task(
+            self.storage.append_event,
             event_type="SPLIT_DONE",
             bucket_id=source.bucket_id,
             payload={
@@ -4771,7 +4999,7 @@ class ContextMemoryEngineV3:
         pressure_after, _ = await self._bucket_pressure(successor_bucket_id)
         drop_abs = pressure_before - pressure_after
         if self._is_auto_split_reason(reason) and drop_abs < self._auto_split_min_drop_abs:
-            self.storage.record_auto_split_no_progress()
+            await self._run_storage_task(self.storage.record_auto_split_no_progress)
             return {
                 "success": False,
                 "created_buckets": created,
@@ -4821,7 +5049,7 @@ class ContextMemoryEngineV3:
                 max_level = max(max_level, int(item.level))
         return max_level
 
-    def _create_successor_bucket_shallow_unlocked(
+    async def _create_successor_bucket_shallow_unlocked(
         self,
         *,
         source_bucket_id: str,
@@ -4831,7 +5059,8 @@ class ContextMemoryEngineV3:
         source = self.storage.get_bucket_info(source_bucket_id)
         if source is None:
             raise ValueError(f"bucket not found: {source_bucket_id}")
-        successor = self.storage.create_bucket(
+        successor = await self._run_storage_task(
+            self.storage.create_bucket,
             parent_bucket_id=source.parent_bucket_id,
             level=source.level,
             title=(title.strip() or f"{source.title}_successor"),
@@ -4842,24 +5071,31 @@ class ContextMemoryEngineV3:
         )
         return successor
 
-    def _seal_and_switch_bucket_unlocked(
+    async def _seal_and_switch_bucket_unlocked(
         self,
         *,
         source_bucket_id: str,
         successor_bucket_id: str,
         reason: str,
     ) -> None:
-        self._seal_bucket_unlocked(source_bucket_id=source_bucket_id, successor_bucket_id=successor_bucket_id)
+        await self._seal_bucket_unlocked(
+            source_bucket_id=source_bucket_id,
+            successor_bucket_id=successor_bucket_id,
+        )
         root_id = self.root_bucket_id()
         active_id = self.active_bucket_id()
         if source_bucket_id == root_id:
-            self.storage.set_root_bucket_id(successor_bucket_id)
+            await self._run_storage_task(self.storage.set_root_bucket_id, successor_bucket_id)
         if source_bucket_id == active_id:
-            self.storage.set_active_bucket_id(successor_bucket_id)
+            await self._run_storage_task(self.storage.set_active_bucket_id, successor_bucket_id)
         if self._is_auto_split_reason(reason):
-            self.storage.mark_auto_split(source_bucket_id=source_bucket_id, successor_bucket_id=successor_bucket_id)
+            await self._run_storage_task(
+                self.storage.mark_auto_split,
+                source_bucket_id=source_bucket_id,
+                successor_bucket_id=successor_bucket_id,
+            )
 
-    def _write_rebuilt_record_unlocked(
+    async def _write_rebuilt_record_unlocked(
         self,
         *,
         source_record: MemoryRecord,
@@ -4868,7 +5104,8 @@ class ContextMemoryEngineV3:
         reason: str,
     ) -> MemoryRecord:
         if source_record.kind == BUCKET_KIND_BUCKET and str(source_record.child_bucket_id or "").strip():
-            self.storage.reparent_bucket(
+            await self._run_storage_task(
+                self.storage.reparent_bucket,
                 bucket_id=str(source_record.child_bucket_id).strip(),
                 new_parent_bucket_id=dst_bucket_id,
                 preserve_old_title_map=True,
@@ -4899,8 +5136,8 @@ class ContextMemoryEngineV3:
             child_bucket_id=source_record.child_bucket_id,
             confidence_type=source_record.confidence_type,
         )
-        self.storage.write_memory_record(in_rec)
-        self._append_context_event(
+        await self._run_storage_task(self.storage.write_memory_record, in_rec)
+        await self._append_context_event(
             bucket_id=dst_bucket_id,
             event_type=event,
             record=in_rec,
@@ -4916,7 +5153,7 @@ class ContextMemoryEngineV3:
         key = str(key or "").strip()
         if not key:
             return MoveResult(success=False, message="key is required")
-        current = self.storage.get_record(key)
+        current = await self._run_storage_task(self.storage.get_record, key)
         if current is None:
             return MoveResult(success=False, key=key, message="key not found")
         if current.gray:
@@ -4950,7 +5187,11 @@ class ContextMemoryEngineV3:
             new_max_level = int(target_info.level) + 1 + depth_span
             if new_max_level > self._max_depth:
                 return MoveResult(success=False, key=key, message="move would exceed max depth (3)")
-            self.storage.reparent_bucket(bucket_id=child_bucket_id, new_parent_bucket_id=target_bucket)
+            await self._run_storage_task(
+                self.storage.reparent_bucket,
+                bucket_id=child_bucket_id,
+                new_parent_bucket_id=target_bucket,
+            )
         else:
             child_bucket_id = ""
 
@@ -4991,8 +5232,8 @@ class ContextMemoryEngineV3:
             child_bucket_id=child_bucket_id or current.child_bucket_id,
             confidence_type=current.confidence_type,
         )
-        self.storage.write_memory_record(out_rec)
-        self._append_context_event(
+        await self._run_storage_task(self.storage.write_memory_record, out_rec)
+        await self._append_context_event(
             bucket_id=current.bucket_id,
             event_type="GRAY_SET",
             record=out_rec,
@@ -5029,8 +5270,8 @@ class ContextMemoryEngineV3:
             child_bucket_id=child_bucket_id or current.child_bucket_id,
             confidence_type=current.confidence_type,
         )
-        self.storage.write_memory_record(in_rec)
-        self._append_context_event(
+        await self._run_storage_task(self.storage.write_memory_record, in_rec)
+        await self._append_context_event(
             bucket_id=target_bucket,
             event_type="MOVE_IN",
             record=in_rec,
@@ -5067,7 +5308,7 @@ class ContextMemoryEngineV3:
         (snap_dir / "marker.json").write_text(json.dumps(marker, ensure_ascii=False, indent=2), encoding="utf-8")
         return str(snap_dir)
 
-    async def _gc_storage_unlocked(self, *, dry_run: bool, reason: str) -> GCResult:
+    def _gc_storage_unlocked(self, *, dry_run: bool, reason: str) -> GCResult:
         now = datetime.now(timezone.utc)
         rev_retention = timedelta(days=int(self._gc_revision_retention_days))
         gray_retention = timedelta(days=int(self._gc_gray_key_retention_days))
@@ -5077,12 +5318,16 @@ class ContextMemoryEngineV3:
         skipped = {"protected": 0, "referenced": 0}
         errors: list[str] = []
 
-        state = self.storage.load_state()
+        state = self.storage.state_snapshot_for_maintenance()
         keys = state.get("keys", {})
         if not isinstance(keys, dict):
             keys = {}
 
-        active_records = [r for r in self.storage.list_latest_records(include_gray=True) if not r.gray]
+        active_records = [
+            record
+            for record in self.storage.load_all_records_snapshot(include_gray=True)
+            if not record.gray
+        ]
         active_targets: set[str] = set()
         active_child_buckets: set[str] = set()
         for rec in active_records:
@@ -5148,7 +5393,7 @@ class ContextMemoryEngineV3:
                 except Exception as exc:
                     errors.append(f"key_delete_failed:{key}:{exc}")
 
-        tree = self.storage.load_bucket_tree()
+        tree = self.storage.topology_snapshot()
         buckets_raw = tree.get("buckets", {})
         if not isinstance(buckets_raw, dict):
             buckets_raw = {}
@@ -5246,10 +5491,12 @@ class ContextMemoryEngineV3:
 
         if not dry_run:
             state["keys"] = keys
-            self.storage.save_state(state)
             tree["buckets"] = buckets_raw
             tree["child_title_maps"] = title_maps
-            self.storage.save_bucket_tree(tree)
+            self.storage.commit_maintenance_snapshots(
+                state=state,
+                tree=tree,
+            )
 
         self.storage.append_event(
             event_type="GC_STORAGE",
@@ -5292,13 +5539,15 @@ class ContextMemoryEngineV3:
                 try:
                     comp = await self._force_compress_unlocked(bucket_id=locked_bucket, reason="auto_threshold")
                     if not bool(getattr(comp, "success", False)):
-                        self.storage.append_event(
+                        await self._run_storage_task(
+                            self.storage.append_event,
                             event_type="AUTO_COMPRESS_FAIL",
                             bucket_id=locked_bucket,
                             payload={"reason": "auto_threshold", "message": str(getattr(comp, "message", ""))},
                         )
                 except Exception as exc:
-                    self.storage.append_event(
+                    await self._run_storage_task(
+                        self.storage.append_event,
                         event_type="AUTO_COMPRESS_FAIL",
                         bucket_id=locked_bucket,
                         payload={"reason": "auto_threshold", "error": repr(exc)},
@@ -5307,19 +5556,19 @@ class ContextMemoryEngineV3:
 
             if did_compress and (pressure > self._auto_split_trigger_ratio or count > 1000):
                 if did_split:
-                    self.storage.record_auto_split_guard_hit()
+                    await self._run_storage_task(self.storage.record_auto_split_guard_hit)
                     return
                 if split_round >= self._auto_split_max_round_per_manage:
-                    self.storage.record_auto_split_guard_hit()
+                    await self._run_storage_task(self.storage.record_auto_split_guard_hit)
                     return
-                if not self._can_auto_split_now(bucket_id=locked_bucket):
-                    self.storage.record_auto_split_cooldown_skip()
+                if not await self._can_auto_split_now(bucket_id=locked_bucket):
+                    await self._run_storage_task(self.storage.record_auto_split_cooldown_skip)
                     return
                 result = await self._split_bucket_unlocked(bucket_id=locked_bucket, reason="auto_post_compress")
                 split_round += 1
                 did_split = bool(result.get("success", False))
                 if not did_split:
-                    self.storage.record_auto_split_guard_hit()
+                    await self._run_storage_task(self.storage.record_auto_split_guard_hit)
                     return
 
             if did_compress and did_split:
@@ -5336,20 +5585,25 @@ class ContextMemoryEngineV3:
         if not bool(getattr(self, "_enable_forgetting", True)):
             return
         now = datetime.now(timezone.utc)
-        for rec in self.storage.list_bucket_records(bucket_id, include_gray=False):
+        records = await self._run_storage_task(
+            self.storage.load_bucket_snapshot,
+            bucket_id,
+            include_gray=False,
+        )
+        for rec in records:
             if rec.kind != BUCKET_KIND_MEMORY:
                 continue
-            node = self.storage.get_key_node(rec.key) or {}
+            node = await self._run_storage_task(self.storage.get_key_node, rec.key) or {}
             if from_compress:
                 last_penalty = parse_iso_or_none(str(node.get("last_compress_penalty_at", "")))
                 if last_penalty is not None and last_penalty.tzinfo is None:
                     last_penalty = last_penalty.replace(tzinfo=timezone.utc)
                 if last_penalty is not None and (now - last_penalty) < timedelta(days=1):
                     continue
-                self.storage.set_last_compress_penalty(rec.key)
+                await self._run_storage_task(self.storage.set_last_compress_penalty, rec.key)
 
             negative = self._calc_negative_weight(rec, node=node)
-            self.storage.apply_negative_penalty(rec.key, negative)
+            await self._run_storage_task(self.storage.apply_negative_penalty, rec.key, negative)
             if rec.weight + negative < self._negative_delete_threshold:
                 await self.set_gray(rec.key, gray=True, reason="auto_forget")
 
@@ -5378,11 +5632,19 @@ class ContextMemoryEngineV3:
         penalty = max(0.0, min(0.9, penalty))
         return -penalty
 
-    def _apply_negative_weight_adjust(self, key: str, score: float) -> float:
+    def _apply_negative_weight_adjust(
+        self,
+        key: str,
+        score: float,
+        *,
+        negative_weight: float | None = None,
+    ) -> float:
         if not bool(getattr(self, "_enable_forgetting", True)):
             return _clamp_score(score)
-        node = self.storage.get_key_node(key) or {}
-        neg = float(node.get("last_negative_weight", 0.0))
+        if negative_weight is None:
+            node = self.storage.get_key_node(key) or {}
+            negative_weight = float(node.get("last_negative_weight", 0.0))
+        neg = float(negative_weight)
         adjusted = score + (neg * 0.35)
         return _clamp_score(adjusted)
 
@@ -5399,7 +5661,7 @@ class ContextMemoryEngineV3:
 
     async def migrate_storage_paths_to_relative(self) -> dict[str, int]:
         async with self._global_meta_lock:
-            return self.storage.migrate_paths_to_relative()
+            return await self._run_storage_task(self.storage.migrate_paths_to_relative)
 
     async def _run_memory_gc(self) -> None:
         evicted = self.memory_manager.cleanup()

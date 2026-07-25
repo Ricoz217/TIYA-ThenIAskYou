@@ -2397,11 +2397,11 @@ class GroupMainDialog(BaseDialog, GroupDialogAttrs):
     def _setu_help() -> str:
         tips = [
             "可用参数如下，所有参数均为可选，当不传入任何参数时，返回一张随机色图。  ",
-            "`--count/--c`: 指定要获取的色图数量"
-            "`--illust/--i`: 获取指定id的色图本身/相关色图，通过 `--origin/--no_related` 控制行为"
-            "`--artist/--a`: 获取指定画师的色图"
-            "`--query/--q`: 通过自然语言获取指定色图"
-            "`--origin/--o`: 获取指定id色图时，是否包括自身，默认不包括"
+            "`--count/-c`: 指定要获取的色图数量"
+            "`--illust/-i`: 获取指定id的色图本身/相关色图，通过 `--origin/--no_related` 控制行为"
+            "`--artist/-a`: 获取指定画师的色图"
+            "`--query/-q`: 通过自然语言获取指定色图"
+            "`--origin/-o`: 获取指定id色图时，是否包括自身，默认不包括"
             "`--no_related`: 获取指定id色图时，是否获取相关色图，默认获取"
         ]
         return '\n'.join(tips)
