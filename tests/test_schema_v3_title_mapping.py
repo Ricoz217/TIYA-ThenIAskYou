@@ -60,7 +60,12 @@ def test_v2_global_mapping_migrates_to_parent_scoped_tree(tmp_path: Path) -> Non
     assert tree["child_title_maps"][parent_id]["child"] == child_id
     assert not (base_dir / "bucket_mapping.json").exists()
     assert (engine.storage.pre_upgrade_backup_dir / "bucket_mapping.json").exists()
-    assert engine.storage.read_schema_version(default_schema_version=1)["schema_version"] == 3
+    assert engine.storage.read_schema_version(default_schema_version=1)["schema_version"] == 4
+    assert not engine.storage.state_file.exists()
+    assert not engine.storage.bucket_tree_file.exists()
+    assert not engine.storage.meta_file.exists()
+    assert not engine.storage.cache_file.exists()
+    engine.shutdown(wait=True)
 
 
 def test_v3_migration_preserves_valid_alias_map_bytes(tmp_path: Path) -> None:

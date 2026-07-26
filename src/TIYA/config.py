@@ -319,7 +319,7 @@ DEFAULT_SETTING: dict[str, Any] = {
         "MaxConsecutiveRobotCall": 3,
         "MaxHistorySample": 3,
         "MemberUpdatePeriod": 300,  # 成员信息更新周期
-        "MemberPersonaCacheTime": 86_400,  # 成员画像缓存有效时间
+        "MemberPersonaCacheTime": 10_800,  # 成员画像缓存有效时间
         "MessageParseTimeout": 15,  # 等待消息解析时间
         "MuteNoticeLiveTime": 1800,
         "MaxNewMemoryDisplay": 3,

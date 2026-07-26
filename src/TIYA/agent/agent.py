@@ -1420,6 +1420,7 @@ class BaseAgent:
             callback=CallbackMode(callback),
             is_wait=wait
         )
+        await self.task_runner.adjust_worker()
         await self._task_queue.add(new_task)
         self._history.task_create(new_task.to_dict(), new_task.id)
         return new_task

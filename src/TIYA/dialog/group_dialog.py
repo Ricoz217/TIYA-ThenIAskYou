@@ -88,7 +88,7 @@ _SETU_GLOBAL_PERMISSION = CommandPermission.BOT_ADMIN
 _PARAPHRASE_WORDS = {"这波", "确实", "搁这", "属实", "是吧", "这操作", "太狠了", "太骚了", "太真实", "太草了", "属于是"}
 
 
-class SetuHelp(BaseException):
+class SetuHelp(Exception):
     """并非错误，而是返回帮助"""
     ...
 
@@ -657,37 +657,37 @@ class GroupCommandDialog(BaseDialog, GroupDialogAttrs):
                         SendText(f"群聊 Speaker 已切换至 [{llm_preset}]"))
                     )
 
-    @COMMANDS.command(
-        name="setu",
-    )
-    @COMMANDS.argument(
-        name="setu_args",
-        default="",
-        raw_remainder=True,
-        _help="传给 setu 的参数，可使用 --help 获取用法"
-    )
-    async def get_setu(self, context: GroupCommandContext, args: CommandArgs):
-        """发送色图"""
-        timeout = SETTING_CFG.SETU.SendSETUTaskTimeout
-        try:
-            task = self.aqueue.add_task(self.main_dialog.setu(args.setu_args), timeout)
-            await task.wait()
-            if task.exception:
-                raise task.exception[0]
-
-        except SetuHelp as help_message:
-            await self.say(SendMessage(
-                SendReply(context.msg_id),
-                SendText(str(help_message))
-            ))
-
-        except Exception as E:
-            self.logger.error(f"色图模块出错: {E}")
-            self.logger.debug(traceback.format_exc())
-            await self.say(SendMessage(
-                SendReply(context.msg_id),
-                SendText(f"色图模块出错: {E}")
-            ))
+    # @COMMANDS.command(
+    #     name="setu",
+    # )
+    # @COMMANDS.argument(
+    #     name="setu_args",
+    #     default="",
+    #     raw_remainder=True,
+    #     _help="传给 setu 的参数，可使用 --help 获取用法"
+    # )
+    # async def get_setu(self, context: GroupCommandContext, args: CommandArgs):
+    #     """发送色图"""
+    #     timeout = SETTING_CFG.SETU.SendSETUTaskTimeout
+    #     try:
+    #         task = self.aqueue.add_task(self.main_dialog.setu(args.setu_args), timeout)
+    #         await task.wait()
+    #         if task.exception:
+    #             raise task.exception[0]
+    #
+    #     except SetuHelp as help_message:
+    #         await self.say(SendMessage(
+    #             SendReply(context.msg_id),
+    #             SendText(str(help_message))
+    #         ))
+    #
+    #     except Exception as E:
+    #         self.logger.error(f"色图模块出错: {E}")
+    #         self.logger.debug(traceback.format_exc())
+    #         await self.say(SendMessage(
+    #             SendReply(context.msg_id),
+    #             SendText(f"色图模块出错: {E}")
+    #         ))
 
     @COMMANDS.command(
         name="add_memory",
@@ -2397,11 +2397,11 @@ class GroupMainDialog(BaseDialog, GroupDialogAttrs):
     def _setu_help() -> str:
         tips = [
             "可用参数如下，所有参数均为可选，当不传入任何参数时，返回一张随机色图。  ",
-            "`--count/--c`: 指定要获取的色图数量"
-            "`--illust/--i`: 获取指定id的色图本身/相关色图，通过 `--origin/--no_related` 控制行为"
-            "`--artist/--a`: 获取指定画师的色图"
-            "`--query/--q`: 通过自然语言获取指定色图"
-            "`--origin/--o`: 获取指定id色图时，是否包括自身，默认不包括"
+            "`--count/-c`: 指定要获取的色图数量"
+            "`--illust/-i`: 获取指定id的色图本身/相关色图，通过 `--origin/--no_related` 控制行为"
+            "`--artist/-a`: 获取指定画师的色图"
+            "`--query/-q`: 通过自然语言获取指定色图"
+            "`--origin/-o`: 获取指定id色图时，是否包括自身，默认不包括"
             "`--no_related`: 获取指定id色图时，是否获取相关色图，默认获取"
         ]
         return '\n'.join(tips)
@@ -2741,6 +2741,9 @@ class GroupMainDialog(BaseDialog, GroupDialogAttrs):
                 raise RuntimeError("色图模块内部错误，获取失败")
 
             await _process_payload(result)
+
+        except SetuHelp:
+            raise
 
         except CommandError as exc:
             self.logger.error(f"色图指令错误: {exc}")

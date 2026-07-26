@@ -72,7 +72,8 @@ def test_bucket_handle_resolve_aliases_batches_successes_with_one_refresh(tmp_pa
         memory_alias = engine.get_or_create_alias(handle.bucket_id, added.key, "memory")
         bucket_alias = engine.get_or_create_alias(handle.bucket_id, child.bucket_id, "bucket")
 
-        with patch.object(engine, "_resolve_bucket_id", wraps=engine._resolve_bucket_id) as resolve_bucket:
+        topology = engine._topology
+        with patch.object(topology, "_resolve_bucket_id", wraps=topology._resolve_bucket_id) as resolve_bucket:
             resolved = await handle.resolve_aliases(
                 [memory_alias, bucket_alias, "memory_999", "not-an-alias", memory_alias]
             )

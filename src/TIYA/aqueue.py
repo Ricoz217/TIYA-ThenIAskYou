@@ -97,6 +97,10 @@ class AqueueWorker:
     def suspend(self) -> bool:
         return self.event.is_set()
 
+    @property
+    def is_alive(self) -> bool:
+        return not self._work_loop.done()
+
     async def wait(self):
         await self.event.wait()
 
@@ -151,6 +155,7 @@ class Aqueue:
     def running_worker(self) -> int:
         return len([w for w in self._workers if not w.suspend])
 
+    @property
     def suspend_worker(self) -> int:
         return len([w for w in self._workers if w.suspend])
 
@@ -161,9 +166,14 @@ class Aqueue:
 
     def dynamic_worker(self):
         """动态调整Worker数量"""
+        for worker in self._workers.copy():
+            if not worker.is_alive:
+                if worker in self._workers:
+                    self._workers.remove(worker)
+
         pending_tasks = self._task_queue.qsize()
         current_workers = len(self._workers)
-        suspend_workers = self.suspend_worker()
+        suspend_workers = self.suspend_worker
 
         # 补全
         if current_workers < self._min_worker:
