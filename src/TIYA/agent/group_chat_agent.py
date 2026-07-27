@@ -492,9 +492,8 @@ class GroupChatSpeaker:
         ))
         self.LLM.replace_context(new_context)
         if self._force_clear:
-            last_message = self.HISTORY.get_last_message(1)
-            if last_message:
-                self.last_message = last_message[0].msg_id
+            if self.HISTORY:
+                self.last_message = self.HISTORY[-1].msg_id
 
         self._force_clear = False
         self._force_refresh = False
@@ -1063,6 +1062,9 @@ class GroupChatAgent(BaseAgent):
         if self._force_clear:
             await self.reload_system_prompt()
             prompt = await self.compress_context(prompt, 0)
+            if self._host.message_history:
+                self.last_message = self._host.message_history[-1].msg_id
+
             self._force_clear = False
             return prompt
 
@@ -1238,7 +1240,7 @@ class GroupChatAgent(BaseAgent):
                 exist_ok=True
             )
 
-        if self._not_speak_information_times > 3:
+        if self._not_speak_information_times > 7:
             self._host.NOTICE.add_notice(
                 content="作为主控，你已多次未传递任何相关信息和记忆调用 `speak`，你需要 **积极传递** 信息给 Speaker",
                 title="发言规范",
