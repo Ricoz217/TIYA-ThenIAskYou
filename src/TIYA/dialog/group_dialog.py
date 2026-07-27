@@ -1556,8 +1556,8 @@ class GroupMainDialog(BaseDialog, GroupDialogAttrs):
                         exist_ok=True
                     )
 
-            if self._long_speak >= 2:
-                if self._long_speak > 2:
+            if self._long_speak >= 3:
+                if self._long_speak > 3:
                     clear_long_speak = True
                     texts = []
                     for check in success_said:
