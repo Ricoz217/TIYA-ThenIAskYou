@@ -19,7 +19,7 @@ from TIYA.logger import get_logger
 from TIYA.utils import AutoMapping
 from TIYA.config import SETTING_CFG, DATA_DIR
 from TIYA.image_to_text import image2text, set_fav_title
-from TIYA.file_cache import get_file_path_async
+from TIYA.file_cache import check_file_exists, get_file_path_async
 from TIYA.agent.agent_prompt import AgentPrompt
 
 
@@ -48,6 +48,15 @@ class AutoFavView:
             return ""
 
         chosen = random.choice(list(favs))
+        if not check_file_exists(chosen):
+            for host in self.hosts:
+                host.remove_fav_hash(chosen)
+
+            favs.discard(chosen)
+            if not favs:
+                self._mapping.pop(title, None)
+            return ""
+
         for host in self.hosts:
             host.renew_fav_hash(title, chosen)
 
@@ -224,6 +233,16 @@ class AutoFav:
         if not targets:
             return 0
 
+        return self._remove_fav_hashes(targets)
+
+    def remove_fav_hash(self, hash_name: str) -> bool:
+        """Remove one hash from every title in this favorite library."""
+        if not isinstance(hash_name, str) or not hash_name:
+            return False
+
+        return bool(self._remove_fav_hashes({hash_name}))
+
+    def _remove_fav_hashes(self, targets: set[str]) -> int:
         removed: set[str] = set()
         with self._mutation_lock:
             for title, members in list(self._mapping.items()):
@@ -235,6 +254,7 @@ class AutoFav:
                 members.difference_update(matches)
                 if members:
                     self._mapping.touch(title)
+
                 else:
                     self._mapping.pop(title)
 
@@ -356,7 +376,12 @@ class AutoFav:
         if not favs:
             return ""
 
-        return random.choice(list(favs))
+        chosen = random.choice(list(favs))
+        if not check_file_exists(chosen):
+            self.remove_fav_hash(chosen)
+            return ""
+
+        return chosen
 
     def renew_fav_hash(self,fav_title: str, fav_hash: str):
         """通过哈希名续期表情"""

@@ -269,6 +269,109 @@ class FileCache:
             self._connect_locked()
             self._initialized = True
 
+    def _rebuild_orphan_index(self, now: int) -> int:
+        """Register valid hash files missing from SQLite as expiring entries."""
+        with self._lock:
+            connection = self._connect_locked()
+            indexed = {
+                str(row["hash_name"])
+                for row in connection.execute("SELECT hash_name FROM files")
+            }
+
+        recovered = 0
+        pending: list[tuple[str, int, int, str, str, int, str]] = []
+
+        def flush() -> None:
+            nonlocal recovered
+            if not pending:
+                return
+
+            with self._lock:
+                connection = self._connect_locked()
+                verified = []
+                for row in pending:
+                    hash_name = row[0]
+                    target = self._target_path(hash_name)
+                    try:
+                        if target.is_symlink() or not target.is_file():
+                            continue
+                        size = target.stat().st_size
+
+                    except OSError:
+                        continue
+
+                    verified.append((*row[:5], int(size), row[6]))
+
+                before = connection.total_changes
+                with connection:
+                    connection.executemany(
+                        """
+                        INSERT OR IGNORE INTO files (
+                            hash_name, create_time, use_time,
+                            file_type, note, size, retention
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        verified,
+                    )
+                recovered += connection.total_changes - before
+
+            pending.clear()
+
+        try:
+            buckets = list(self.cache_path.iterdir())
+        except OSError as exc:
+            self._log.error(f"扫描文件缓存目录失败: {exc}")
+            return 0
+
+        for bucket in buckets:
+            bucket_name = bucket.name
+            if (
+                    len(bucket_name) != 2
+                    or bucket_name != bucket_name.lower()
+                    or not all(char in "0123456789abcdef" for char in bucket_name)
+                    or bucket.is_symlink()
+                    or not bucket.is_dir()
+            ):
+                continue
+
+            try:
+                for target in bucket.iterdir():
+                    hash_name = target.name
+                    if (
+                            hash_name in indexed
+                            or hash_name != hash_name.lower()
+                            or not _HASH_PATTERN.fullmatch(hash_name)
+                            or hash_name[:2] != bucket_name
+                            or target.is_symlink()
+                            or not target.is_file()
+                    ):
+                        continue
+
+                    try:
+                        size = target.stat().st_size
+                    except OSError as exc:
+                        self._log.warning(f"读取孤儿缓存文件失败 [{target}]: {exc}")
+                        continue
+
+                    indexed.add(hash_name)
+                    pending.append((
+                        hash_name,
+                        now,
+                        now,
+                        "file",
+                        "recovered orphan cache file",
+                        int(size),
+                        FileRetention.EXPIRING.value,
+                    ))
+                    if len(pending) >= self._cleanup_batch_size:
+                        flush()
+
+            except OSError as exc:
+                self._log.warning(f"扫描文件缓存分片失败 [{bucket}]: {exc}")
+
+        flush()
+        return recovered
+
     @staticmethod
     def _read_input(file: str | Path | bytes | BytesIO) -> bytes:
         if isinstance(file, str):
@@ -567,6 +670,7 @@ class FileCache:
         """Delete one snapshot of expired files in bounded batches."""
         self.initialize()
         started_at = int(time.time())
+        recovered = self._rebuild_orphan_index(started_at)
         cutoff = started_at - int(self._current_expire_days() * 24 * 3600)
         scanned = 0
         deleted = 0
@@ -673,6 +777,7 @@ class FileCache:
                     connection,
                     "last_cleanup",
                     {
+                        "recovered": recovered,
                         "scanned": result.scanned,
                         "deleted": result.deleted,
                         "missing": result.missing,
@@ -686,7 +791,7 @@ class FileCache:
 
         self._log.info(
             "文件缓存清理完成: "
-            f"扫描[{scanned}]，删除[{deleted}]，缺失[{missing}]，"
+            f"补建[{recovered}]，扫描[{scanned}]，删除[{deleted}]，缺失[{missing}]，"
             f"失败[{failed}]，释放[{released_bytes}] bytes，"
             f"中止[{aborted}]"
         )
