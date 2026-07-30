@@ -55,6 +55,7 @@ class AutoFavView:
             favs.discard(chosen)
             if not favs:
                 self._mapping.pop(title, None)
+
             return ""
 
         for host in self.hosts:
