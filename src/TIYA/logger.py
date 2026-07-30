@@ -142,6 +142,13 @@ class _Event:
     payload: dict[str, Any]
 
 
+@dataclass
+class _PendingFileStream:
+    metadata: _DisplayLine
+    parts: list[str]
+    dirty: bool = True
+
+
 class LogHandle:
     """Handle for streaming append/update operations.
 
@@ -956,6 +963,7 @@ class Logger:
         self._file_events: "queue.Queue[tuple[str, str]]" = queue.Queue(maxsize=self.config.queue_maxsize)
         self._state = _ConsoleState(messages=_new_message_deque(self.config.history_limit))
         self._block_titles: dict[str, str] = {}
+        self._pending_file_streams: dict[str, _PendingFileStream] = {}
         self._state_lock = threading.Lock()
         self._shutdown = threading.Event()
         self._writer_shutdown = threading.Event()
@@ -1225,6 +1233,7 @@ class Logger:
         if stream and stream_id:
             payload["is_stream"] = True
             payload["target"] = "block" if block_id else "message"
+            payload["checkpoint"] = flush
         self._enqueue(_Event(kind="log", payload=payload))
         if flush:
             self.flush()
@@ -1325,6 +1334,7 @@ class Logger:
             exc_info=False,
         )
         payload["target"] = target
+        payload["checkpoint"] = flush
         self._enqueue(_Event(kind="stream_write", payload=payload))
         if flush:
             self.flush()
@@ -1638,10 +1648,15 @@ class Logger:
             is_stream = event.kind == "stream_write" or bool(event.payload.get("is_stream"))
             self._apply_record(event.payload, is_stream)
             return
+        if event.kind == "stream_finalize_all":
+            self._finalize_all_file_streams()
+            return
         if event.kind == "stream_close":
             stream_id = event.payload["stream_id"]
             target = event.payload["target"]
             block_id = event.payload.get("block_id")
+            if target in {"message", "block"}:
+                self._finalize_file_stream(stream_id)
             if target == "status":
                 return
             if target == "block" and block_id and block_id in self._state.blocks:
@@ -1744,10 +1759,12 @@ class Logger:
         block_id = payload.get("block_id")
         stream_id = payload.get("stream_id")
         replace = bool(payload.get("replace", False))
+        checkpoint = bool(payload.get("checkpoint", False))
         skip_file_emit = False
 
         if target == "status":
             self._state.status_line = line
+            skip_file_emit = True
         elif target == "block_status" and block_id:
             block = self._state.blocks.get(block_id)
             if not block:
@@ -1772,8 +1789,17 @@ class Logger:
         else:
             self._apply_to_messages(line, stream_id=stream_id, replace=replace, is_stream=is_stream)
 
-        if not skip_file_emit:
-            self._emit_file_lines(payload, line)
+        if skip_file_emit:
+            return
+        if is_stream and stream_id and target in {"message", "block"}:
+            self._apply_to_file_stream(
+                stream_id=stream_id,
+                line=line,
+                replace=replace,
+                checkpoint=checkpoint,
+            )
+            return
+        self._emit_file_lines(line)
 
     def _apply_to_block(
         self,
@@ -1863,14 +1889,51 @@ class Logger:
             return
         self._state.messages.append(line)
 
-    def _emit_file_lines(self, payload: dict[str, Any], line: _DisplayLine) -> None:
+    def _apply_to_file_stream(
+        self,
+        *,
+        stream_id: str,
+        line: _DisplayLine,
+        replace: bool,
+        checkpoint: bool,
+    ) -> None:
+        state = self._pending_file_streams.get(stream_id)
+        if state is None or replace:
+            state = _PendingFileStream(
+                metadata=_copy_line(line, text=""),
+                parts=[line.text],
+            )
+            self._pending_file_streams[stream_id] = state
+        else:
+            state.parts.append(line.text)
+            state.dirty = True
+
+        if replace or checkpoint:
+            self._emit_file_stream_state(state)
+
+    def _emit_file_stream_state(self, state: _PendingFileStream) -> None:
+        text = "".join(state.parts)
+        self._emit_file_lines(_copy_line(state.metadata, text=text))
+        state.parts = [text]
+        state.dirty = False
+
+    def _finalize_file_stream(self, stream_id: str) -> None:
+        state = self._pending_file_streams.pop(stream_id, None)
+        if state is not None and state.dirty:
+            self._emit_file_stream_state(state)
+
+    def _finalize_all_file_streams(self) -> None:
+        for stream_id in list(self._pending_file_streams):
+            self._finalize_file_stream(stream_id)
+
+    def _emit_file_lines(self, line: _DisplayLine) -> None:
         prefix = _format_prefix(
             level=line.level,
             timestamp=line.timestamp,
             location=line.location,
-            show_level=payload.get("show_level", True),
-            show_time=payload["show_time"],
-            show_location=payload["show_location"],
+            show_level=line.show_level,
+            show_time=line.show_time,
+            show_location=line.show_location,
         )
         full_line = prefix + line.text
         if line.stack:
@@ -1987,6 +2050,9 @@ class Logger:
 
     def shutdown(self, timeout: float = 3.0) -> None:
         """Gracefully stop threads and renderer."""
+        if self._shutdown.is_set():
+            return
+        self._events.put(_Event(kind="stream_finalize_all", payload={}))
         self._shutdown.set()
         self.flush()
         self._worker_thread.join(timeout=timeout)
