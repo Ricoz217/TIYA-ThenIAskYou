@@ -1485,6 +1485,7 @@ class Chat:
         self._running.set()
         self._running_task_id = ""
         self._client: httpx.AsyncClient | None = None
+        self._client_stale = False
         self._logger = logger
         self.log_off = log_off
         self._worker_loop = asyncio.create_task(self.run())
@@ -1502,10 +1503,13 @@ class Chat:
         if not isinstance(new_config, ChatConfig):
             return
 
+        client_config_changed = False
         if new_config.endpoint is not None:
+            client_config_changed |= new_config.endpoint != self._endpoint
             self._endpoint = new_config.endpoint
 
         if new_config.token is not None:
+            client_config_changed |= new_config.token != self._token
             self._token = new_config.token
 
         if new_config.model is not None:
@@ -1518,6 +1522,7 @@ class Chat:
             self._context.append(SystemPrompt(new_config.system_prompt))
 
         if new_config.api_provider is not None:
+            client_config_changed |= new_config.api_provider != self._provider
             self._provider = new_config.api_provider
 
         if new_config.price is not None:
@@ -1533,6 +1538,7 @@ class Chat:
                 self._compress_rate = new_config.auto_compress_rate
 
         if new_config.client_params is not None:
+            client_config_changed |= new_config.client_params != self._client_params
             self._client_params = new_config.client_params
 
         if new_config.model_params is not None:
@@ -1547,14 +1553,38 @@ class Chat:
         if new_config.log_off is not None:
             self.log_off = bool(new_config.log_off)
 
+        if client_config_changed and self._client is not None:
+            self._client_stale = True
+
         if not self.log_off:
             self._logger.info(f"已更新配置。当前模型: [{self._model}]")
 
     def _update_client(self):
-        proxies = self._client_params.pop("proxies", {})
+        client_params = self._client_params.copy()
+        proxies = client_params.pop("proxies", {})
         proxy_mounts = parse_proxies_to_httpx(proxies)
         headers = self._header_constructor()
-        self._client = httpx.AsyncClient(mounts=proxy_mounts, headers=headers, **self._client_params)
+        self._client = httpx.AsyncClient(
+            mounts=proxy_mounts,
+            headers=headers,
+            **client_params,
+        )
+        self._client_stale = False
+
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client_stale and self._client is not None:
+            stale_client = self._client
+            self._client = None
+            try:
+                await stale_client.aclose()
+
+            except Exception as exc:
+                self._logger.warning(f"关闭过期 LLM 客户端失败: {exc}")
+
+        if self._client is None:
+            self._update_client()
+
+        return self._client
 
     async def _load_image_from_cache(self, hash_list: list[str]) -> bool:
         return await _load_image_hashes(hash_list, self._image_cache)
@@ -2065,8 +2095,7 @@ class Chat:
         timeout = task.timeout
         provider = self._provider.lower()
 
-        if self._client is None:
-            self._update_client()
+        client = await self._ensure_client()
 
         response_collect: list[str] = []
         reasoning_collect: list[str] = []
@@ -2199,7 +2228,7 @@ class Chat:
 
         try:
             if payload.get("stream", True):
-                async with self._client.stream(
+                async with client.stream(
                     "POST",
                     url=self._endpoint,
                     json=payload,
@@ -2445,7 +2474,7 @@ class Chat:
                             raise ValueError(f"使用了不支持的API供应商格式: {provider}")
 
             else:
-                response = await self._client.post(
+                response = await client.post(
                     url=self._endpoint,
                     json=payload,
                     timeout=timeout
@@ -2787,6 +2816,7 @@ class Chat:
                 pass
 
         self._client = None
+        self._client_stale = False
         await self.stop_all()
         self._worker_loop.cancel()
         await asyncio.gather(self._worker_loop, return_exceptions=True)
