@@ -22,8 +22,10 @@ TIYA（Then I Ask You）是一个以 QQ 群聊和私聊为交互环境的个人 
 5. [群聊相关性与轻量 NLP](relatedness.md)：了解消息图、话题、新词、对话链与低配适应。
 6. [SKILL 系统](skills.md)：了解能力如何被描述、发现、加载并注册为工具。
 7. [真实运行与持续演进](real-world-operation.md)：了解在线 Bot、会话隔离和测试反馈循环。
-8. [快速开始](quickstart.md)：在本地启动最小可运行实例。
-9. [配置说明](configuration.md)：填写模型、NapCat、群聊和私聊配置。
+8. [Agent 容错机制：真实运行日志审计](fault-tolerance-log-audit-2026-07-31-to-2026-08-02.md)：用近三天真实日志展示参数纠错、有限重试、失败跳过和上下文恢复。
+9. [综合任务执行展示：GitHub Agent Memory 调研与群文件交付](agent-memory-research-task-audit-2026-07-31.md)：展示按需加载、并行检索、异步回收、Markdown 生成、群文件交付和用户验收。
+10. [快速开始](quickstart.md)：在本地启动最小可运行实例。
+11. [配置说明](configuration.md)：填写模型、NapCat、群聊和私聊配置。
 
 ## 文档范围
 

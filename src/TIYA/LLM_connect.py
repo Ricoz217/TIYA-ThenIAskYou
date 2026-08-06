@@ -2058,6 +2058,9 @@ class Chat:
         # _log.debug(new_prompt)
         context = self._context.copy()
         context.append(new_prompt)
+
+        # 潜伏已久的 BUG !!! 提取塞一个 True 回去
+        self._model_params["stream"] = self._model_params.get("stream", True)
         payload = await self._payload_constructor(context)
         timeout = task.timeout
         provider = self._provider.lower()
@@ -2153,7 +2156,7 @@ class Chat:
                         if _message["content"] and not self.log_off:
                             self._logger.info(f"LLM: {_message['content']}")
 
-                    if "tool_calls" in _message:
+                    if "tool_calls" in _message and _message["tool_calls"] is not None:
                         for _call in _message["tool_calls"]:
                             _call_id = _call["id"]
                             tool_calls_collect[_call_id] = {
@@ -2195,7 +2198,7 @@ class Chat:
                 raise ValueError(f"使用了不支持的API供应商格式: {provider}")
 
         try:
-            if self._model_params.setdefault("stream", True):
+            if payload.get("stream", True):
                 async with self._client.stream(
                     "POST",
                     url=self._endpoint,
