@@ -25,7 +25,8 @@ from typing import Callable, Awaitable, Any, Annotated, Literal, Union, get_args
 from dataclasses import dataclass, field
 from TIYA.time_id import next_time_id
 from TIYA.logger import get_logger
-from TIYA.utils import resize_image_to_base64, parse_proxies_to_httpx, AutoMapping
+from TIYA.auto_mapping import AutoMapping
+from TIYA.utils import resize_image_to_base64, parse_proxies_to_httpx
 from TIYA.file_cache import add_file_async, get_file_path_async, add_file, get_file_path
 from TIYA.LLM_usage import ApiPrice, LLMUsage, _GLOBAL_USAGE
 from TIYA.executor import GLOBAL_EXECUTOR

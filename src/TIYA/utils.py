@@ -440,8 +440,9 @@ class ARLock:
         return self._waiter
 
 
-class AutoMapping(Generic[_V]):
+class AutoMappingOld(Generic[_V]):
     """
+    !!已弃用!!
     自动管理的映射表
     支持周期持久化、自动清理过期键
     """

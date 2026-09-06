@@ -16,7 +16,7 @@ from pathlib import Path
 from TIYA.config import BASE_CFG, SETTING_CFG, DATA_DIR
 from TIYA.LLM_connect import Chat, Context, SystemPrompt, ImagePrompt, TextPrompt, Prompts, parse_llm_setting
 from TIYA.file_cache import get_file_path_async
-from TIYA.utils import AutoMapping
+from TIYA.auto_mapping import AutoMapping
 from TIYA.logger import get_logger
 from TIYA.agent.agent_prompt import AgentPrompt
 

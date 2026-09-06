@@ -133,7 +133,7 @@ class MyBot(BotClient):
         self._run_task = asyncio.current_task()
         websocket_server = CustomWebsocket(self)
         # await self.plugin_sys.load_plugin(self.api)
-        asyncio.create_task(self.get_bot_name_by_login())
+        # asyncio.create_task(self.get_bot_name_by_login())
         try:
             await websocket_server.ws_connect()
         except asyncio.CancelledError:
@@ -146,7 +146,6 @@ class MyBot(BotClient):
         检查登录状态
         :return:
         """
-        await asyncio.sleep(3)
         login_info: dict = await self.api.get_login_info()
         if login_info and login_info["status"] == "ok" and "data" in login_info:
             BASE_CFG.BotInfo.name = str(login_info["data"]["nickname"])
@@ -196,6 +195,23 @@ class MyBot(BotClient):
         return func
 
     async def handle_additional_func(self):
+        get_login_info_retry = 0
+        for _ in range(3):
+            try:
+                get_login_info_retry += 1
+                await self.get_bot_name_by_login()
+
+            except RuntimeError as E:
+                if get_login_info_retry < 3:
+                    await asyncio.sleep(1)
+                    continue
+
+                else:
+                    raise E
+
+            else:
+                break
+
         _log.info(f"目前有{len(self._additional_handlers)}个额外任务")
         _log.info("正在执行额外任务...")
         task_list = []

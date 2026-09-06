@@ -19,7 +19,8 @@ from hashlib import blake2b
 from uuid import uuid4
 
 from TIYA.config import SETTING_CFG, get_bot_uid, get_bot_name, DATA_DIR
-from TIYA.utils import AutoMapping, ARLock, httpx_downloader, timestamp2text
+from TIYA.auto_mapping import AutoMapping
+from TIYA.utils import ARLock, httpx_downloader, timestamp2text
 from TIYA.file_cache import check_file_exists, get_file_path, add_file_async, get_file_path_async
 from TIYA.image_to_text import image2text, is_fav
 
