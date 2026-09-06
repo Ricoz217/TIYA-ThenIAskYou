@@ -13,7 +13,7 @@ from .models import normalize_relations
 
 if TYPE_CHECKING:
     from TIYA.LLM_usage import LLMUsage
-    from TIYA.utils import AutoMapping
+    from TIYA.auto_mapping import AutoMapping
 
 
 class LLMPresetConfigError(RuntimeError):

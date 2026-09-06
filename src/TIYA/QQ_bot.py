@@ -25,6 +25,7 @@ from TIYA.relatedness import close_relatedness_runtime
 from TIYA.storage_cleanup import run_auto_storage_cleanup
 from TIYA.storage_runtime import close_storage_runtime, start_storage_runtime
 from TIYA.executor import shutdown_all as shutdown_executors
+from TIYA.auto_mapping import shutdown_automapping
 from TIYA.event_loop_monitor import EventLoopLagMonitor
 from TIYA.runtime_control import (
     clear_hot_reload_handler,
@@ -101,7 +102,7 @@ def main():
     # 加载并检查配置
     # =========================================================
 
-    ncat_config.set_bot_uin(get_bot_uid())
+    ncat_config.set_bot_uin(get_bot_uid())  # 不要变更顺序，这里有坑 2026/08/29
     try:
         initiate_config_1()
 
@@ -374,6 +375,12 @@ def main():
 
         except Exception as _error:
             _log.error(f"文件缓存关闭失败: {_error}")
+
+        try:
+            await shutdown_automapping()
+
+        except Exception as _error:
+            _log.error(f"AutoMapping 关闭失败: {_error}")
 
         monitor = event_loop_monitor
         event_loop_monitor = None

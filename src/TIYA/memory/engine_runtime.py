@@ -16,7 +16,7 @@ from .rerank import BM25IndexCache
 from .storage import MemoryStorageV3
 from .token_counter import TokenCounter
 from TIYA.LLM_usage import LLMUsage
-from TIYA.utils import AutoMapping
+from TIYA.auto_mapping import AutoMapping
 
 TCPU = TypeVar("TCPU")
 

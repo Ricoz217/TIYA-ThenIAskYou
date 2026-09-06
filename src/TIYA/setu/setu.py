@@ -47,7 +47,8 @@ from TIYA.config import (
     GROUPS_DIR
 )
 from TIYA.logger import get_logger
-from TIYA.utils import atomic_save_json, AutoMapping, httpx_downloader, HttpxResponse
+from TIYA.auto_mapping import AutoMapping
+from TIYA.utils import atomic_save_json, httpx_downloader, HttpxResponse
 from TIYA.re_filter import _chunk_index_filter
 from TIYA.executor import GLOBAL_EXECUTOR
 from .remote import (
@@ -1542,10 +1543,11 @@ class AsyncPixivApi:
         else:
             raise TypeError(f"不支持的类型: {type(illustration)}")
 
-        # 把不在索引里面的图片丢出去，包括失效的
-        if illustration.iid not in self._ids_mapping:
-            _log.warning(f"[PIXIV] 获取图片文件失败，[{illustration.iid}] 不在色图库内")
-            return {}
+        # 先检查总库里有没有，没有的话把不在索引里面的图片丢出去，包括失效的
+        if not await self.check_illustration_visible(illustration):
+            if illustration.iid not in self._ids_mapping:
+                _log.warning(f"[PIXIV] 获取图片文件失败，[{illustration.iid}] 不在色图库内")
+                return {}
 
         # 把动图分出去
         if illustration.type is IllustType.UGOIRA:
@@ -1715,6 +1717,13 @@ class AsyncPixivApi:
     def _is_new_illust(self, illust_id: str) -> bool:
         """查重，真为新"""
         return illust_id not in self._ids_mapping
+
+    def is_valid_illust(self, illust_id: Illust | str) -> bool:
+        """简单快速判断画廊id是否还在映射表内，即是否有效"""
+        if isinstance(illust_id, Illust):
+            illust_id = Illust.iid
+
+        return illust_id in self._ids_mapping
 
     async def _parse_raw_to_result(self, raw_dicts: list[dict], bookmark_threshold: int = None) -> _PixivResults:
         output = _PixivResults(
@@ -3867,11 +3876,16 @@ class Setu:
 
     async def _get_random_setu(self, count: int) -> dict[str, Illust]:
         # 收集所有 illusts
+        SETU = AsyncPixivApi.get_api()
         available_mirror: dict[str, Illust] = self._available_illusts.copy()
 
         # 算分，过滤
         scores = {}
         for k, v in available_mirror.items():
+            # 检查是否还有效
+            if not SETU.is_valid_illust(k):
+                continue
+
             if v.NSFW:
                 if not self.nsfw:
                     continue
@@ -3906,9 +3920,14 @@ class Setu:
             get_illust.attempts = {page: available_illust.attempts.get(page, 0)}
             results[iid] = get_illust
 
+        # 如果结果不足，触发一次补库，但不做额外处理
+        if len(results) < count:
+            await self.get_new_illusts()
+
         return results
 
     async def _get_artist_setu(self, artist_id: int, count: int) -> dict[str, Illust]:
+        SETU = AsyncPixivApi.get_api()
         results: dict[str, Illust] = {}
 
         # 先搜群库的
@@ -3917,12 +3936,14 @@ class Setu:
             if illust.artist_id != artist_id:
                 continue
 
+            if not SETU.is_valid_illust(iid):
+                continue
+
             results[iid] = illust
 
         # 检查数量是否足够
         if len(results) < count:
             async with self._fetch_lock:
-                SETU = AsyncPixivApi.get_api()
                 new_illusts = await SETU.transfer_artist_illusts(artist_id, self._chunks.copy())
                 added_illusts = await self._commit_new_illusts(new_illusts)
                 results.update(added_illusts)
@@ -3971,7 +3992,7 @@ class Setu:
         if include_origin:
             if illust_id in available_mirror:
                 illust = available_mirror[illust_id]
-                if illust.pages:
+                if illust.pages and SETU.is_valid_illust(illust_id):
                     results[illust_id] = available_mirror[illust_id].copy()
                     search_origin = False
 
@@ -5013,7 +5034,7 @@ class Setu:
         return dump_content
 
     def persist(self):
-        """持久化，手动管理"""
+        """持久化，手动管理，后续要改为 SQLite"""
         atomic_save_json(
             self.to_dict(),
             self._save_path

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
-from TIYA.utils import AutoMapping
+from TIYA.auto_mapping import AutoMapping
 
 
 def test_set_value_type_round_trips_first_level_values(tmp_path):
@@ -17,7 +15,8 @@ def test_set_value_type_round_trips_first_level_values(tmp_path):
 
     mapping["title"] = {"hash_1", "hash_2"}
 
-    saved = json.loads(storage_path.read_text(encoding="utf-8"))
+    mapping.flush_blocking()
+    saved = mapping.to_dict()
     assert sorted(saved["data"]["title"]["data"]) == ["hash_1", "hash_2"]
 
     loaded = AutoMapping[set[str]](
@@ -57,6 +56,7 @@ def test_touch_persists_mutated_set(tmp_path):
 
     values.add("hash")
     mapping.touch("title")
+    mapping.flush_blocking()
 
     loaded = AutoMapping[set[str]](
         storage_path,

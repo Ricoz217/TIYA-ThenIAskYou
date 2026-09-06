@@ -657,37 +657,38 @@ class GroupCommandDialog(BaseDialog, GroupDialogAttrs):
                         SendText(f"群聊 Speaker 已切换至 [{llm_preset}]"))
                     )
 
-    # @COMMANDS.command(
-    #     name="setu",
-    # )
-    # @COMMANDS.argument(
-    #     name="setu_args",
-    #     default="",
-    #     raw_remainder=True,
-    #     _help="传给 setu 的参数，可使用 --help 获取用法"
-    # )
-    # async def get_setu(self, context: GroupCommandContext, args: CommandArgs):
-    #     """发送色图"""
-    #     timeout = SETTING_CFG.SETU.SendSETUTaskTimeout
-    #     try:
-    #         task = self.aqueue.add_task(self.main_dialog.setu(args.setu_args), timeout)
-    #         await task.wait()
-    #         if task.exception:
-    #             raise task.exception[0]
-    #
-    #     except SetuHelp as help_message:
-    #         await self.say(SendMessage(
-    #             SendReply(context.msg_id),
-    #             SendText(str(help_message))
-    #         ))
-    #
-    #     except Exception as E:
-    #         self.logger.error(f"色图模块出错: {E}")
-    #         self.logger.debug(traceback.format_exc())
-    #         await self.say(SendMessage(
-    #             SendReply(context.msg_id),
-    #             SendText(f"色图模块出错: {E}")
-    #         ))
+    @COMMANDS.command(
+        name="setu",
+        permission=CommandPermission.BOT_ADMIN
+    )
+    @COMMANDS.argument(
+        name="setu_args",
+        default="",
+        raw_remainder=True,
+        _help="传给 setu 的参数，可使用 --help 获取用法"
+    )
+    async def get_setu(self, context: GroupCommandContext, args: CommandArgs):
+        """发送色图"""
+        timeout = SETTING_CFG.SETU.SendSETUTaskTimeout
+        try:
+            task = self.aqueue.add_task(self.main_dialog.setu(args.setu_args), timeout)
+            await task.wait()
+            if task.exception:
+                raise task.exception[0]
+
+        except SetuHelp as help_message:
+            await self.say(SendMessage(
+                SendReply(context.msg_id),
+                SendText(str(help_message))
+            ))
+
+        except Exception as E:
+            self.logger.error(f"色图模块出错: {E}")
+            self.logger.debug(traceback.format_exc())
+            await self.say(SendMessage(
+                SendReply(context.msg_id),
+                SendText(f"色图模块出错: {E}")
+            ))
 
     @COMMANDS.command(
         name="add_memory",

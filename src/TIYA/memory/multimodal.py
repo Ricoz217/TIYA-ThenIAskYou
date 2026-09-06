@@ -7,7 +7,7 @@ from TIYA.LLM_connect import Chat, Context, ImagePrompt, Prompts, SystemPrompt, 
 
 if TYPE_CHECKING:
     from TIYA.LLM_usage import LLMUsage
-    from TIYA.utils import AutoMapping
+    from TIYA.auto_mapping import AutoMapping
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".ico"}

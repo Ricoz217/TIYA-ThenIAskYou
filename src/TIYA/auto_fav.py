@@ -16,7 +16,7 @@ from threading import Lock
 from dataclasses import dataclass
 
 from TIYA.logger import get_logger
-from TIYA.utils import AutoMapping
+from TIYA.auto_mapping import AutoMapping
 from TIYA.config import SETTING_CFG, DATA_DIR
 from TIYA.image_to_text import image2text, set_fav_title
 from TIYA.file_cache import check_file_exists, get_file_path_async
