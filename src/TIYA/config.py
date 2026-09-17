@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import os
+import re
 import tempfile
 import traceback
 import weakref
@@ -1625,7 +1626,7 @@ class Configer:
                 delete=False,
             ) as stream:
                 temporary_path = Path(stream.name)
-                self._yaml.dump(document, stream)
+                stream.write(self._render_document(document))
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary_path, target)
@@ -1635,11 +1636,36 @@ class Configer:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
 
+    def _render_document(self, document: Mapping[str, Any]) -> str:
+        """Keep one readable heading per known root, including legacy YAML files."""
+        stream = StringIO()
+        self._yaml.dump(document, stream)
+        lines = stream.getvalue().splitlines(keepends=True)
+        titles = tuple(dict.fromkeys((*self._default_config, TITLE_SETTING)))
+        heading_pattern = re.compile(
+            r"^#\s*=+\s*(?:" + "|".join(re.escape(title) for title in titles) + r")\s*=+\s*$"
+        )
+        output: list[str] = []
+
+        for line in lines:
+            if heading_pattern.fullmatch(line.rstrip("\r\n")):
+                continue
+
+            title = next((title for title in titles if line.startswith(f"{title}:")), None)
+            if title is not None:
+                while output and not output[-1].strip():
+                    output.pop()
+                if output:
+                    output.append("\n")
+                output.append(f"# {f' {title} ':=^100}\n")
+
+            output.append(line)
+
+        return "".join(output)
+
     def show_config(self) -> str:
         candidate = self._candidate_document() if self._loaded else self._document
-        stream = StringIO()
-        self._yaml.dump(candidate, stream)
-        return stream.getvalue()
+        return self._render_document(candidate)
 
     def build_default_document(self) -> CommentedMap:
         document = _commented(
@@ -1739,7 +1765,7 @@ def get_proxy(proxy_name: str | Mapping[str, Any]) -> dict[str, Any]:
 
 def get_llm(preset_name: str) -> ConfigMap:
     if not isinstance(preset_name, str):
-        return ConfigMap()
+        raise TypeError("LLM 预设名必须是字符串")
 
     try:
         for model in LLM_CFG.LLM_List:
@@ -1749,7 +1775,7 @@ def get_llm(preset_name: str) -> ConfigMap:
     except AttributeError:
         pass
 
-    return ConfigMap()
+    raise KeyError("LLM 预设不存在")
 
 
 def get_llm_list() -> list[str]:
