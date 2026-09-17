@@ -773,7 +773,7 @@ class AutoMapping(Generic[_V]):
             )
             conn.execute(
                 """
-                INSERT INTO metadata(key, value) VALUES (migration_completed, ?)
+                INSERT INTO metadata(key, value) VALUES ('migration_completed', ?)
                 ON CONFLICT(key) DO NOTHING
                 """,
                 ("0",)
