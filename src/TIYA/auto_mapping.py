@@ -159,29 +159,46 @@ class AutoMapping(Generic[_V]):
         self._persist_loop_thread = threading.Thread(target=self._persist_loop_database, daemon=True)
 
         # 启动！
-        AUTOMAPPING_EXECUTOR.submit(self._initiate)
-
-    def _initiate(self):
-        """启动流程"""
         with _INITIATE_LOCK:
             if not _ACCEPT_NEW_INSTANCE:
                 return
 
-            json_path = self._resolve_legacy_json_filepath()
-            database_path = self._resolve_database_filepath()
+            self._init_future = AUTOMAPPING_EXECUTOR.submit(self._initiate)
+            self._init_future.add_done_callback(self._on_initiate_done)
 
-            # 判断是否要 migration
-            if json_path.is_file() and not database_path.exists():
-                self._migration_json_to_sqlite()
+    def _initiate(self):
+        """启动流程"""
+        json_path = self._resolve_legacy_json_filepath()
+        database_path = self._resolve_database_filepath()
 
-            else:
-                self._load_data_from_database()
+        # 判断是否要 migration
+        if json_path.is_file() and not database_path.exists():
+            self._migration_json_to_sqlite()
 
-            self._rebuild_heap()
+        else:
+            self._load_data_from_database()
+
+        self._rebuild_heap()
+
+        with _INITIATE_LOCK:
+            if not _ACCEPT_NEW_INSTANCE:
+                return
+
             self._enable = True
-            self.persist()
             self._persist_loop_thread.start()
             _INSTANCES.add(self)
+
+        self._first_persist()
+
+    def _on_initiate_done(self, future):
+        try:
+            future.result()
+
+        except BaseException as E:
+            _log.error(
+                f"[AUTOMAPPING] 初始化失败: {self._save_path} {E}\n\n"
+                f"{traceback.format_exc()}"
+            )
 
     # =========================================================
     # 基本逻辑，只处理内存态映射表，不做额外处理
@@ -315,7 +332,7 @@ class AutoMapping(Generic[_V]):
         if key not in self._mapping:
             return
 
-        self._mark_metadata_update_locked(key)
+        self._mark_metadata_update_locked(key, self._mapping[key].data)
 
     def pop(self, key: str, default: Any = None) -> _V | None:
         if not isinstance(key, str):
@@ -555,13 +572,12 @@ class AutoMapping(Generic[_V]):
             if self._draining_expire:
                 return
 
-            self._draining_expire = True
-
         AUTOMAPPING_EXECUTOR.submit(self._drain_expire_handler)
 
     def _drain_expire_handler(self):
         with self._data_lock:
             try:
+                self._draining_expire = True
                 need_persist = False
                 if not self._expiry_heap:
                     return
@@ -572,6 +588,7 @@ class AutoMapping(Generic[_V]):
                 while self._expiry_heap:
                     duration = time.monotonic() - time_start
                     if duration > 0.01:
+                        AUTOMAPPING_EXECUTOR.submit(self._drain_expire_handler)
                         return
 
                     heap_top = self._expiry_heap[0]
@@ -640,13 +657,13 @@ class AutoMapping(Generic[_V]):
         会造成阻塞
         """
         if not self._enable:
-            raise RuntimeError("[AUTOMAPPING] Flush 失败，实例已关闭")
+            raise AutoMappingPersistenceError("[AUTOMAPPING] Flush 失败，实例已关闭")
 
         sequence_start = next(self._commit_counter)
         success = self._drain_dirty()
         sequence_now = next(self._commit_counter) - 1
         if not success or sequence_now <= sequence_start:
-            raise RuntimeError("[AUTOMAPPING] Flush 失败，未能成功提交事务")
+            raise AutoMappingPersistenceError("[AUTOMAPPING] Flush 失败，未能成功提交事务")
 
     async def flush_async(self):
         """
@@ -654,7 +671,7 @@ class AutoMapping(Generic[_V]):
         会等到数据库事务提交
         """
         if not self._enable:
-            raise RuntimeError("[AUTOMAPPING] Flush 失败，实例已关闭")
+            raise AutoMappingPersistenceError("[AUTOMAPPING] Flush 失败，实例已关闭")
 
         loop = asyncio.get_running_loop()
         sequence_start = next(self._commit_counter)
@@ -663,7 +680,7 @@ class AutoMapping(Generic[_V]):
         success = await future
         sequence_now = next(self._commit_counter) - 1
         if not success or sequence_now <= sequence_start:
-            raise RuntimeError("[AUTOMAPPING] Flush 失败，未能成功提交事务")
+            raise AutoMappingPersistenceError("[AUTOMAPPING] Flush 失败，未能成功提交事务")
 
     def persist(self):
         """强制触发一次数据库持久化，不会等待事务提交"""
@@ -675,6 +692,22 @@ class AutoMapping(Generic[_V]):
     async def persist_async(self):
         """强制触发一次数据库持久化，不会等待事务提交"""
         return self.persist()
+
+    def _first_persist(self):
+        """初始化用一次"""
+        if self._drain_dirty():
+            with self._database_lock:
+                with self._create_or_get_database_connection() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO metadata(key, value) VALUES ('migration_completed', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        """,
+                        ("1",)
+                    )
+
+        else:
+            raise AutoMappingPersistenceError("首次持久化失败")
 
     # =========================================================
     # SQLite相关
@@ -737,6 +770,13 @@ class AutoMapping(Generic[_V]):
                 value = excluded.value
             """,
                 metadata.items()
+            )
+            conn.execute(
+                """
+                INSERT INTO metadata(key, value) VALUES (migration_completed, ?)
+                ON CONFLICT(key) DO NOTHING
+                """,
+                ("0",)
             )
 
     def _persist_loop_database(self):
@@ -885,21 +925,31 @@ class AutoMapping(Generic[_V]):
         with self._database_lock:
             if not self._resolve_database_filepath().is_file():
                 self._create_or_get_database_connection()
+                return
 
             else:
                 with self._create_or_get_database_connection() as conn:
-                    # 先判断 Schema 版本
+                    # 先判断 Schema 版本和是否迁移完毕
                     schema_version = conn.execute(
                         "SELECT value FROM metadata WHERE key = ?",
                         ("schema_version",)
                     ).fetchone()
+                    migration_completed = conn.execute(
+                        "SELECT value FROM metadata WHERE key = ?",
+                        ("migration_completed",)
+                    ).fetchone()
+
                     if str(__schema_version__) != schema_version["value"]:
-                        raise RuntimeError("[AUTOMAPPING] schema_version 不匹配，无法初始化")
+                        raise AutoMappingError("[AUTOMAPPING] schema_version 不匹配，无法初始化")
 
                     # 读取数据
                     entries_data = conn.execute(
                         "SELECT * FROM entries"
                     ).fetchall()
+
+        if migration_completed["value"] != '1' and self._resolve_legacy_json_filepath().is_file():
+            self._migration_json_to_sqlite()
+            return
 
         # 处理临时数据副本
         temp_mapping = {}
@@ -944,10 +994,10 @@ class AutoMapping(Generic[_V]):
                 load_content: dict = json.loads(json_str)
 
             except json.JSONDecodeError:
-                raise RuntimeError("[AUTOMAPPING] 迁移 JSON 旧映射时错误: 无法解析 JSON 文件")
+                raise AutoMappingError("[AUTOMAPPING] 迁移 JSON 旧映射时错误: 无法解析 JSON 文件")
 
             if not isinstance(load_content, dict):
-                raise RuntimeError("[AUTOMAPPING] 迁移 JSON 旧映射时错误: 获取到的数据不是字典")
+                raise AutoMappingError("[AUTOMAPPING] 迁移 JSON 旧映射时错误: 获取到的数据不是字典")
 
             legacy_mapping = load_content.get("data", {})
             temp_mapping: dict[str, _Entry[_V]] = {}
@@ -968,7 +1018,7 @@ class AutoMapping(Generic[_V]):
 
         # 只要出任何错误都放弃，直接抛出异常结束，不动数据
         except Exception as E:
-            raise RuntimeError(f"[AUTOMAPPING] 迁移 JSON 旧映射时错误: {E}\n\n{traceback.format_exc()}")
+            raise AutoMappingMigrationError(f"[AUTOMAPPING] 迁移 JSON 旧映射时错误: {E}\n\n{traceback.format_exc()}")
 
         else:
             # 获取锁，进行一次数据替换
@@ -1010,8 +1060,17 @@ class AutoMapping(Generic[_V]):
         return json_filepath
 
     async def wait_ready(self) -> bool:
-        while _ACCEPT_NEW_INSTANCE and not self._enable:
-            await asyncio.sleep(1)
+        """仅供调试，生产不使用"""
+        if _ACCEPT_NEW_INSTANCE or not self._enable:
+            try:
+                await asyncio.shield(
+                    asyncio.wrap_future(self._init_future)
+                )
+
+            except Exception as error:
+                raise AutoMappingError(
+                    f"AutoMapping 初始化失败: {self._save_path}"
+                ) from error
 
         return self._enable
 
@@ -1033,6 +1092,7 @@ class AutoMapping(Generic[_V]):
 
                     self._connection.close()
                     self._connection = None
+
 
 def _shutdown_all_sync():
     global _ACCEPT_NEW_INSTANCE
