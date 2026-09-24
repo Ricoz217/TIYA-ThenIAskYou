@@ -2750,6 +2750,9 @@ class Chat:
         """注意，此函数返回的是Context对象本身，不是shadow"""
         return self._context
 
+    def back_to_last_round(self) -> Prompts:
+        return self._context.back2last_round()
+
     def copy(self, new_context=True):
         return Chat(
             endpoint=self._endpoint,

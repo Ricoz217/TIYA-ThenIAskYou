@@ -26,6 +26,7 @@ from TIYA.LLM_connect import (
     ToolCall,
     ToolResponse,
     ImagePrompt,
+    ContextEmptyError,
     ContextOverflowError,
     Prompts,
     parse_llm_setting
@@ -385,6 +386,14 @@ class _SpeakResponseDict(TypedDict):
     intention: dict
 
 
+class _SpeakerResponseValidationError(ValueError):
+    def __init__(self, error_type: str, location: str, reason: str):
+        super().__init__(reason)
+        self.error_type = error_type
+        self.location = location
+        self.reason = reason
+
+
 def _extract_json_object_text(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
@@ -510,6 +519,39 @@ class GroupChatSpeaker:
         self.last_failure_reason = reason
         self.last_failure_retryable = retryable
 
+    def _reject_response(
+            self,
+            *,
+            error_type: str,
+            location: str,
+            reason: str,
+            rollback: bool
+    ) -> str | None:
+        detail = f"{error_type}（{location}）：{reason}"
+        self.mark_failure(detail, retryable=True)
+        if rollback:
+            try:
+                self.LLM.back_to_last_round()
+
+            except ContextEmptyError as exc:
+                rollback_reason = (
+                    "上下文回滚错误（Speaker LLM 上下文）："
+                    f"ContextEmptyError: {exc}；已停止本次重试"
+                )
+                self.mark_failure(rollback_reason, retryable=False)
+                self._force_refresh = True
+                self.logger.error(rollback_reason)
+                return None
+
+        return (
+            "# 上一次输出的格式校验错误\n\n"
+            f"- 错误类型: {error_type}\n"
+            f"- 错误位置: {location}\n"
+            f"- 错误原因: {reason}\n\n"
+            "请修正上述格式问题，并根据原始任务重新生成完整发言。"
+            "不要复述校验信息，不要输出 JSON 以外的解释。"
+        )
+
     async def speak(
             self,
             *,
@@ -565,44 +607,80 @@ class GroupChatSpeaker:
                     break
 
         await self._refresh_context_helper()
+        retry_feedback = ""
         for _ in range(2):  # 只重试一次，写死
+            request_prompt = prompt
+            if retry_feedback:
+                request_prompt = f"{prompt}\n\n{retry_feedback}"
+
+            response = None
             try:
-                response = await self.LLM.ask(prompt, timeout=timeout)
+                try:
+                    response = await self.LLM.ask(request_prompt, timeout=timeout)
 
-            except ContextOverflowError:
-                await self._refresh_context()
-                response = await self.LLM.ask(prompt, timeout=timeout)
+                except ContextOverflowError:
+                    await self._refresh_context()
+                    response = await self.LLM.ask(request_prompt, timeout=timeout)
 
-            if not response:
-                self.mark_failure("发言 LLM 未返回响应")
-                continue
+                if not response:
+                    raise _SpeakerResponseValidationError(
+                        "空响应",
+                        "LLM 响应",
+                        "发言 LLM 未返回任何响应"
+                    )
 
-            result = response[0]
-            if not isinstance(result, TextPrompt):
-                self.mark_failure(f"发言 LLM 返回了非文本响应: {type(result).__name__}", retryable=True)
-                continue
+                result = response[0]
+                if not isinstance(result, TextPrompt):
+                    raise _SpeakerResponseValidationError(
+                        "响应类型错误",
+                        "响应第 1 项",
+                        f"预期 TextPrompt，实际为 {type(result).__name__}"
+                    )
 
-            json_text = _extract_json_object_text(result.text)
-            try:
-                json_content: _SpeakResponseDict = json.loads(json_text)
+                json_text = _extract_json_object_text(result.text)
+                try:
+                    json_content: _SpeakResponseDict = json.loads(json_text)
+
+                except json.JSONDecodeError as exc:
+                    raise _SpeakerResponseValidationError(
+                        "JSON 解析错误",
+                        f"第 {exc.lineno} 行，第 {exc.colno} 列",
+                        exc.msg
+                    ) from None
+
                 if not isinstance(json_content, dict):
-                    self.mark_failure("发言 LLM 返回的 JSON 不是 object", retryable=True)
-                    continue
+                    raise _SpeakerResponseValidationError(
+                        "JSON 类型错误",
+                        "JSON 根节点",
+                        f"预期 object，实际为 {type(json_content).__name__}"
+                    )
 
-            except json.JSONDecodeError:
-                self.mark_failure("发言 LLM 返回内容不是合法 JSON", retryable=True)
-                continue
+                expected_fields = {"message_sequence", "message_content", "to_agent", "intention"}
+                actual_fields = set(json_content.keys())
+                if actual_fields != expected_fields:
+                    missing_fields = sorted(expected_fields - actual_fields)
+                    extra_fields = sorted(actual_fields - expected_fields)
+                    reason_parts = []
+                    if missing_fields:
+                        reason_parts.append(f"缺少字段: {', '.join(missing_fields)}")
 
-            else:
-                # 请求成功了，把游标推到最后一个解析完成的消息处
-                self._run_rounds += 1
-                if prev_message is not None:
-                    self.last_message = prev_message.msg_id
+                    if extra_fields:
+                        reason_parts.append(f"存在 {len(extra_fields)} 个未定义字段")
 
-                bad_resp = False
-                if set(json_content.keys()) != {"message_sequence", "message_content", "to_agent", "intention"}:
-                    self.mark_failure("发言 LLM 返回字段不完整或存在多余字段", retryable=True)
-                    continue
+                    nested_content = json_content.get("message_content")
+                    if isinstance(nested_content, dict):
+                        misplaced_fields = sorted(set(missing_fields) & set(nested_content.keys()))
+                        if misplaced_fields:
+                            reason_parts.append(
+                                "字段被错误放入 message_content: "
+                                f"{', '.join(misplaced_fields)}"
+                            )
+
+                    raise _SpeakerResponseValidationError(
+                        "字段校验错误",
+                        "JSON 根节点",
+                        "；".join(reason_parts)
+                    )
 
                 clean_content: dict[str, dict] = {}
                 sequence: list[str] = json_content["message_sequence"]
@@ -610,47 +688,67 @@ class GroupChatSpeaker:
                 to_agent: str = json_content["to_agent"]
                 intention: dict = json_content["intention"]
                 if not isinstance(sequence, list):
-                    self.mark_failure("发言 LLM 返回的 message_sequence 不是 list", retryable=True)
-                    continue
+                    raise _SpeakerResponseValidationError(
+                        "字段类型错误",
+                        "message_sequence",
+                        f"预期 list，实际为 {type(sequence).__name__}"
+                    )
 
                 if not isinstance(content, dict):
-                    self.mark_failure("发言 LLM 返回的 message_content 不是 dict", retryable=True)
-                    continue
+                    raise _SpeakerResponseValidationError(
+                        "字段类型错误",
+                        "message_content",
+                        f"预期 object，实际为 {type(content).__name__}"
+                    )
 
                 if not isinstance(to_agent, str):
-                    self.mark_failure("发言 LLM 返回的 to_agent 不是 str", retryable=True)
-                    continue
+                    raise _SpeakerResponseValidationError(
+                        "字段类型错误",
+                        "to_agent",
+                        f"预期 string，实际为 {type(to_agent).__name__}"
+                    )
 
                 if not isinstance(intention, dict):
-                    self.mark_failure("发言 LLM 返回的 intention 不是 dict", retryable=True)
-                    continue
+                    raise _SpeakerResponseValidationError(
+                        "字段类型错误",
+                        "intention",
+                        f"预期 object，实际为 {type(intention).__name__}"
+                    )
 
                 combined_fav = (
                     self.FAV | character_fav
                     if character_fav is not None
                     else self.FAV
                 )
-                for key in sequence:
+                for index, key in enumerate(sequence):
                     if not isinstance(key, str):
-                        self.mark_failure("发言 LLM 返回的 message_sequence 包含非字符串 key", retryable=True)
-                        bad_resp = True
-                        break
+                        raise _SpeakerResponseValidationError(
+                            "元素类型错误",
+                            f"message_sequence[{index}]",
+                            f"预期 string，实际为 {type(key).__name__}"
+                        )
 
                     if key not in content:
-                        self.mark_failure(f"发言 LLM 返回的 message_content 缺少 key: {key}", retryable=True)
-                        bad_resp = True
-                        break
+                        raise _SpeakerResponseValidationError(
+                            "引用校验错误",
+                            f"message_sequence[{index}]",
+                            "message_content 中不存在该位置引用的字段"
+                        )
 
                     key_type = key.split('_')[0]
                     if key_type not in self._allow_key_type:
-                        self.mark_failure(f"发言 LLM 返回了不支持的消息类型: {key_type}", retryable=True)
-                        bad_resp = True
-                        break
+                        raise _SpeakerResponseValidationError(
+                            "消息类型错误",
+                            f"message_sequence[{index}]",
+                            "消息类型前缀不在允许范围内"
+                        )
 
                     if key in clean_content:
-                        self.mark_failure(f"发言 LLM 返回了重复的消息 key: {key}", retryable=True)
-                        bad_resp = True
-                        break
+                        raise _SpeakerResponseValidationError(
+                            "重复引用错误",
+                            f"message_sequence[{index}]",
+                            "重复引用了之前的消息字段"
+                        )
 
                     if key_type == "fav":
                         fav = content.get(key, {})
@@ -666,19 +764,37 @@ class GroupChatSpeaker:
 
                     clean_content[key] = content[key]
 
-                if bad_resp:
-                    continue
-
                 if not clean_content:
-                    self.mark_failure("发言 LLM 未返回可发送的消息内容", retryable=True)
-                    continue
+                    raise _SpeakerResponseValidationError(
+                        "内容校验错误",
+                        "message_content",
+                        "没有可发送的消息内容"
+                    )
 
-                return _SpeakResponseDict(
-                    message_sequence=list(clean_content.keys()),
-                    message_content=clean_content,
-                    to_agent=to_agent,
-                    intention=intention
+            except _SpeakerResponseValidationError as exc:
+                feedback = self._reject_response(
+                    error_type=exc.error_type,
+                    location=exc.location,
+                    reason=exc.reason,
+                    rollback=response is not None
                 )
+                if feedback is None:
+                    return None
+
+                retry_feedback = feedback
+                continue
+
+            # 完整校验成功后再推进 Speaker 状态。
+            self._run_rounds += 1
+            if prev_message is not None:
+                self.last_message = prev_message.msg_id
+
+            return _SpeakResponseDict(
+                message_sequence=list(clean_content.keys()),
+                message_content=clean_content,
+                to_agent=to_agent,
+                intention=intention
+            )
 
         if not self.last_failure_reason:
             self.mark_failure("发言 LLM 未返回可发送的合法消息")

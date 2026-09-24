@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
+import pytest
 from ruamel.yaml import YAML
 
 from TIYA import config
@@ -94,6 +95,29 @@ def _activate(monkeypatch, manager: config.Configer) -> None:
     monkeypatch.setattr(config, "GROUPS_CFG", manager.get_group_config())
     monkeypatch.setattr(config, "SETTING_CFG", manager.get_setting_config())
     monkeypatch.setattr(config, "ALL_CFG", manager.get_all_config())
+
+
+def test_missing_runtime_attribute_uses_public_config_name(tmp_path: Path) -> None:
+    manager = _manager(tmp_path / "config.yaml")
+
+    with pytest.raises(AttributeError) as root_error:
+        manager.get_setting_config().Common
+    assert str(root_error.value) == (
+        "configuration attribute 'SETTING_CFG.Common' does not exist"
+    )
+
+    assert manager.load_config(config=_complete_document()).ok
+    with pytest.raises(AttributeError) as nested_error:
+        manager.get_setting_config().Common.Missing
+    assert str(nested_error.value) == (
+        "configuration attribute 'SETTING_CFG.Common.Missing' does not exist"
+    )
+
+    with pytest.raises(AttributeError) as base_error:
+        manager.get_base_config().BotInfo.Missing
+    assert str(base_error.value) == (
+        "configuration attribute 'BASE_CFG.BotInfo.Missing' does not exist"
+    )
 
 
 def test_setting_missing_values_are_materialized_once(tmp_path: Path, monkeypatch) -> None:
@@ -365,7 +389,7 @@ def test_missing_unknown_attribute_is_strict_and_does_not_mutate(tmp_path: Path)
     try:
         _ = base.DoesNotExist
     except AttributeError as exc:
-        assert "BOT基本配置.DoesNotExist" in str(exc)
+        assert "BASE_CFG.DoesNotExist" in str(exc)
     else:  # pragma: no cover - explicit assertion message is clearer here
         raise AssertionError("missing attributes must raise")
 

@@ -70,6 +70,13 @@ TITLE_LLM = "LLM模型配置"
 TITLE_GROUPS = "群聊设置"
 TITLE_PRIVATE = "私聊设置"
 TITLE_SETTING = "其他参数配置，请勿随意更改"
+_PUBLIC_CONFIG_NAMES = {
+    TITLE_BASE: "BASE_CFG",
+    TITLE_LLM: "LLM_CFG",
+    TITLE_GROUPS: "GROUPS_CFG",
+    TITLE_PRIVATE: "PRIVATE_CFG",
+    TITLE_SETTING: "SETTING_CFG",
+}
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -682,6 +689,13 @@ def _path_text(path: Sequence[PathPart]) -> str:
     return output
 
 
+def _runtime_path_text(path: Sequence[PathPart]) -> str:
+    if path and path[0] in _PUBLIC_CONFIG_NAMES:
+        return _path_text((_PUBLIC_CONFIG_NAMES[path[0]], *path[1:]))
+
+    return _path_text(path)
+
+
 @dataclass(frozen=True, slots=True)
 class ConfigIssue:
     path: ConfigPath
@@ -867,10 +881,10 @@ class ConfigMap(dict[str, Any]):
         try:
             return self[key]
 
-        except KeyError as exc:
+        except KeyError:
             raise AttributeError(
-                f"configuration key '{_path_text(self._path + (key,))}' does not exist"
-            ) from exc
+                f"configuration attribute '{_runtime_path_text(self._path + (key,))}' does not exist"
+            ) from None
 
     def __setattr__(self, key: str, value: Any) -> None:
         if key in self._INTERNAL_NAMES:
