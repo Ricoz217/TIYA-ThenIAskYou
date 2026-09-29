@@ -413,8 +413,16 @@ class FavSystem:
         if not await self._send_images(self._selection):
             await self._say("选择集图片未全部发送成功")
 
-    @COMMANDS.command("--select", aliases=("-s",), summary="按两个边界裁剪选择集")
-    @COMMANDS.argument("bounds", nargs="+")
+    @COMMANDS.command(
+        "--select",
+        aliases=("-s",),
+        summary="按索引或区间重建选择集",
+    )
+    @COMMANDS.argument(
+        "choices",
+        nargs="+",
+        _help="逗号分隔的索引或区间，例如 1,3,5-8",
+    )
     async def select(
             self,
             _context: FavCommandContext,
@@ -424,27 +432,50 @@ class FavSystem:
             await self._say("当前选择集为空")
             return
 
-        start, end = self._parse_bounds(args.bounds)
-        if start < 1 or end > len(self._selection) or start > end:
-            raise ValueError(f"选择范围必须位于 1 到 {len(self._selection)} 之间")
-
-        selected = self._selection[start - 1:end]
+        indexes = self._parse_selection_indexes(
+            args.choices,
+            total=len(self._selection),
+        )
+        selected = [self._selection[index - 1] for index in indexes]
         source = self._selection_source
         self._replace_selection(selected, source)
         await self._say(self._format_items())
 
     @staticmethod
-    def _parse_bounds(values: list[str]) -> tuple[int, int]:
-        raw = "".join(values).replace(" ", "").replace('，', ',')
-        parts = raw.split(",")
-        if len(parts) != 2:
-            raise ValueError("--select 必须传入两个边界，例如 --select 2,5")
+    def _parse_selection_indexes(values: list[str], *, total: int) -> list[int]:
+        raw = "".join(values).replace(" ", "").replace("，", ",")
+        if raw.casefold() == "all":
+            return list(range(1, total + 1))
 
-        try:
-            return int(parts[0]), int(parts[1])
+        choices = raw.split(",")
+        if not choices or any(not choice for choice in choices):
+            raise ValueError("--select 格式错误，例如 --select 1,3,5-8")
 
-        except ValueError as exc:
-            raise ValueError("--select 的边界必须是整数") from exc
+        indexes: list[int] = []
+        seen: set[int] = set()
+        for choice in choices:
+            if choice.isdigit():
+                expanded = [int(choice)]
+            else:
+                normalized = choice.replace("~", "-")
+                parts = normalized.split("-")
+                if len(parts) != 2 or any(not part.isdigit() for part in parts):
+                    raise ValueError(
+                        f"无效的选择项[{choice}]，请输入索引或区间"
+                    )
+
+                start, end = map(int, parts)
+                lower, upper = sorted((start, end))
+                expanded = list(range(lower, upper + 1))
+
+            for index in expanded:
+                if not 1 <= index <= total:
+                    raise ValueError(f"选择项必须位于 1 到 {total} 之间")
+                if index not in seen:
+                    seen.add(index)
+                    indexes.append(index)
+
+        return indexes
 
     @COMMANDS.command(
         "--check-select",

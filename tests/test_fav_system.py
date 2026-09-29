@@ -25,6 +25,7 @@ def _message_history_setting(monkeypatch):
     if "PrivateChat" not in SETTING_CFG:
         SETTING_CFG["PrivateChat"] = ConfigMap()
     monkeypatch.setitem(SETTING_CFG.Groups, "MaxMessageHistory", 10)
+    monkeypatch.setitem(SETTING_CFG.Groups, "AutoFavExpire", 30)
     monkeypatch.setitem(SETTING_CFG.PrivateChat, "ManagementDialogTimeout", 1)
 
 
@@ -250,23 +251,72 @@ def test_image_output_uses_system_sender_instead_of_say() -> None:
     asyncio.run(run_test())
 
 
-def test_select_crops_by_two_boundaries_and_rebuilds_indexes() -> None:
+def test_select_accepts_items_and_ranges_and_rebuilds_indexes() -> None:
     async def run_test() -> None:
         system, _, sender, _ = _make_system({
-            "标题": {"hash-a", "hash-b", "hash-c", "hash-d"},
+            "标题": {
+                "hash-a",
+                "hash-b",
+                "hash-c",
+                "hash-d",
+                "hash-e",
+                "hash-f",
+            },
         })
         await system.handle_message(_message("--list"))
         sender.messages.clear()
 
-        await system.handle_message(_message("--select 2, 3"))
+        await system.handle_message(_message("--select 2, 4, 6-5"))
 
         assert [item.hash_name for item in system.selection] == [
             "hash-b",
-            "hash-c",
+            "hash-d",
+            "hash-e",
+            "hash-f",
         ]
-        assert "1/2" in sender.text
-        assert "2/2" in sender.text
+        assert "1/4" in sender.text
+        assert "4/4" in sender.text
         assert sender.image_hashes == []
+
+    asyncio.run(run_test())
+
+
+def test_select_deduplicates_overlapping_choices_in_input_order() -> None:
+    async def run_test() -> None:
+        system, _, _, _ = _make_system({
+            "标题": {"hash-a", "hash-b", "hash-c", "hash-d"},
+        })
+        await system.handle_message(_message("--list"))
+
+        await system.handle_message(_message("--select 3, 1-3, 3, 4"))
+
+        assert [item.hash_name for item in system.selection] == [
+            "hash-c",
+            "hash-a",
+            "hash-b",
+            "hash-d",
+        ]
+
+    asyncio.run(run_test())
+
+
+def test_select_rejects_invalid_or_out_of_range_choice_without_mutating() -> None:
+    async def run_test() -> None:
+        system, _, sender, _ = _make_system({
+            "标题": {"hash-a", "hash-b", "hash-c"},
+        })
+        await system.handle_message(_message("--list"))
+        original = [item.hash_name for item in system.selection]
+        sender.messages.clear()
+
+        await system.handle_message(_message("--select 1, nope, 2-3"))
+        assert [item.hash_name for item in system.selection] == original
+        assert "命令错误" in sender.text
+
+        sender.messages.clear()
+        await system.handle_message(_message("--select 1, 4"))
+        assert [item.hash_name for item in system.selection] == original
+        assert "1 到 3" in sender.text
 
     asyncio.run(run_test())
 
