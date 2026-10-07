@@ -1,28 +1,40 @@
 from __future__ import annotations
+
+import json
+
 """
 agent_skill.py
 内置的 SKILL 管理器，存放基础操作逻辑
+同时作为工具转接层使用
 """
-__version__ = "0.1.1"
+__version__ = "0.2.1"
+__change_log__ = """\
+0.2.0: 统一外部工具的附加形式。自动扫描并注册工具，与内部代码解耦
+0.2.1: 作为 Agent <-> Tools 的中间转接层，承当工具配置和对象管理
+"""
 
 import time
 import shutil
 import importlib.util
 import inspect
+
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 from hashlib import blake2b
-from typing import Callable, Awaitable, Any, TypedDict
+from typing import Callable, Awaitable, Any, TypedDict, Literal
 from ruamel.yaml import YAML
 from PIL import Image
+
 from TIYA.markdown_heading_tree import parse_markdown_to_nested_dict
 from TIYA.LLM_connect import build_tool_payloads
 from TIYA.config import BASE_SKILL_DIR, ROOT_DIR, SETTING_CFG
 from TIYA.utils import httpx_downloader
 from TIYA.file_cache import add_file, add_file_async
+from TIYA.logger import get_logger
 
 _PATH_BLACKLIST = {ROOT_DIR / "config"}
+_log = get_logger()
 
 class SkillUninstalledError(KeyError):
     """尝试加载尚未安装的SKILL"""
@@ -32,6 +44,11 @@ class SkillUninstalledError(KeyError):
 class DownloadError(RuntimeError):
     """下载失败"""
     ...
+
+
+class ToolsSetting(TypedDict):
+    wait: bool
+    callback: Literal["ALWAYS", "EXCEPTION", "NEVER", "CALL"]
 
 
 @dataclass(slots=True)
@@ -73,16 +90,25 @@ class SkillManager:
     对skill进行存储、管理，并提供一些基础操作接口
     """
 
-    def __init__(self, data_path: Path, register_helper: Callable, uninstall_helper: Callable, image_helper: Callable):
+    def __init__(
+            self,
+            data_path: Path,
+            agent_level: str,
+            register_helper: Callable,
+            uninstall_helper: Callable,
+            image_helper: Callable
+    ):
         self.skills_dir = data_path / "skill"
         self.temp_dir = data_path / "temp"
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.agent_level = agent_level
         self._register_helper = register_helper
         self._uninstall_helper = uninstall_helper
         self._image_helper = image_helper
         self._yaml = YAML(typ="safe")
         self.skills: dict[str, SKILL] = {}  # {skill_name: SKILL}
+        self.tools_setting: dict[str, dict[str, ToolsSetting]] = {}
         self.tools_default_setting: dict[str, dict] = {
             "skill_installer": {
                 "install_skill": {"wait": True, "callback": "CALL"},
@@ -634,6 +660,7 @@ class SkillManager:
     """
 
     def initiate(self):
+        """初始化 SKILL 的入口，可以在此加入外部包装好的 Tool 的 HOOK"""
         source = BASE_SKILL_DIR / "skill_installer"
         self._install_exist_skills()
         self._register_helper(
@@ -765,6 +792,64 @@ class SkillManager:
             raise ValueError(f"missing frontmatter key 'description': {skill_md}")
 
         return SkillMetadata(name, description, data, body)
+
+    @staticmethod
+    def _check_skill_addition_tools(skill: SKILL) -> bool:
+        """
+        检查是否有附带的符合 TIYA 格式的 Tools
+        主要判断两个，一个是否有 tools.json，一个是否有 tools.py
+        :param skill:
+        :return:
+        """
+        config_file = skill.root / "tools.json"
+        tools_file = skill.root / "tools.py"
+
+        if not config_file.is_file() and tools_file.is_file():
+            return False
+
+        return True
+
+    def _load_skill_addition_tools(self, skill: SKILL):
+        """加载 TIYA 格式的 SKILL 附带 tools"""
+        config_file = skill.root / "tools.json"
+        tools_file = skill.root / "tools.py"
+
+        tools_setting = {}
+        blacklist = {}
+        whitelist = {}
+
+        # 先读取配置，空文件是合法的
+        if not config_file.stat().st_size == 0:
+            try:
+                load_content = json.loads(config_file.read_text(encoding="utf-8"))
+
+            except json.JSONDecodeError as E:
+                load_content = {}
+                _log.warning(f"SKILL [{skill.name}] 附属工具配置读取失败，将使用默认配置", exc=E)
+
+            if not isinstance(load_content, dict):
+                load_content = {}
+                _log.warning(f"SKILL [{skill.name}] 附属工具配置格式错误，将使用默认配置")
+
+            tools_setting.update(load_content.setdefault("tools_setting", {}))
+            load_blacklist = load_content.setdefault("blacklist", {})
+            load_whitelist = load_content.setdefault("whitelist", {})
+            for k, v in load_blacklist.copy().items():
+                load_blacklist[k] = set(v)
+
+            for k, v in load_whitelist.copy().items():
+                load_whitelist[k] = set(v)
+
+        # 读取工具文件脚本，获取所有的工具，同时进入对象管理
+
+
+        # 这里预留一个分级别 Agent 注册判断，但目前仍不具有任何意义
+        allow_tools = []
+
+
+
+
+
 
     @staticmethod
     def _split_frontmatter(text: str, source: Path) -> tuple[str, str]:

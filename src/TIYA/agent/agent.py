@@ -72,6 +72,7 @@ class BaseAgent:
             data_path: Path,
             llm_preset: str = "",
             agent_name: str = "",
+            agent_level: str = "UNDEFINED",
             system_prompt: SystemPrompt | AgentPrompt | str | Path = None,
             initiate_prompt: AgentPrompt | Path = None,
             control_timeout: float = -1,
@@ -87,6 +88,7 @@ class BaseAgent:
         self.id = str(next_time_id())
         self.display_uid = host_id
         self.name = agent_name
+        self.level = agent_level
         self._data_path = data_path
         self._data_path.mkdir(parents=True, exist_ok=True)
         self.control_timeout = control_timeout
@@ -103,7 +105,13 @@ class BaseAgent:
         self._schedule_tasks = AgentScheTaskManage()
         self._context = AgentContext()
         self._scheduler = AsyncSchedulerManager(self.id, self._schedule_tasks, self._history.schedule_task_file)
-        self._skills = SkillManager(self._data_path, self.register_function, self.uninstall_tools_source, self._upload_image)
+        self._skills = SkillManager(
+            self._data_path,
+            self.level,
+            self.register_function,
+            self.uninstall_tools_source,
+            self._upload_image
+        )
         self._websearch = WebSearch()
 
         # 容器
