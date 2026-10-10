@@ -1,7 +1,4 @@
 from __future__ import annotations
-
-import json
-
 """
 agent_skill.py
 内置的 SKILL 管理器，存放基础操作逻辑
@@ -13,6 +10,8 @@ __change_log__ = """\
 0.2.1: 作为 Agent <-> Tools 的中间转接层，承当工具配置和对象管理
 """
 
+import sys
+import json
 import time
 import shutil
 import importlib.util
@@ -32,6 +31,7 @@ from TIYA.config import BASE_SKILL_DIR, ROOT_DIR, SETTING_CFG
 from TIYA.utils import httpx_downloader
 from TIYA.file_cache import add_file, add_file_async
 from TIYA.logger import get_logger
+from TIYA.model.model import SkillToolsFilteredResult
 
 _PATH_BLACKLIST = {ROOT_DIR / "config"}
 _log = get_logger()
@@ -797,12 +797,12 @@ class SkillManager:
     def _check_skill_addition_tools(skill: SKILL) -> bool:
         """
         检查是否有附带的符合 TIYA 格式的 Tools
-        主要判断两个，一个是否有 tools.json，一个是否有 tools.py
+        主要判断两个，一个是否有 tools.json，一个是否有 tools 包
         :param skill:
         :return:
         """
         config_file = skill.root / "tools.json"
-        tools_file = skill.root / "tools.py"
+        tools_file = skill.root / "tools" / "__init__.py"
 
         if not config_file.is_file() and tools_file.is_file():
             return False
@@ -812,11 +812,10 @@ class SkillManager:
     def _load_skill_addition_tools(self, skill: SKILL):
         """加载 TIYA 格式的 SKILL 附带 tools"""
         config_file = skill.root / "tools.json"
-        tools_file = skill.root / "tools.py"
-
+        tools_dir = skill.root / "tools"
         tools_setting = {}
-        blacklist = {}
-        whitelist = {}
+        blacklist: dict[str, list[str]] = {}
+        whitelist: dict[str, list[str]] = {}
 
         # 先读取配置，空文件是合法的
         if not config_file.stat().st_size == 0:
@@ -831,25 +830,124 @@ class SkillManager:
                 load_content = {}
                 _log.warning(f"SKILL [{skill.name}] 附属工具配置格式错误，将使用默认配置")
 
-            tools_setting.update(load_content.setdefault("tools_setting", {}))
-            load_blacklist = load_content.setdefault("blacklist", {})
-            load_whitelist = load_content.setdefault("whitelist", {})
-            for k, v in load_blacklist.copy().items():
-                load_blacklist[k] = set(v)
-
-            for k, v in load_whitelist.copy().items():
-                load_whitelist[k] = set(v)
+            tools_setting = load_content.setdefault("tools_setting", {})
+            blacklist = load_content.setdefault("blacklist", {})
+            whitelist = load_content.setdefault("whitelist", {})
 
         # 读取工具文件脚本，获取所有的工具，同时进入对象管理
+        try:
+            detected_tools, detected_classes = self._getmember_from_python_package(
+                skill.name,
+                tools_dir
+            )
+
+        except BaseException as E:
+            _log.error(f"SKILL [{skill.name}] 附属工具加载失败", exc=E)
+            return
+
+        # 进入过滤器，目前暂无作用
+        filtered_result = self._addition_tools_filter(
+            whitelist,
+            blacklist,
+            detected_tools
+        )
+
+        # 判断对象工具，进行注册
 
 
-        # 这里预留一个分级别 Agent 注册判断，但目前仍不具有任何意义
-        allow_tools = []
+    @staticmethod
+    def _getmember_from_python_package(skill_name: str, source: Path) -> tuple[dict[str, Callable], dict[str, object]]:
+        """
+        拆分成小函数
+        :return:
+        """
 
+        h = blake2b(str(source).encode(), digest_size=8)
+        module_name = f"skill_tools:{skill_name}:{h.hexdigest()}"
+        spec = importlib.util.spec_from_file_location(
+            module_name,
+            source / "__init__.py",
+            submodule_search_locations=[str(source)],
+        )
+        if spec is None or spec.loader is None:
+            _log.warning(f"SKILL [{skill_name}] 未找到附属工具，加载失败")
+            raise ImportError
 
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
 
+        except BaseException as E:
+            for key in tuple(sys.modules):
+                if key == module_name or key.startswith(module_name + "."):
+                    sys.modules.pop(key, None)
 
+            sys.modules.pop(module_name, None)
+            _log.error(f"SKILL [{skill_name}] 附属工具加载失败", exc=E)
+            raise E
 
+        detected_tools: dict[str, Callable] = {}
+        detected_classes: dict[str, object] = {}
+        for name, obj in inspect.getmembers(module):
+            if not name.startswith('_'):
+                # 先判断类，因为类也可以 Callable
+                if inspect.isclass(obj):
+                    detected_classes[name] = obj
+
+                elif inspect.isfunction(obj):
+                    detected_tools[name] = obj
+
+        if not detected_tools:
+            sys.modules.pop(module_name, None)
+            _log.warning(f"SKILL [{skill_name}] 未找到附属工具，加载失败")
+            raise ImportError
+
+        return detected_tools, detected_classes
+
+    def _addition_tools_filter(
+            self,
+            whitelist: dict[str, list[str]],
+            blacklist: dict[str, list[str]],
+            tools: dict[str, Callable]
+    ) -> SkillToolsFilteredResult:
+        """预留一个过滤器，目前没有任何意义，几乎全部通过"""
+        forbid_tools = blacklist.copy().setdefault(self.agent_level, [])
+        forbidden_tools = {}
+        allowed_tools = {}
+        if whitelist:
+            if self.agent_level not in whitelist:
+                return SkillToolsFilteredResult(
+                    agent_level=self.agent_level,
+                    all_tools=tools.copy(),
+                    forbidden_tools={k: "WHITELIST" for k in tools}
+                )
+
+            white_tools = whitelist[self.agent_level]
+            for tool_name in tools:
+                if tool_name in forbid_tools:
+                    forbidden_tools[tool_name] = "BLACKLIST"
+
+                elif tool_name in white_tools:
+                    allowed_tools[tool_name] = tools[tool_name]
+
+                else:
+                    forbidden_tools[tool_name] = "WHITELIST"
+
+        else:
+            for tool_name in tools:
+                if tool_name in forbid_tools:
+                    forbidden_tools[tool_name] = "BLACKLIST"
+
+                else:
+                    allowed_tools[tool_name] = tools[tool_name]
+
+        return SkillToolsFilteredResult(
+            agent_level=self.agent_level,
+            all_tools=tools.copy(),
+            allowed_tools=allowed_tools,
+            forbidden_tools=forbidden_tools
+        )
 
     @staticmethod
     def _split_frontmatter(text: str, source: Path) -> tuple[str, str]:
