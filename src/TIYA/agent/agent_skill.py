@@ -21,7 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 from hashlib import blake2b
-from typing import Callable, Awaitable, Any, TypedDict, Literal
+from types import UnionType
+from typing import Callable, Awaitable, Any, TypedDict, Literal, get_type_hints, get_origin, get_args, Union
 from ruamel.yaml import YAML
 from PIL import Image
 
@@ -31,7 +32,7 @@ from TIYA.config import BASE_SKILL_DIR, ROOT_DIR, SETTING_CFG
 from TIYA.utils import httpx_downloader
 from TIYA.file_cache import add_file, add_file_async
 from TIYA.logger import get_logger
-from TIYA.model.model import SkillToolsFilteredResult
+from TIYA.model.model import SkillToolsFilteredResult, ObjectToolsMethods
 
 _PATH_BLACKLIST = {ROOT_DIR / "config"}
 _log = get_logger()
@@ -60,6 +61,8 @@ class SKILL:
     metadata: dict = field(default_factory=dict)
     data: dict = field(default_factory=dict)
     tools: dict[str, Callable[..., Awaitable | Any]] = field(default_factory=dict)
+    object_tools: dict[str, Callable] = field(default_factory=dict)  # 只存储，供审计用
+    classes: dict[str, ObjectToolsMethods] = field(default_factory=dict)
     tools_name_mapping: dict = field(default_factory=dict)
     md_content: dict = field(default_factory=dict)
     md_title_tree: dict = field(default_factory=dict)
@@ -852,6 +855,10 @@ class SkillManager:
             detected_tools
         )
 
+        if not filtered_result.allowed_tools:
+            _log.warning(f"SKILL [{skill.name}] 无允许加载的附属工具")
+            return
+
         # 判断对象工具，进行注册
 
 
@@ -948,6 +955,95 @@ class SkillManager:
             allowed_tools=allowed_tools,
             forbidden_tools=forbidden_tools
         )
+
+    def _parse_object_oriented_tools(
+            self,
+            tools_result: SkillToolsFilteredResult,
+            classes: dict[str, object]
+    ):
+        """检查面向对象的工具，以及是否有配套的合法类对象"""
+        def __object_methods_recursion(_class: object):
+            _object_methods = self._parse_class_methods(_class)
+            _current_obj = tools_result.object_methods[_class.__name__] = ObjectToolsMethods(
+                hook_class=_class,
+                methods=_object_methods
+            )
+            for _method_name, _method in _object_methods.items():
+                _, _detected_classes = self._check_object_tool(_method)
+                if _detected_classes:
+                    _current_obj.sub_object_methods[_method_name] = [c.__name__ for c in _detected_classes]
+                    for _sub_class in _detected_classes:
+                        __object_methods_recursion(_sub_class)
+
+        for tool_name, tool in tools_result.allowed_tools.copy().items():
+            tool_type, detected_classes = self._check_object_tool(tool, classes)
+            if tool_type == "INVALID":
+                tools_result.forbidden_tools[tool_name] = "CLASS_NOT_MATCH"
+                tools_result.allowed_tools.pop(tool_name, None)
+
+            elif tool_type == "ORDINARY":
+                tools_result.ordinary_tools[tool_name] = tool
+
+            else:
+                # 递归注册
+                for valid_class in detected_classes:
+                    __object_methods_recursion(valid_class)
+
+        # 用 wrapper 包装成普通工具
+
+    @staticmethod
+    def _check_object_tool(
+            tool: Callable,
+            match_classes: dict[str, object] = None
+    ) -> tuple[Literal["OBJECT", "ORDINARY", "INVALID"], list[object]]:
+        """确认工具类型"""
+        declared = get_type_hints(tool).get("return")
+        declared = get_origin(declared) or declared
+        returns = []
+        # 先判断是否联合类型
+        if declared in (UnionType, Union):
+            returns.extend(get_args(declared))
+
+        else:
+            returns.append(declared)
+
+        is_ordinary_tool = True
+        detected_classes = []
+        for result in returns:
+            if inspect.isclass(result):
+                if declared.__module__ == "builtins":
+                    continue
+
+                if match_classes and match_classes.get(result.__name__) is not result:
+                    return "INVALID", []
+
+                is_ordinary_tool = False
+                detected_classes.append(result)
+
+        if is_ordinary_tool:
+            return "ORDINARY", []
+
+        return "OBJECT", detected_classes
+
+    @staticmethod
+    def _parse_class_methods(
+            hook_class: object
+    ) -> dict[str, Callable]:
+        methods = {}
+        for name, raw in vars(hook_class).items():
+            if name.startswith('_') or isinstance(raw, property):
+                continue
+
+            if inspect.isfunction(func) or isinstance(raw, (staticmethod, classmethod)):
+                func = raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
+                methods[name] = func
+
+        return methods
+
+    # TODO
+    def _object_tool_wrapper(self) -> Callable:
+        """包装对象函数，类似装饰器"""
+        ...
 
     @staticmethod
     def _split_frontmatter(text: str, source: Path) -> tuple[str, str]:
