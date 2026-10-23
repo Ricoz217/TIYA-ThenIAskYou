@@ -62,7 +62,7 @@ class SKILL:
     data: dict = field(default_factory=dict)
     tools: dict[str, Callable[..., Awaitable | Any]] = field(default_factory=dict)
     object_tools: dict[str, Callable] = field(default_factory=dict)  # 只存储，供审计用
-    classes: dict[str, ObjectToolsMethods] = field(default_factory=dict)
+    classes: dict[str, ObjectToolsMethods] = field(default_factory=dict)  # {方法名: 对应类对象}
     tools_name_mapping: dict = field(default_factory=dict)
     md_content: dict = field(default_factory=dict)
     md_title_tree: dict = field(default_factory=dict)
@@ -806,11 +806,7 @@ class SkillManager:
         """
         config_file = skill.root / "tools.json"
         tools_file = skill.root / "tools" / "__init__.py"
-
-        if not config_file.is_file() and tools_file.is_file():
-            return False
-
-        return True
+        return config_file.is_file() and tools_file.is_file()
 
     def _load_skill_addition_tools(self, skill: SKILL):
         """加载 TIYA 格式的 SKILL 附带 tools"""
@@ -871,28 +867,30 @@ class SkillManager:
 
         h = blake2b(str(source).encode(), digest_size=8)
         module_name = f"skill_tools:{skill_name}:{h.hexdigest()}"
-        spec = importlib.util.spec_from_file_location(
-            module_name,
-            source / "__init__.py",
-            submodule_search_locations=[str(source)],
-        )
-        if spec is None or spec.loader is None:
-            _log.warning(f"SKILL [{skill_name}] 未找到附属工具，加载失败")
-            raise ImportError
+        module = sys.modules.get(module_name)
+        loaded_now = module is None
+        if loaded_now:
+            spec = importlib.util.spec_from_file_location(
+                module_name,
+                source / "__init__.py",
+                submodule_search_locations=[str(source)],
+            )
+            if spec is None or spec.loader is None:
+                _log.warning(f"SKILL [{skill_name}] 未找到附属工具，加载失败")
+                raise ImportError
 
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        try:
-            spec.loader.exec_module(module)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            try:
+                spec.loader.exec_module(module)
 
-        except BaseException as E:
-            for key in tuple(sys.modules):
-                if key == module_name or key.startswith(module_name + "."):
-                    sys.modules.pop(key, None)
+            except BaseException as E:
+                for key in tuple(sys.modules):
+                    if key == module_name or key.startswith(module_name + "."):
+                        sys.modules.pop(key, None)
 
-            sys.modules.pop(module_name, None)
-            _log.error(f"SKILL [{skill_name}] 附属工具加载失败", exc=E)
-            raise E
+                _log.error(f"SKILL [{skill_name}] 附属工具加载失败", exc=E)
+                raise E
 
         detected_tools: dict[str, Callable] = {}
         detected_classes: dict[str, object] = {}
@@ -906,7 +904,11 @@ class SkillManager:
                     detected_tools[name] = obj
 
         if not detected_tools:
-            sys.modules.pop(module_name, None)
+            if loaded_now:
+                for key in tuple(sys.modules):
+                    if key == module_name or key.startswith(module_name + "."):
+                        sys.modules.pop(key, None)
+
             _log.warning(f"SKILL [{skill_name}] 未找到附属工具，加载失败")
             raise ImportError
 
@@ -962,7 +964,13 @@ class SkillManager:
             classes: dict[str, object]
     ):
         """检查面向对象的工具，以及是否有配套的合法类对象"""
-        def __object_methods_recursion(_class: object):
+        parsed_classes: set[type] = set()
+
+        def __object_methods_recursion(_class: type):
+            if _class in parsed_classes:
+                return
+
+            parsed_classes.add(_class)
             _object_methods = self._parse_class_methods(_class)
             _current_obj = tools_result.object_methods[_class.__name__] = ObjectToolsMethods(
                 hook_class=_class,
@@ -998,23 +1006,22 @@ class SkillManager:
     ) -> tuple[Literal["OBJECT", "ORDINARY", "INVALID"], list[object]]:
         """确认工具类型"""
         declared = get_type_hints(tool).get("return")
-        declared = get_origin(declared) or declared
-        returns = []
+        origin = get_origin(declared)
         # 先判断是否联合类型
-        if declared in (UnionType, Union):
-            returns.extend(get_args(declared))
+        if origin in (UnionType, Union):
+            returns = list(get_args(declared))
 
         else:
-            returns.append(declared)
+            returns = [origin or declared]
 
         is_ordinary_tool = True
         detected_classes = []
         for result in returns:
             if inspect.isclass(result):
-                if declared.__module__ == "builtins":
+                if result.__module__ == "builtins":
                     continue
 
-                if match_classes and match_classes.get(result.__name__) is not result:
+                if match_classes is not None and match_classes.get(result.__name__) is not result:
                     return "INVALID", []
 
                 is_ordinary_tool = False
@@ -1034,9 +1041,16 @@ class SkillManager:
             if name.startswith('_') or isinstance(raw, property):
                 continue
 
-            if inspect.isfunction(func) or isinstance(raw, (staticmethod, classmethod)):
-                func = raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
-                methods[name] = func
+            if isinstance(raw, (staticmethod, classmethod)):
+                func = raw.__func__
+
+            elif inspect.isfunction(raw):
+                func = raw
+
+            else:
+                continue
+
+            methods[name] = func
 
         return methods
 

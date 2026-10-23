@@ -1,0 +1,10 @@
+# Optional, heavyweight local crawling stack. Not required by TIYA core.
+# Install with the project's interpreter:
+# .\.venv\Scripts\python.exe -m pip install -r src\TIYA\agent_tools\websearch\tools\providers\requirements-crawl4ai.txt
+Crawl4AI==0.9.5
+chardet==5.2.0
+# Crawl4AI's LLM compatibility layer accepts all newer OpenAI releases; pinning
+# avoids slow resolver backtracking and is sufficient for non-LLM extraction.
+openai==2.8.0
+patchright==1.64.1
+playwright==1.64.0
