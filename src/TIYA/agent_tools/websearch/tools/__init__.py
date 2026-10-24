@@ -29,6 +29,7 @@ from .errors import (
     ProviderNotFoundError,
     ProviderRequestError,
     ProviderSelectionError,
+    UnsupportedSearchFilterError,
     WebSearchError,
 )
 from .identity import IdentityStore
@@ -51,6 +52,9 @@ from .models import (
     SearchRequest,
     SearchResponse,
     SearchResult,
+    SearchFilter,
+    SearchFilterMode,
+    SearchFilters,
     WebDocument,
 )
 from .provider_protocols import (
@@ -147,12 +151,16 @@ __all__ = [
     "ReloadAction",
     "ScrollAction",
     "SearchProvider",
+    "SearchFilter",
+    "SearchFilterMode",
+    "SearchFilters",
     "SearchRequest",
     "SearchResponse",
     "SearchResult",
     "SelectAction",
     "UploadAction",
     "TavilyProvider",
+    "UnsupportedSearchFilterError",
     "WaitAction",
     "WebDocument",
     "WebSearchError",

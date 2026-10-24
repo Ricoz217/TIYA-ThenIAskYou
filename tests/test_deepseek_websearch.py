@@ -13,6 +13,12 @@ from TIYA.agent_tools.websearch.tools import (
     DeepSeekSearchResponse as SearchResponse,
     DeepSeekSearchResult as SearchResult,
     DeepSeekWebClient,
+    DeepSeekProvider,
+    SearchFilter,
+    SearchFilterMode,
+    SearchFilters,
+    SearchRequest,
+    UnsupportedSearchFilterError,
 )
 
 
@@ -114,6 +120,87 @@ def test_search_uses_documented_defaults_and_accepts_empty_results() -> None:
     assert response.results == ()
     assert payloads == [
         {"query": "nothing here", "count": 10, "need_content": False}
+    ]
+
+
+def test_provider_rejects_filters_it_cannot_honor_without_calling_api() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"results": []})
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            provider = DeepSeekProvider(
+                DeepSeekWebClient(API_KEY, http_client=http_client)
+            )
+            await provider.search(
+                SearchRequest(
+                    "query",
+                    filters=SearchFilters(country="japan", safe_search=True),
+                )
+            )
+
+    with pytest.raises(UnsupportedSearchFilterError) as caught:
+        run(scenario())
+
+    assert caught.value.filters == (
+        SearchFilter.COUNTRY,
+        SearchFilter.SAFE_SEARCH,
+    )
+    assert calls == 0
+
+
+def test_provider_compiles_stable_filters_to_documented_query_operators() -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(__import__("json").loads(request.content))
+        return httpx.Response(200, json={"results": []})
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            provider = DeepSeekProvider(
+                DeepSeekWebClient(API_KEY, http_client=http_client)
+            )
+            await provider.search(
+                SearchRequest(
+                    "model inference",
+                    filters=SearchFilters(
+                        include_domains=("arxiv.org", "openreview.net"),
+                        exclude_domains=("spam.example",),
+                        published_after="2026-01-02T08:00:00+08:00",
+                        published_before="2026-10-23T00:00:00Z",
+                        language="en",
+                    ),
+                )
+            )
+
+    run(scenario())
+
+    assert DeepSeekProvider.profile.search_filter_support == {
+        SearchFilter.INCLUDE_DOMAINS: SearchFilterMode.QUERY_OPERATOR,
+        SearchFilter.EXCLUDE_DOMAINS: SearchFilterMode.QUERY_OPERATOR,
+        SearchFilter.PUBLISHED_AFTER: SearchFilterMode.QUERY_OPERATOR,
+        SearchFilter.PUBLISHED_BEFORE: SearchFilterMode.QUERY_OPERATOR,
+        SearchFilter.LANGUAGE: SearchFilterMode.QUERY_OPERATOR,
+    }
+    assert payloads == [
+        {
+            "query": (
+                "model inference site:arxiv.org OR site:openreview.net "
+                "-site:spam.example lang:en after:2026-01-02 "
+                "before:2026-10-23"
+            ),
+            "count": 10,
+            "need_content": False,
+        }
     ]
 
 

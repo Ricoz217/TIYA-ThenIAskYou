@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import ipaddress
+import json
+import math
 import re
+import shutil
 import xml.etree.ElementTree as element_tree
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -38,6 +42,8 @@ from ..models import (
 
 _DEFAULT_DOCUMENT_LIMIT = 5 * 1024 * 1024
 _DEFAULT_MAP_PAGE_LIMIT = 50
+_DEFAULT_DOWNLOAD_PART_SIZE = 8 * 1024 * 1024
+_DEFAULT_DOWNLOAD_RETRY_BACKOFF = 0.25
 _MAX_REDIRECTS = 10
 _INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED = {
@@ -63,6 +69,39 @@ _INTERACTION_TEXT_EXCLUDED_PARENTS = {
     "template",
     "svg",
 }
+_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)", re.IGNORECASE)
+_UNSATISFIED_CONTENT_RANGE = re.compile(r"bytes \*/(\d+)", re.IGNORECASE)
+_DOWNLOAD_STATE_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class _DownloadProbe:
+    final_url: str
+    status_code: int
+    content_type: str | None
+    total_size: int | None
+    range_supported: bool
+    validator: str | None
+    retry_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ByteRange:
+    start: int
+    end: int
+
+    @property
+    def size(self) -> int:
+        return self.end - self.start + 1
+
+
+@dataclass(frozen=True, slots=True)
+class _DownloadWorkspace:
+    target: Path
+    state: Path
+    parts: tuple[Path, ...]
+    assembly: Path
+    resumed: bool
 
 
 class HTTPXProvider:
@@ -87,7 +126,11 @@ class HTTPXProvider:
             ),
             "Preserves media discovery source, nearby context, links, and dimensions",
             "Maps same-origin links with explicit depth and page limits",
-            "Streams binary downloads with size and integrity metadata",
+            (
+                "Streams bounded binary downloads with automatic retries, "
+                "persistent resume state, concurrent byte ranges, and "
+                "integrity metadata"
+            ),
         ),
         limitations=(
             "Does not execute JavaScript or perform page interactions",
@@ -105,15 +148,23 @@ class HTTPXProvider:
         max_document_bytes: int = _DEFAULT_DOCUMENT_LIMIT,
         max_map_pages: int = _DEFAULT_MAP_PAGE_LIMIT,
         allow_private_network: bool = False,
+        download_part_size: int = _DEFAULT_DOWNLOAD_PART_SIZE,
+        download_retry_backoff: float = _DEFAULT_DOWNLOAD_RETRY_BACKOFF,
     ) -> None:
         if max_document_bytes <= 0:
             raise ValueError("max_document_bytes must be positive")
         if max_map_pages <= 0:
             raise ValueError("max_map_pages must be positive")
+        if download_part_size <= 0:
+            raise ValueError("download_part_size must be positive")
+        if download_retry_backoff < 0:
+            raise ValueError("download_retry_backoff must be non-negative")
         self._download_dir = Path(download_dir).resolve()
         self._max_document_bytes = max_document_bytes
         self._max_map_pages = max_map_pages
         self._allow_private_network = allow_private_network
+        self._download_part_size = download_part_size
+        self._download_retry_backoff = download_retry_backoff
         self._owns_client = http_client is None
         self._client = http_client or httpx.AsyncClient(timeout=timeout)
 
@@ -225,77 +276,353 @@ class HTTPXProvider:
         )
 
     async def download(self, request: DownloadRequest) -> DownloadArtifact:
-        """Download one resource while enforcing the request's size bound."""
+        """Download with bounded retries, persistent resume, and byte ranges."""
 
-        explicit_name = None
-        if request.filename is not None:
-            explicit_name = _validate_explicit_filename(request.filename)
+        explicit_name = (
+            _validate_explicit_filename(request.filename)
+            if request.filename is not None
+            else None
+        )
+        probe = await self._probe_download(request)
+        if probe.total_size is not None and probe.total_size > request.max_bytes:
+            raise _size_error(
+                Capability.DOWNLOAD,
+                probe.total_size,
+                request.max_bytes,
+            )
 
-        output_path: Path | None = None
-        output_file: BinaryIO | None = None
+        filename = explicit_name or _filename_from_url(probe.final_url)
+        ranges = _download_ranges(
+            probe.total_size,
+            range_supported=probe.range_supported,
+            maximum=request.max_parallel_parts,
+            part_size=self._download_part_size,
+        )
+        state_data = _download_state(
+            request=request,
+            probe=probe,
+            ranges=ranges,
+        )
+        await asyncio.to_thread(
+            self._download_dir.mkdir, parents=True, exist_ok=True
+        )
+        workspace = await asyncio.to_thread(
+            _prepare_download_workspace,
+            self._download_dir,
+            filename,
+            state_data,
+            request.resume and probe.validator is not None,
+        )
+
+        retry_count = probe.retry_count
+        resumed = workspace.resumed
+        completed_path: Path | None = None
+        status_code = probe.status_code
+        content_type = probe.content_type
         try:
-            async with self._stream_response(
-                request.url, Capability.DOWNLOAD
-            ) as response:
-                content_length = _content_length(response)
-                if (
-                    content_length is not None
-                    and content_length > request.max_bytes
-                ):
-                    raise _size_error(
-                        Capability.DOWNLOAD,
-                        content_length,
-                        request.max_bytes,
-                    )
-
-                filename = explicit_name or _filename_from_url(str(response.url))
-                await asyncio.to_thread(
-                    self._download_dir.mkdir, parents=True, exist_ok=True
-                )
-                reserved_path, reserved_file = await asyncio.to_thread(
-                    _open_unique, self._download_dir, filename
-                )
-                output_path, output_file = reserved_path, reserved_file
-
-                digest = hashlib.sha256()
-                size = 0
-                async for chunk in response.aiter_bytes():
-                    size += len(chunk)
-                    if size > request.max_bytes:
-                        raise _size_error(
-                            Capability.DOWNLOAD, size, request.max_bytes
+            if probe.total_size == 0:
+                await asyncio.to_thread(workspace.parts[0].touch, exist_ok=True)
+                completed_path = workspace.parts[0]
+            elif probe.range_supported and probe.total_size is not None:
+                raw_outcomes = await asyncio.gather(
+                    *(
+                        self._download_range(
+                            url=probe.final_url,
+                            target=part_path,
+                            byte_range=byte_range,
+                            total_size=probe.total_size,
+                            validator=probe.validator,
+                            request=request,
                         )
-                    digest.update(chunk)
-                    await asyncio.to_thread(reserved_file.write, chunk)
-
-                await asyncio.to_thread(reserved_file.close)
-                output_file = None
-                metadata: dict[str, object] = {
-                    "status_code": response.status_code,
-                }
-                if content_length is not None:
-                    metadata["content_length"] = content_length
-                return DownloadArtifact(
-                    source_url=request.url,
-                    final_url=str(response.url),
-                    path=reserved_path,
-                    content_type=_content_type(response),
-                    size=size,
-                    sha256=digest.hexdigest(),
-                    provider=self.provider_id,
-                    metadata=metadata,
+                        for byte_range, part_path in zip(
+                            ranges, workspace.parts, strict=True
+                        )
+                    ),
+                    return_exceptions=True,
                 )
-        except ProviderRequestError:
-            await _discard(output_path, output_file)
+                outcomes: list[tuple[bool, int]] = []
+                for outcome in raw_outcomes:
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                    outcomes.append(outcome)
+                resumed = resumed or any(item[0] for item in outcomes)
+                retry_count += sum(item[1] for item in outcomes)
+                status_code = 206
+                if len(workspace.parts) == 1:
+                    completed_path = workspace.parts[0]
+                else:
+                    await asyncio.to_thread(
+                        _assemble_parts,
+                        workspace.parts,
+                        workspace.assembly,
+                    )
+                    completed_path = workspace.assembly
+            else:
+                full_status, full_content_type, full_retries = (
+                    await self._download_full(
+                        url=probe.final_url,
+                        target=workspace.parts[0],
+                        request=request,
+                        expected_size=probe.total_size,
+                    )
+                )
+                status_code = full_status
+                content_type = full_content_type
+                retry_count += full_retries
+                completed_path = workspace.parts[0]
+
+            assert completed_path is not None
+            size = await asyncio.to_thread(_file_size, completed_path)
+            if size > request.max_bytes:
+                raise _size_error(Capability.DOWNLOAD, size, request.max_bytes)
+            if probe.total_size is not None and size != probe.total_size:
+                raise ProviderRequestError(
+                    provider=self.provider_id,
+                    operation=Capability.DOWNLOAD,
+                    message=(
+                        f"downloaded size {size} does not match expected "
+                        f"size {probe.total_size}"
+                    ),
+                    retryable=True,
+                )
+            digest = await asyncio.to_thread(_sha256_file, completed_path)
+            await asyncio.to_thread(completed_path.rename, workspace.target)
+            await asyncio.to_thread(
+                _cleanup_download_workspace,
+                workspace,
+                workspace.target,
+            )
+            metadata: dict[str, object] = {
+                "status_code": status_code,
+                "range_supported": probe.range_supported,
+                "parallel_parts": len(ranges),
+                "resumed": resumed,
+                "retry_count": retry_count,
+            }
+            if probe.total_size is not None:
+                metadata["content_length"] = probe.total_size
+            return DownloadArtifact(
+                source_url=request.url,
+                final_url=probe.final_url,
+                path=workspace.target,
+                content_type=content_type,
+                size=size,
+                sha256=digest,
+                provider=self.provider_id,
+                metadata=metadata,
+            )
+        except ProviderRequestError as exc:
+            if (
+                not request.resume
+                or not probe.range_supported
+                or probe.validator is None
+                or not exc.retryable
+            ):
+                await asyncio.to_thread(_cleanup_download_workspace, workspace)
             raise
         except OSError as exc:
-            await _discard(output_path, output_file)
+            await asyncio.to_thread(_cleanup_download_workspace, workspace)
             raise ProviderRequestError(
                 provider=self.provider_id,
                 operation=Capability.DOWNLOAD,
                 message=f"could not write download: {exc}",
                 retryable=False,
             ) from exc
+
+    async def _probe_download(self, request: DownloadRequest) -> _DownloadProbe:
+        retries = 0
+        while True:
+            try:
+                async with self._stream_response(
+                    request.url,
+                    Capability.DOWNLOAD,
+                    headers={
+                        "Range": "bytes=0-0",
+                        "Accept-Encoding": "identity",
+                    },
+                    allowed_statuses=frozenset({400, 403, 405, 416}),
+                ) as response:
+                    total_size: int | None
+                    range_supported = False
+                    if response.status_code == 206:
+                        parsed = _parse_content_range(response)
+                        if (
+                            parsed is None
+                            or parsed[0:2] != (0, 0)
+                        ):
+                            raise ProviderRequestError(
+                                provider=self.provider_id,
+                                operation=Capability.DOWNLOAD,
+                                message="server returned an invalid byte-range probe",
+                                status_code=response.status_code,
+                                retryable=False,
+                            )
+                        total_size = parsed[2]
+                        range_supported = total_size is not None
+                    elif response.status_code == 416:
+                        total_size = _unsatisfied_total(response)
+                        range_supported = total_size == 0
+                        if not range_supported:
+                            total_size = None
+                    elif response.status_code in {400, 403, 405}:
+                        total_size = None
+                    else:
+                        total_size = _content_length(response)
+                    return _DownloadProbe(
+                        final_url=str(response.url),
+                        status_code=response.status_code,
+                        content_type=_content_type(response),
+                        total_size=total_size,
+                        range_supported=range_supported,
+                        validator=_response_validator(response),
+                        retry_count=retries,
+                    )
+            except ProviderRequestError as exc:
+                if not exc.retryable or retries >= request.max_retries:
+                    raise
+                retries += 1
+                await self._download_retry_delay(retries)
+
+    async def _download_range(
+        self,
+        *,
+        url: str,
+        target: Path,
+        byte_range: _ByteRange,
+        total_size: int,
+        validator: str | None,
+        request: DownloadRequest,
+    ) -> tuple[bool, int]:
+        existing = await asyncio.to_thread(_bounded_part_size, target, byte_range.size)
+        resumed = existing > 0
+        retries = 0
+        while existing < byte_range.size:
+            first_byte = byte_range.start + existing
+            headers = {
+                "Range": f"bytes={first_byte}-{byte_range.end}",
+                "Accept-Encoding": "identity",
+            }
+            if validator is not None:
+                headers["If-Range"] = validator
+            try:
+                async with self._stream_response(
+                    url,
+                    Capability.DOWNLOAD,
+                    headers=headers,
+                ) as response:
+                    parsed = _parse_content_range(response)
+                    expected = (first_byte, byte_range.end, total_size)
+                    if response.status_code != 206 or parsed != expected:
+                        raise ProviderRequestError(
+                            provider=self.provider_id,
+                            operation=Capability.DOWNLOAD,
+                            message=(
+                                "server did not honor the requested byte range; "
+                                "the resource may have changed"
+                            ),
+                            status_code=response.status_code,
+                            retryable=False,
+                        )
+                    returned_validator = _response_validator(response)
+                    if (
+                        validator is not None
+                        and returned_validator is not None
+                        and returned_validator != validator
+                    ):
+                        raise ProviderRequestError(
+                            provider=self.provider_id,
+                            operation=Capability.DOWNLOAD,
+                            message="resource validator changed during download",
+                            status_code=response.status_code,
+                            retryable=False,
+                        )
+                    with target.open("ab") as output:
+                        async for chunk in response.aiter_bytes():
+                            existing += len(chunk)
+                            if existing > byte_range.size:
+                                raise ProviderRequestError(
+                                    provider=self.provider_id,
+                                    operation=Capability.DOWNLOAD,
+                                    message=(
+                                        "server sent bytes beyond the "
+                                        "requested range"
+                                    ),
+                                    retryable=False,
+                                )
+                            await asyncio.to_thread(output.write, chunk)
+                if existing != byte_range.size:
+                    raise ProviderRequestError(
+                        provider=self.provider_id,
+                        operation=Capability.DOWNLOAD,
+                        message="server ended a byte range before it was complete",
+                        retryable=True,
+                    )
+            except ProviderRequestError as exc:
+                if not exc.retryable or retries >= request.max_retries:
+                    raise
+                retries += 1
+                resumed = existing > 0
+                await self._download_retry_delay(retries)
+        return resumed, retries
+
+    async def _download_full(
+        self,
+        *,
+        url: str,
+        target: Path,
+        request: DownloadRequest,
+        expected_size: int | None,
+    ) -> tuple[int, str | None, int]:
+        retries = 0
+        while True:
+            size = 0
+            try:
+                async with self._stream_response(
+                    url,
+                    Capability.DOWNLOAD,
+                    headers={"Accept-Encoding": "identity"},
+                ) as response:
+                    content_length = _content_length(response)
+                    if (
+                        content_length is not None
+                        and content_length > request.max_bytes
+                    ):
+                        raise _size_error(
+                            Capability.DOWNLOAD,
+                            content_length,
+                            request.max_bytes,
+                        )
+                    with target.open("wb") as output:
+                        async for chunk in response.aiter_bytes():
+                            size += len(chunk)
+                            if size > request.max_bytes:
+                                raise _size_error(
+                                    Capability.DOWNLOAD,
+                                    size,
+                                    request.max_bytes,
+                                )
+                            await asyncio.to_thread(output.write, chunk)
+                    if expected_size is not None and size != expected_size:
+                        raise ProviderRequestError(
+                            provider=self.provider_id,
+                            operation=Capability.DOWNLOAD,
+                            message=(
+                                f"downloaded size {size} does not match expected "
+                                f"size {expected_size}"
+                            ),
+                            retryable=True,
+                        )
+                    return response.status_code, _content_type(response), retries
+            except ProviderRequestError as exc:
+                if not exc.retryable or retries >= request.max_retries:
+                    raise
+                retries += 1
+                await self._download_retry_delay(retries)
+
+    async def _download_retry_delay(self, retry_number: int) -> None:
+        delay = self._download_retry_backoff * (2 ** (retry_number - 1))
+        if delay:
+            await asyncio.sleep(delay)
 
     async def aclose(self) -> None:
         """Close an internally created HTTP client."""
@@ -345,9 +672,22 @@ class HTTPXProvider:
 
     @asynccontextmanager
     async def _stream_response(
-        self, url: str, operation: Capability
+        self,
+        url: str,
+        operation: Capability,
+        *,
+        headers: Mapping[str, str] | None = None,
+        allowed_statuses: frozenset[int] = frozenset(),
     ) -> AsyncIterator[httpx.Response]:
         current_url = url
+        request_headers = {
+            "User-Agent": _USER_AGENT,
+            "Accept": (
+                "text/html,application/xhtml+xml,text/plain,*/*;q=0.5"
+            ),
+        }
+        if headers is not None:
+            request_headers.update(headers)
         try:
             for _ in range(_MAX_REDIRECTS + 1):
                 _validate_public_target(
@@ -360,13 +700,7 @@ class HTTPXProvider:
                     "GET",
                     current_url,
                     follow_redirects=False,
-                    headers={
-                        "User-Agent": _USER_AGENT,
-                        "Accept": (
-                            "text/html,application/xhtml+xml,text/plain,"
-                            "*/*;q=0.5"
-                        ),
-                    },
+                    headers=request_headers,
                 ) as response:
                     if response.is_redirect:
                         location = response.headers.get("Location")
@@ -380,7 +714,8 @@ class HTTPXProvider:
                             )
                         current_url = urljoin(str(response.url), location)
                         continue
-                    response.raise_for_status()
+                    if response.status_code not in allowed_statuses:
+                        response.raise_for_status()
                     yield response
                     return
             raise ProviderRequestError(
@@ -936,6 +1271,34 @@ def _content_length(response: httpx.Response) -> int | None:
     return value if value >= 0 else None
 
 
+def _parse_content_range(
+    response: httpx.Response,
+) -> tuple[int, int, int | None] | None:
+    raw_value = response.headers.get("Content-Range")
+    if raw_value is None:
+        return None
+    match = _CONTENT_RANGE.fullmatch(raw_value.strip())
+    if match is None:
+        return None
+    total = None if match.group(3) == "*" else int(match.group(3))
+    return int(match.group(1)), int(match.group(2)), total
+
+
+def _unsatisfied_total(response: httpx.Response) -> int | None:
+    raw_value = response.headers.get("Content-Range")
+    if raw_value is None:
+        return None
+    match = _UNSATISFIED_CONTENT_RANGE.fullmatch(raw_value.strip())
+    return int(match.group(1)) if match is not None else None
+
+
+def _response_validator(response: httpx.Response) -> str | None:
+    etag = response.headers.get("ETag")
+    if etag is not None and not etag.lstrip().casefold().startswith("w/"):
+        return etag
+    return response.headers.get("Last-Modified")
+
+
 def _content_type(response: httpx.Response) -> str | None:
     content_type = response.headers.get("Content-Type")
     if content_type is None:
@@ -1045,24 +1408,168 @@ def _is_windows_reserved(filename: str) -> bool:
     return filename.split(".", 1)[0].upper() in _WINDOWS_RESERVED
 
 
-def _open_unique(directory: Path, filename: str) -> tuple[Path, BinaryIO]:
+def _download_ranges(
+    total_size: int | None,
+    *,
+    range_supported: bool,
+    maximum: int,
+    part_size: int,
+) -> tuple[_ByteRange, ...]:
+    if total_size == 0:
+        return (_ByteRange(0, -1),)
+    if total_size is None or not range_supported:
+        return (_ByteRange(0, (total_size or 1) - 1),)
+    part_count = min(maximum, max(1, math.ceil(total_size / part_size)))
+    base_size, remainder = divmod(total_size, part_count)
+    ranges: list[_ByteRange] = []
+    start = 0
+    for index in range(part_count):
+        size = base_size + (1 if index < remainder else 0)
+        end = start + size - 1
+        ranges.append(_ByteRange(start, end))
+        start = end + 1
+    return tuple(ranges)
+
+
+def _download_state(
+    *,
+    request: DownloadRequest,
+    probe: _DownloadProbe,
+    ranges: tuple[_ByteRange, ...],
+) -> dict[str, object]:
+    return {
+        "version": _DOWNLOAD_STATE_VERSION,
+        "source_url_hash": _url_identity(request.url),
+        "final_url_hash": _url_identity(probe.final_url),
+        "total_size": probe.total_size,
+        "validator": probe.validator,
+        "ranges": [[item.start, item.end] for item in ranges],
+    }
+
+
+def _prepare_download_workspace(
+    directory: Path,
+    filename: str,
+    expected_state: dict[str, object],
+    resume: bool,
+) -> _DownloadWorkspace:
     base = Path(filename)
+    source_url_hash = expected_state["source_url_hash"]
+    ranges = expected_state["ranges"]
+    if not isinstance(ranges, list):
+        raise OSError("download state did not contain byte ranges")
     for number in range(10_000):
         suffix = "" if number == 0 else f" ({number})"
-        candidate = directory / f"{base.stem}{suffix}{base.suffix}"
+        target = directory / f"{base.stem}{suffix}{base.suffix}"
+        workspace = _workspace_for_target(target, len(ranges))
+        existing_state = _read_download_state(workspace.state)
+
+        if target.exists():
+            if existing_state is not None:
+                _cleanup_download_workspace(workspace, target)
+            continue
+        if existing_state is not None:
+            if resume and existing_state == expected_state:
+                return _DownloadWorkspace(
+                    target=workspace.target,
+                    state=workspace.state,
+                    parts=workspace.parts,
+                    assembly=workspace.assembly,
+                    resumed=any(_file_size(path) > 0 for path in workspace.parts),
+                )
+            if existing_state.get("source_url_hash") == source_url_hash:
+                _cleanup_download_artifacts(target)
+            else:
+                continue
+        elif any(directory.glob(f"{target.name}.tiya-*")):
+            continue
+
         try:
-            return candidate, candidate.open("xb")
+            with workspace.state.open("x", encoding="utf-8") as state_file:
+                json.dump(expected_state, state_file, ensure_ascii=False)
         except FileExistsError:
             continue
+        return workspace
     raise OSError("could not allocate a unique download filename")
 
 
-async def _discard(path: Path | None, output_file: BinaryIO | None) -> None:
-    if output_file is not None:
-        await asyncio.to_thread(output_file.close)
-    if path is not None:
+def _workspace_for_target(target: Path, part_count: int) -> _DownloadWorkspace:
+    parts: tuple[Path, ...]
+    if part_count == 1:
+        parts = (target.with_name(f"{target.name}.tiya-part"),)
+    else:
+        parts = tuple(
+            target.with_name(f"{target.name}.tiya-part-{index:04d}")
+            for index in range(part_count)
+        )
+    return _DownloadWorkspace(
+        target=target,
+        state=target.with_name(f"{target.name}.tiya-download.json"),
+        parts=parts,
+        assembly=target.with_name(f"{target.name}.tiya-assembling"),
+        resumed=False,
+    )
+
+
+def _read_download_state(path: Path) -> dict[str, object] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _bounded_part_size(path: Path, maximum: int) -> int:
+    size = _file_size(path)
+    if size <= maximum:
+        return size
+    path.write_bytes(b"")
+    return 0
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
+def _assemble_parts(parts: tuple[Path, ...], destination: Path) -> None:
+    with destination.open("wb") as output:
+        for part in parts:
+            with part.open("rb") as source:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _url_identity(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _cleanup_download_workspace(
+    workspace: _DownloadWorkspace,
+    keep: Path | None = None,
+) -> None:
+    for path in (workspace.state, *workspace.parts, workspace.assembly):
+        if path == keep:
+            continue
         try:
-            await asyncio.to_thread(path.unlink)
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _cleanup_download_artifacts(target: Path) -> None:
+    for path in target.parent.glob(f"{target.name}.tiya-*"):
+        try:
+            path.unlink()
         except FileNotFoundError:
             pass
 

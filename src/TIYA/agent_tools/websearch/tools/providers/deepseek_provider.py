@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import httpx
 
-from ..errors import InvalidProviderResponseError, ProviderRequestError
+from ..errors import (
+    InvalidProviderResponseError,
+    ProviderRequestError,
+    UnsupportedSearchFilterError,
+)
 from ..models import (
     Capability,
     ContentFormat,
     FetchRequest,
     ProviderProfile,
+    SearchFilter,
+    SearchFilterMode,
+    SearchFilters,
     SearchRequest,
     SearchResponse,
     SearchResult,
@@ -39,6 +46,13 @@ class DeepSeekProvider:
             "No site mapping, binary download, or interactive browsing",
             "No arbitrary HTTP methods or browser actions",
         ),
+        search_filter_support={
+            SearchFilter.INCLUDE_DOMAINS: SearchFilterMode.QUERY_OPERATOR,
+            SearchFilter.EXCLUDE_DOMAINS: SearchFilterMode.QUERY_OPERATOR,
+            SearchFilter.PUBLISHED_AFTER: SearchFilterMode.QUERY_OPERATOR,
+            SearchFilter.PUBLISHED_BEFORE: SearchFilterMode.QUERY_OPERATOR,
+            SearchFilter.LANGUAGE: SearchFilterMode.QUERY_OPERATOR,
+        },
     )
 
     def __init__(self, client: DeepSeekWebClient) -> None:
@@ -67,14 +81,24 @@ class DeepSeekProvider:
     async def search(self, request: SearchRequest) -> SearchResponse:
         """Run a DeepSeek search and normalize its provider-specific schema."""
 
+        unsupported = self.profile.unsupported_search_filters(request.filters)
+        if unsupported:
+            raise UnsupportedSearchFilterError(self.provider_id, unsupported)
+        provider_query = _compile_search_query(request.query, request.filters)
         try:
             response = await self._client.search(
-                request.query,
+                provider_query,
                 count=min(request.max_results, 50),
                 original_question=request.original_question,
-                localization=request.localization or "",
                 need_content=request.include_content,
             )
+        except ValueError as exc:
+            raise ProviderRequestError(
+                provider=self.provider_id,
+                operation=Capability.SEARCH,
+                message=str(exc),
+                retryable=False,
+            ) from exc
         except DeepSeekAPIError as exc:
             raise _api_error(Capability.SEARCH, exc) from exc
         except DeepSeekResponseError as exc:
@@ -104,6 +128,11 @@ class DeepSeekProvider:
                     provider=self.provider_id,
                 )
                 for item in response.results
+            ),
+            metadata=(
+                {"provider_query": provider_query}
+                if request.filters.requested
+                else {}
             ),
         )
 
@@ -136,6 +165,24 @@ class DeepSeekProvider:
         """Close the owned raw client, if it owns its HTTP transport."""
 
         await self._client.aclose()
+
+
+def _compile_search_query(query: str, filters: SearchFilters) -> str:
+    """Compile stable constraints to DeepSeek's documented query operators."""
+
+    parts = [query.strip()]
+    if filters.include_domains:
+        parts.append(
+            " OR ".join(f"site:{domain}" for domain in filters.include_domains)
+        )
+    parts.extend(f"-site:{domain}" for domain in filters.exclude_domains)
+    if filters.language is not None:
+        parts.append(f"lang:{filters.language}")
+    if filters.published_after is not None:
+        parts.append(f"after:{filters.published_after[:10]}")
+    if filters.published_before is not None:
+        parts.append(f"before:{filters.published_before[:10]}")
+    return " ".join(parts)
 
 
 def _api_error(

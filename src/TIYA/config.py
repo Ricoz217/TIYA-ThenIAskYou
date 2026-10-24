@@ -246,6 +246,7 @@ DEFAULT_SETTING: dict[str, Any] = {
         "AgentTaskRetryLimit": 3,  # 默认的任务最大重试次数
         "AgentControlRetryLimit": 3,  # 默认主控最大请求重试次数
         "AgentInitInputMessages": 100,  # 默认的主控输入聊天消息数
+        "DefaultHookObjectTTL": 3600,  # 默认的对象工具托管对象TTL，秒
         "ExpiredDays": 7,  # 历史文件保存天数
         "FileDownloadTimeout": 1800,  # 下载文件超时
         "ForceSaveMemoryRetry": 3,  # 强制保存记忆重试限制

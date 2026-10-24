@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -18,7 +19,11 @@ from tavily.errors import (  # type: ignore[import-untyped]
     UsageLimitExceededError,
 )
 
-from ..errors import InvalidProviderResponseError, ProviderRequestError
+from ..errors import (
+    InvalidProviderResponseError,
+    ProviderRequestError,
+    UnsupportedSearchFilterError,
+)
 from ..models import (
     Capability,
     ContentFormat,
@@ -29,6 +34,8 @@ from ..models import (
     MediaKind,
     MediaResource,
     ProviderProfile,
+    SearchFilter,
+    SearchFilterMode,
     SearchRequest,
     SearchResponse,
     SearchResult,
@@ -83,6 +90,15 @@ class TavilyProvider:
             ),
             "Operations consume Tavily API credits and depend on the configured plan",
         ),
+        search_filter_support={
+            SearchFilter.INCLUDE_DOMAINS: SearchFilterMode.NATIVE,
+            SearchFilter.EXCLUDE_DOMAINS: SearchFilterMode.NATIVE,
+            SearchFilter.PUBLISHED_AFTER: SearchFilterMode.NATIVE,
+            SearchFilter.PUBLISHED_BEFORE: SearchFilterMode.NATIVE,
+            SearchFilter.LANGUAGE: SearchFilterMode.NATIVE,
+            SearchFilter.COUNTRY: SearchFilterMode.NATIVE,
+            SearchFilter.SAFE_SEARCH: SearchFilterMode.NATIVE,
+        },
     )
 
     def __init__(self, client: _TavilyClient) -> None:
@@ -113,17 +129,43 @@ class TavilyProvider:
     async def search(self, request: SearchRequest) -> SearchResponse:
         """Search the web and normalize Tavily's ranked result objects."""
 
+        unsupported = self.profile.unsupported_search_filters(request.filters)
+        if unsupported:
+            raise UnsupportedSearchFilterError(self.provider_id, unsupported)
+        options: dict[str, object] = {
+            "max_results": request.max_results,
+            "include_answer": False,
+            "include_raw_content": (
+                "markdown" if request.include_content else False
+            ),
+            "include_favicon": True,
+            "include_usage": True,
+        }
+        filters = request.filters
+        if filters.include_domains:
+            options["include_domains"] = list(filters.include_domains)
+            options["include_domains_mode"] = "restrict"
+        if filters.exclude_domains:
+            options["exclude_domains"] = list(filters.exclude_domains)
+        if filters.published_after is not None:
+            options["start_date"] = filters.published_after[:10]
+        if filters.published_before is not None:
+            options["end_date"] = filters.published_before[:10]
+        if (
+            filters.published_after is not None
+            or filters.published_before is not None
+        ):
+            options["include_published_date"] = True
+            options["filter_by_published_date"] = True
+        if filters.language is not None:
+            options["language"] = filters.language
+            options["filter_by_language"] = True
+        if filters.country is not None:
+            options["country"] = filters.country
+        if filters.safe_search is not None:
+            options["safe_search"] = filters.safe_search
         try:
-            payload = await self._client.search(
-                request.query,
-                max_results=request.max_results,
-                include_answer=False,
-                include_raw_content=(
-                    "markdown" if request.include_content else False
-                ),
-                include_favicon=True,
-                include_usage=True,
-            )
+            payload = await self._client.search(request.query, **options)
         except TavilyTimeoutError as exc:
             raise _request_error(Capability.SEARCH, exc, retryable=True) from exc
         except _TAVILY_REQUEST_ERRORS as exc:
@@ -412,8 +454,14 @@ def _datetime(
     elif isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise _invalid(operation, f"{field} is not an ISO-8601 datetime") from exc
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(value)
+            except (TypeError, ValueError) as exc:
+                raise _invalid(
+                    operation,
+                    f"{field} is not an ISO-8601 or HTTP datetime",
+                ) from exc
     else:
         raise _invalid(operation, f"{field} must be a datetime string or null")
     if parsed.tzinfo is None:

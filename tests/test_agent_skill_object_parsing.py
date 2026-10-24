@@ -72,6 +72,49 @@ def test_object_tool_detection_handles_unions_and_builtins() -> None:
     assert SkillManager._check_object_tool(optional_object, {}) == ("INVALID", [])
 
 
+def test_object_tool_detection_rejects_nested_object_returns() -> None:
+    class Page:
+        pass
+
+    def nested_list():
+        return []
+
+    def deeply_nested_dict():
+        return {}
+
+    def ordinary_nested_dict():
+        return {}
+
+    nested_list.__annotations__["return"] = list[Page]
+    deeply_nested_dict.__annotations__["return"] = dict[str, list[Page]]
+    ordinary_nested_dict.__annotations__["return"] = dict[str, list[int]]
+
+    assert SkillManager._check_object_tool(nested_list, {Page}) == (
+        "NESTED",
+        set(),
+    )
+    assert SkillManager._check_object_tool(deeply_nested_dict, {Page}) == (
+        "NESTED",
+        set(),
+    )
+    assert SkillManager._check_object_tool(ordinary_nested_dict, {Page}) == (
+        "ORDINARY",
+        set(),
+    )
+
+    result = SkillToolsFilteredResult(
+        agent_level="default",
+        all_tools={"nested_list": nested_list},
+        allowed_tools={"nested_list": nested_list},
+    )
+    manager = object.__new__(SkillManager)
+
+    manager._parse_object_oriented_tools(result, {Page})
+
+    assert "nested_list" not in result.allowed_tools
+    assert result.forbidden_tools["nested_list"] == "NESTED_OBJECT_RETURN"
+
+
 def test_parse_class_methods_handles_descriptors_and_private_names() -> None:
     class Example:
         value = 1

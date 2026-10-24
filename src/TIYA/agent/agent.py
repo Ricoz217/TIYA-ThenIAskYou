@@ -897,7 +897,7 @@ class BaseAgent:
             function_name = function.__name__
 
         if source is not None:
-            h = blake2b(function_name.encode(), digest_size=4)
+            h = blake2b(str(source).encode(), digest_size=4)
             call_name = function_name + f"_{h.hexdigest()}"
 
         else:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -25,11 +26,15 @@ from TIYA.agent_tools.websearch.tools import (
     ProviderNotFoundError,
     ProviderRequestError,
     ProviderSelectionError,
+    SearchFilter,
+    SearchFilterMode,
+    SearchFilters,
     SearchRequest,
     SearchResponse,
     SearchResult,
     WebDocument,
     WebSearchRuntime,
+    UnsupportedSearchFilterError,
 )
 
 
@@ -255,6 +260,10 @@ def test_runtime_can_change_and_remove_a_default_provider() -> None:
         lambda: FetchRequest("ftp://example.com"),
         lambda: MapRequest("https://example.com", max_depth=-1),
         lambda: DownloadRequest("https://example.com/file", max_bytes=0),
+        lambda: DownloadRequest("https://example.com/file", max_retries=-1),
+        lambda: DownloadRequest(
+            "https://example.com/file", max_parallel_parts=0
+        ),
         lambda: BrowseRequest("ftp://example.com"),
     ],
 )
@@ -294,6 +303,107 @@ def test_runtime_exposes_configured_provider_profiles() -> None:
             Capability.BROWSE,
         }
     )
+
+
+def test_search_filters_are_immutable_and_report_requested_fields() -> None:
+    included = ["docs.example.com", "example.org"]
+    filters = SearchFilters(
+        include_domains=included,
+        exclude_domains=("spam.example",),
+        published_after="2026-01-01T08:00:00+08:00",
+        published_before="2026-10-23T00:00:00Z",
+        language="ZH-CN",
+        country="China",
+        safe_search=True,
+    )
+    included.append("later.example")
+
+    assert filters.include_domains == ("docs.example.com", "example.org")
+    assert filters.published_after == "2026-01-01T00:00:00Z"
+    assert filters.published_before == "2026-10-23T00:00:00Z"
+    assert filters.language == "zh-cn"
+    assert filters.country == "china"
+    assert filters.requested == frozenset(SearchFilter)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: SearchFilters(include_domains=("https://example.com",)),
+        lambda: SearchFilters(include_domains=("example.com/path",)),
+        lambda: SearchFilters(
+            include_domains=("example.com",),
+            exclude_domains=("EXAMPLE.COM",),
+        ),
+        lambda: SearchFilters(language="not a language"),
+        lambda: SearchFilters(published_after="2026-13-01T00:00:00"),
+        lambda: SearchFilters(published_before="not-a-date"),
+        lambda: SearchFilters(
+            published_after="2026-02-01T08:00:00+08:00",
+            published_before="2026-02-01T00:00:00Z",
+        ),
+        lambda: SearchFilters(safe_search="yes"),
+    ],
+)
+def test_search_filters_reject_ambiguous_or_invalid_values(factory) -> None:
+    with pytest.raises(ValueError):
+        factory()
+
+
+@pytest.mark.parametrize("local_input", ["2026-01-01T08:30:00", "2026-01-01"])
+def test_search_filters_treat_naive_iso_time_as_server_local_time(
+    local_input: str,
+) -> None:
+    expected = (
+        datetime.fromisoformat(local_input)
+        .astimezone(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+    filters = SearchFilters(published_after=local_input)
+
+    assert filters.published_after == expected
+
+
+def test_runtime_rejects_filters_a_provider_does_not_declare() -> None:
+    provider = FakeSearchProvider("basic")
+    runtime = WebSearchRuntime()
+    runtime.register(provider)
+
+    with pytest.raises(UnsupportedSearchFilterError) as caught:
+        run(
+            runtime.search(
+                SearchRequest(
+                    "query",
+                    filters=SearchFilters(include_domains=("example.com",)),
+                )
+            )
+        )
+
+    assert caught.value.provider == "basic"
+    assert caught.value.filters == (SearchFilter.INCLUDE_DOMAINS,)
+    assert provider.requests == []
+
+
+def test_provider_profile_freezes_declared_search_filter_support() -> None:
+    support = {SearchFilter.LANGUAGE: SearchFilterMode.NATIVE}
+    profile = ProviderProfile(
+        provider_id="filtered",
+        display_name="Filtered",
+        description="Filtered search provider",
+        capabilities=frozenset({Capability.SEARCH}),
+        search_filter_support=support,
+    )
+    support[SearchFilter.COUNTRY] = SearchFilterMode.NATIVE
+
+    assert profile.search_filter_support == {
+        SearchFilter.LANGUAGE: SearchFilterMode.NATIVE
+    }
+    with pytest.raises(TypeError):
+        profile.search_filter_support[SearchFilter.COUNTRY] = (  # type: ignore[index]
+            SearchFilterMode.NATIVE
+        )
 
 
 def test_deepseek_provider_normalizes_search_and_fetch_results() -> None:

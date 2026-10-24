@@ -11,6 +11,7 @@ from .errors import (
     ProviderAlreadyRegisteredError,
     ProviderNotFoundError,
     ProviderSelectionError,
+    UnsupportedSearchFilterError,
 )
 from .models import (
     BrowseRequest,
@@ -133,6 +134,9 @@ class WebSearchRuntime:
         selected = cast(
             SearchProvider, self._resolve(Capability.SEARCH, provider)
         )
+        unsupported = selected.profile.unsupported_search_filters(request.filters)
+        if unsupported:
+            raise UnsupportedSearchFilterError(selected.provider_id, unsupported)
         return await selected.search(request)
 
     async def fetch(

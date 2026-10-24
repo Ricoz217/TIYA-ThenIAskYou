@@ -14,6 +14,9 @@ from TIYA.agent_tools.websearch.tools import (
     MapRequest,
     MediaKind,
     ProviderRequestError,
+    SearchFilter,
+    SearchFilterMode,
+    SearchFilters,
     SearchRequest,
     TavilyProvider,
     WebSearchRuntime,
@@ -54,6 +57,15 @@ def test_profile_declares_only_the_supported_stable_operations() -> None:
     assert TavilyProvider.profile.capabilities == frozenset(
         {Capability.SEARCH, Capability.FETCH, Capability.MAP}
     )
+    assert TavilyProvider.profile.search_filter_support == {
+        SearchFilter.INCLUDE_DOMAINS: SearchFilterMode.NATIVE,
+        SearchFilter.EXCLUDE_DOMAINS: SearchFilterMode.NATIVE,
+        SearchFilter.PUBLISHED_AFTER: SearchFilterMode.NATIVE,
+        SearchFilter.PUBLISHED_BEFORE: SearchFilterMode.NATIVE,
+        SearchFilter.LANGUAGE: SearchFilterMode.NATIVE,
+        SearchFilter.COUNTRY: SearchFilterMode.NATIVE,
+        SearchFilter.SAFE_SEARCH: SearchFilterMode.NATIVE,
+    }
 
 
 def test_search_normalizes_results_and_preserves_response_metadata() -> None:
@@ -134,6 +146,72 @@ def test_search_omits_raw_content_when_not_requested() -> None:
 
     assert client.search_calls[0][1]["include_raw_content"] is False
     assert response.results[0].content is None
+
+
+def test_search_accepts_http_date_from_live_tavily_response() -> None:
+    client = FakeTavilyClient()
+    client.search_response = {
+        "results": [
+            {
+                "title": "Python release",
+                "url": "https://www.python.org/downloads/",
+                "content": "Release information",
+                "published_date": "Wed, 21 Oct 2026 09:00:00 GMT",
+            }
+        ]
+    }
+
+    response = run(TavilyProvider(client).search(SearchRequest("query")))
+
+    assert response.results[0].published_at == datetime(
+        2026, 10, 21, 9, 0, tzinfo=timezone.utc
+    )
+
+
+def test_search_maps_stable_filters_to_tavily_native_parameters() -> None:
+    client = FakeTavilyClient()
+    provider = TavilyProvider(client)
+
+    run(
+        provider.search(
+            SearchRequest(
+                "LLM inference research",
+                filters=SearchFilters(
+                    include_domains=("arxiv.org", "openreview.net"),
+                    exclude_domains=("example.com",),
+                    published_after="2026-01-02T08:00:00+08:00",
+                    published_before="2026-10-23T00:00:00Z",
+                    language="en",
+                    country="united states",
+                    safe_search=True,
+                ),
+            )
+        )
+    )
+
+    assert client.search_calls == [
+        (
+            "LLM inference research",
+            {
+                "max_results": 10,
+                "include_answer": False,
+                "include_raw_content": False,
+                "include_favicon": True,
+                "include_usage": True,
+                "include_domains": ["arxiv.org", "openreview.net"],
+                "include_domains_mode": "restrict",
+                "exclude_domains": ["example.com"],
+                "start_date": "2026-01-02",
+                "end_date": "2026-10-23",
+                "include_published_date": True,
+                "filter_by_published_date": True,
+                "language": "en",
+                "filter_by_language": True,
+                "country": "united states",
+                "safe_search": True,
+            },
+        )
+    ]
 
 
 def test_fetch_normalizes_extracted_content_images_and_favicon() -> None:

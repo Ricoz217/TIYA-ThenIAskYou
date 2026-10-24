@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .models import Capability, InteractionRequired
+from .models import Capability, InteractionRequired, SearchFilter
 
 
 class WebSearchError(Exception):
@@ -62,6 +62,18 @@ class ProviderSelectionError(WebSearchError):
         super().__init__(
             f"multiple providers are registered for {capability.value}; "
             "select a provider or configure a default"
+        )
+
+
+class UnsupportedSearchFilterError(WebSearchError):
+    """A selected provider cannot honor one or more requested constraints."""
+
+    def __init__(self, provider: str, filters: tuple[SearchFilter, ...]) -> None:
+        self.provider = provider
+        self.filters = tuple(filters)
+        names = ", ".join(search_filter.value for search_filter in self.filters)
+        super().__init__(
+            f"provider {provider!r} does not support search filters: {names}"
         )
 
 
@@ -132,6 +144,7 @@ __all__ = [
     "ProviderNotFoundError",
     "ProviderRequestError",
     "ProviderSelectionError",
+    "UnsupportedSearchFilterError",
     "WebSearchError",
 ]
 

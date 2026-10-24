@@ -22,7 +22,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from hashlib import blake2b
 from types import UnionType
-from typing import Callable, Awaitable, Any, TypedDict, Literal, get_type_hints, get_origin, get_args, Union
+from typing import Annotated, Callable, Awaitable, Any, TypedDict, Literal, get_type_hints, get_origin, get_args, Union
 from ruamel.yaml import YAML
 from PIL import Image
 
@@ -33,6 +33,7 @@ from TIYA.utils import httpx_downloader
 from TIYA.file_cache import add_file, add_file_async
 from TIYA.logger import get_logger
 from TIYA.model.model import SkillToolsFilteredResult, ObjectToolsMethods
+from TIYA.agent.agent_object_tool import AgentObjectToolManager
 
 _PATH_BLACKLIST = {ROOT_DIR / "config"}
 _log = get_logger()
@@ -62,7 +63,7 @@ class SKILL:
     data: dict = field(default_factory=dict)
     tools: dict[str, Callable[..., Awaitable | Any]] = field(default_factory=dict)
     object_tools: dict[str, Callable] = field(default_factory=dict)  # 只存储，供审计用
-    classes: dict[str, ObjectToolsMethods] = field(default_factory=dict)  # {方法名: 对应类对象}
+    classes: dict[type, ObjectToolsMethods] = field(default_factory=dict)  # {类: 对应类对象}
     tools_name_mapping: dict = field(default_factory=dict)
     md_content: dict = field(default_factory=dict)
     md_title_tree: dict = field(default_factory=dict)
@@ -101,15 +102,23 @@ class SkillManager:
             uninstall_helper: Callable,
             image_helper: Callable
     ):
+        # 对象属性
         self.skills_dir = data_path / "skill"
         self.temp_dir = data_path / "temp"
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.agent_level = agent_level
+
+        # 回调函数
         self._register_helper = register_helper
         self._uninstall_helper = uninstall_helper
         self._image_helper = image_helper
+
+        # 工具对象
         self._yaml = YAML(typ="safe")
+        self.OBJECT_TOOL = AgentObjectToolManager()
+
+        # 数据结构
         self.skills: dict[str, SKILL] = {}  # {skill_name: SKILL}
         self.tools_setting: dict[str, dict[str, ToolsSetting]] = {}
         self.tools_default_setting: dict[str, dict] = {
@@ -961,7 +970,7 @@ class SkillManager:
     def _parse_object_oriented_tools(
             self,
             tools_result: SkillToolsFilteredResult,
-            classes: dict[str, object]
+            classes: set[type]
     ):
         """检查面向对象的工具，以及是否有配套的合法类对象"""
         parsed_classes: set[type] = set()
@@ -971,22 +980,30 @@ class SkillManager:
                 return
 
             parsed_classes.add(_class)
-            _object_methods = self._parse_class_methods(_class)
-            _current_obj = tools_result.object_methods[_class.__name__] = ObjectToolsMethods(
-                hook_class=_class,
-                methods=_object_methods
-            )
+            _object_methods = self._parse_class_methods(_class)  # 返回对象方法
+            _current_obj = tools_result.object_methods.get(_class)
+            if _current_obj is None:
+                _current_obj = ObjectToolsMethods(
+                    hook_class=_class,
+                    methods=self._parse_class_methods(_class),
+                )
+                tools_result.object_methods[_class] = _current_obj
+
             for _method_name, _method in _object_methods.items():
                 _, _detected_classes = self._check_object_tool(_method)
                 if _detected_classes:
-                    _current_obj.sub_object_methods[_method_name] = [c.__name__ for c in _detected_classes]
+                    _current_obj.sub_object_methods[_method_name] = list(_detected_classes)
                     for _sub_class in _detected_classes:
                         __object_methods_recursion(_sub_class)
 
         for tool_name, tool in tools_result.allowed_tools.copy().items():
             tool_type, detected_classes = self._check_object_tool(tool, classes)
-            if tool_type == "INVALID":
-                tools_result.forbidden_tools[tool_name] = "CLASS_NOT_MATCH"
+            if tool_type in {"INVALID", "NESTED"}:
+                tools_result.forbidden_tools[tool_name] = (
+                    "CLASS_NOT_MATCH"
+                    if tool_type == "INVALID"
+                    else "NESTED_OBJECT_RETURN"
+                )
                 tools_result.allowed_tools.pop(tool_name, None)
 
             elif tool_type == "ORDINARY":
@@ -1002,35 +1019,61 @@ class SkillManager:
     @staticmethod
     def _check_object_tool(
             tool: Callable,
-            match_classes: dict[str, object] = None
-    ) -> tuple[Literal["OBJECT", "ORDINARY", "INVALID"], list[object]]:
+            match_classes: set[type] | None = None
+    ) -> tuple[Literal["OBJECT", "ORDINARY", "INVALID", "NESTED"], set[type]]:
         """确认工具类型"""
         declared = get_type_hints(tool).get("return")
-        origin = get_origin(declared)
-        # 先判断是否联合类型
-        if origin in (UnionType, Union):
-            returns = list(get_args(declared))
+        container_origins = {list, dict, tuple, set, frozenset}
+        detected_classes: set[type] = set()
+        nested_classes: set[type] = set()
+        invalid_classes: set[type] = set()
 
-        else:
-            returns = [origin or declared]
+        def _scan(annotation: Any, nested: bool = False) -> None:
+            origin = get_origin(annotation)
+            if origin in (UnionType, Union):
+                for argument in get_args(annotation):
+                    _scan(argument, nested)
 
-        is_ordinary_tool = True
-        detected_classes = []
-        for result in returns:
-            if inspect.isclass(result):
-                if result.__module__ == "builtins":
-                    continue
+                return
 
-                if match_classes is not None and match_classes.get(result.__name__) is not result:
-                    return "INVALID", []
+            if origin is Annotated:
+                arguments = get_args(annotation)
+                if arguments:
+                    _scan(arguments[0], nested)
 
-                is_ordinary_tool = False
-                detected_classes.append(result)
+                return
 
-        if is_ordinary_tool:
-            return "ORDINARY", []
+            if origin in container_origins:
+                for argument in get_args(annotation):
+                    if argument is not Ellipsis:
+                        _scan(argument, True)
 
-        return "OBJECT", detected_classes
+                return
+
+            result = origin or annotation
+            if not inspect.isclass(result) or result.__module__ == "builtins":
+                return
+
+            if match_classes is not None and result not in match_classes:
+                invalid_classes.add(result)
+
+            elif nested:
+                nested_classes.add(result)
+
+            else:
+                detected_classes.add(result)
+
+        _scan(declared)
+        if invalid_classes:
+            return "INVALID", set()
+
+        if nested_classes:
+            return "NESTED", set()
+
+        if detected_classes:
+            return "OBJECT", detected_classes
+
+        return "ORDINARY", set()
 
     @staticmethod
     def _parse_class_methods(
@@ -1053,11 +1096,6 @@ class SkillManager:
             methods[name] = func
 
         return methods
-
-    # TODO
-    def _object_tool_wrapper(self) -> Callable:
-        """包装对象函数，类似装饰器"""
-        ...
 
     @staticmethod
     def _split_frontmatter(text: str, source: Path) -> tuple[str, str]:
