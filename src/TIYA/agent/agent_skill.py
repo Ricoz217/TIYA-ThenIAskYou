@@ -14,6 +14,7 @@ import sys
 import json
 import time
 import shutil
+import importlib
 import importlib.util
 import inspect
 
@@ -51,6 +52,16 @@ class DownloadError(RuntimeError):
 class ToolsSetting(TypedDict):
     wait: bool
     callback: Literal["ALWAYS", "EXCEPTION", "NEVER", "CALL"]
+
+
+@dataclass(slots=True)
+class SkillToolsConfig:
+    """人工编写的附属工具配置；所有字段均可省略。"""
+    agent_levels: tuple[str, ...] = ()
+    tools_setting: dict[str, ToolsSetting] = field(default_factory=dict)
+    objects: dict[str, str] = field(default_factory=dict)
+    whitelist: tuple[str, ...] = ()
+    blacklist: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -809,38 +820,87 @@ class SkillManager:
     def _check_skill_addition_tools(skill: SKILL) -> bool:
         """
         检查是否有附带的符合 TIYA 格式的 Tools
-        主要判断两个，一个是否有 tools.json，一个是否有 tools 包
+        tools.json 是可选配置；存在 tools 包即可使用默认行为。
         :param skill:
         :return:
         """
-        config_file = skill.root / "tools.json"
         tools_file = skill.root / "tools" / "__init__.py"
-        return config_file.is_file() and tools_file.is_file()
+        return tools_file.is_file()
+
+    @staticmethod
+    def _read_skill_tools_config(config_file: Path) -> SkillToolsConfig:
+        """读取可选的 tools.json；文件缺失或为空等价于空配置。"""
+        if not config_file.is_file() or config_file.stat().st_size == 0:
+            return SkillToolsConfig()
+
+        try:
+            content = json.loads(config_file.read_text(encoding="utf-8"))
+
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"附属工具配置不是合法 JSON: {config_file}") from exc
+
+        if not isinstance(content, dict):
+            raise TypeError(f"附属工具配置必须是对象: {config_file}")
+
+        def _read_string_list(name: str) -> tuple[str, ...]:
+            value = content.get(name, [])
+            if not isinstance(value, list) or not all(
+                    isinstance(item, str) for item in value
+            ):
+                raise TypeError(f"tools.json 字段 [{name}] 必须是字符串列表")
+
+            values = tuple(item.strip() for item in value)
+            if any(not item for item in values):
+                raise ValueError(f"tools.json 字段 [{name}] 不能包含空值")
+
+            return values
+
+        def _read_rules(name: str) -> tuple[str, ...]:
+            rules = _read_string_list(name)
+            for rule in rules:
+                if "*" in rule and rule != "*" and not (
+                        rule.endswith(".*") and "*" not in rule[:-2]
+                ):
+                    raise ValueError(
+                        f"tools.json 字段 [{name}] 包含不支持的规则: {rule}"
+                    )
+
+            return rules
+
+        tools_setting = content.get("tools_setting", {})
+        if not isinstance(tools_setting, dict):
+            raise TypeError("tools.json 字段 [tools_setting] 必须是对象")
+
+        objects = content.get("objects", {})
+        if not isinstance(objects, dict) or not all(
+                isinstance(alias, str) and isinstance(target, str)
+                for alias, target in objects.items()
+        ):
+            raise TypeError("tools.json 字段 [objects] 必须是字符串到字符串的映射")
+
+        normalized_objects = {
+            alias.strip(): target.strip()
+            for alias, target in objects.items()
+        }
+        if any(not alias or alias.startswith("_") or not target
+               for alias, target in normalized_objects.items()):
+            raise ValueError("tools.json 字段 [objects] 包含空值或私有类名")
+
+        return SkillToolsConfig(
+            agent_levels=_read_string_list("agent_levels"),
+            tools_setting=tools_setting,
+            objects=normalized_objects,
+            whitelist=_read_rules("whitelist"),
+            blacklist=_read_rules("blacklist"),
+        )
 
     def _load_skill_addition_tools(self, skill: SKILL):
         """加载 TIYA 格式的 SKILL 附带 tools"""
         config_file = skill.root / "tools.json"
         tools_dir = skill.root / "tools"
-        tools_setting = {}
-        blacklist: dict[str, list[str]] = {}
-        whitelist: dict[str, list[str]] = {}
-
-        # 先读取配置，空文件是合法的
-        if not config_file.stat().st_size == 0:
-            try:
-                load_content = json.loads(config_file.read_text(encoding="utf-8"))
-
-            except json.JSONDecodeError as E:
-                load_content = {}
-                _log.warning(f"SKILL [{skill.name}] 附属工具配置读取失败，将使用默认配置", exc=E)
-
-            if not isinstance(load_content, dict):
-                load_content = {}
-                _log.warning(f"SKILL [{skill.name}] 附属工具配置格式错误，将使用默认配置")
-
-            tools_setting = load_content.setdefault("tools_setting", {})
-            blacklist = load_content.setdefault("blacklist", {})
-            whitelist = load_content.setdefault("whitelist", {})
+        config = self._read_skill_tools_config(config_file)
+        if config.agent_levels and self.agent_level not in config.agent_levels:
+            return
 
         # 读取工具文件脚本，获取所有的工具，同时进入对象管理
         try:
@@ -853,10 +913,17 @@ class SkillManager:
             _log.error(f"SKILL [{skill.name}] 附属工具加载失败", exc=E)
             return
 
-        # 进入过滤器，目前暂无作用
+        # 配置中显式写出的对象类加载失败属于配置错误，直接交给上层处理。
+        configured_classes = self._load_configured_object_classes(
+            skill.name,
+            tools_dir,
+            config.objects,
+        )
+
+        # 先过滤顶层工具；对象成员在递归解析时使用同一套规则。
         filtered_result = self._addition_tools_filter(
-            whitelist,
-            blacklist,
+            config.whitelist,
+            config.blacklist,
             detected_tools
         )
 
@@ -864,18 +931,33 @@ class SkillManager:
             _log.warning(f"SKILL [{skill.name}] 无允许加载的附属工具")
             return
 
-        # 判断对象工具，进行注册
+        # 判断对象工具并建立对象方法目录；包装注册仍由后续链路处理。
+        class_names = {
+            hook_class: alias
+            for alias, hook_class in detected_classes.items()
+        }
+        class_names.update({
+            hook_class: alias
+            for alias, hook_class in configured_classes.items()
+        })
+        self._parse_object_oriented_tools(
+            filtered_result,
+            set(detected_classes.values()) | set(configured_classes.values()),
+            whitelist=config.whitelist,
+            blacklist=config.blacklist,
+            class_names=class_names,
+            configured_classes=set(configured_classes.values()),
+        )
 
 
     @staticmethod
-    def _getmember_from_python_package(skill_name: str, source: Path) -> tuple[dict[str, Callable], dict[str, object]]:
+    def _getmember_from_python_package(skill_name: str, source: Path) -> tuple[dict[str, Callable], dict[str, type]]:
         """
         拆分成小函数
         :return:
         """
 
-        h = blake2b(str(source).encode(), digest_size=8)
-        module_name = f"skill_tools:{skill_name}:{h.hexdigest()}"
+        module_name = SkillManager._skill_tools_module_name(skill_name, source)
         module = sys.modules.get(module_name)
         loaded_now = module is None
         if loaded_now:
@@ -902,7 +984,7 @@ class SkillManager:
                 raise E
 
         detected_tools: dict[str, Callable] = {}
-        detected_classes: dict[str, object] = {}
+        detected_classes: dict[str, type] = {}
         for name, obj in inspect.getmembers(module):
             if not name.startswith('_'):
                 # 先判断类，因为类也可以 Callable
@@ -923,69 +1005,142 @@ class SkillManager:
 
         return detected_tools, detected_classes
 
-    def _addition_tools_filter(
-            self,
-            whitelist: dict[str, list[str]],
-            blacklist: dict[str, list[str]],
-            tools: dict[str, Callable]
-    ) -> SkillToolsFilteredResult:
-        """预留一个过滤器，目前没有任何意义，几乎全部通过"""
-        forbid_tools = blacklist.copy().setdefault(self.agent_level, [])
-        forbidden_tools = {}
-        allowed_tools = {}
-        if whitelist:
-            if self.agent_level not in whitelist:
-                return SkillToolsFilteredResult(
-                    agent_level=self.agent_level,
-                    all_tools=tools.copy(),
-                    forbidden_tools={k: "WHITELIST" for k in tools}
+    @staticmethod
+    def _skill_tools_module_name(skill_name: str, source: Path) -> str:
+        source_hash = blake2b(str(source).encode(), digest_size=8)
+        return f"skill_tools:{skill_name}:{source_hash.hexdigest()}"
+
+    @staticmethod
+    def _load_configured_object_classes(
+            skill_name: str,
+            source: Path,
+            objects: dict[str, str]
+    ) -> dict[str, type]:
+        """从 tools 包内的 ``module:qualname`` 路径加载额外对象类。"""
+        if not objects:
+            return {}
+
+        package_name = SkillManager._skill_tools_module_name(skill_name, source)
+        if package_name not in sys.modules:
+            raise RuntimeError(f"SKILL [{skill_name}] tools 包尚未加载")
+
+        loaded: dict[str, type] = {}
+        for alias, target in objects.items():
+            module_path, separator, qualname = target.partition(":")
+            if not separator or not module_path or not qualname:
+                raise ValueError(
+                    f"SKILL [{skill_name}] objects[{alias}] 必须使用 module:qualname 格式"
                 )
 
-            white_tools = whitelist[self.agent_level]
-            for tool_name in tools:
-                if tool_name in forbid_tools:
-                    forbidden_tools[tool_name] = "BLACKLIST"
+            module = importlib.import_module(f"{package_name}.{module_path}")
+            value: Any = module
+            try:
+                for part in qualname.split("."):
+                    value = getattr(value, part)
+            except AttributeError as exc:
+                raise ImportError(
+                    f"SKILL [{skill_name}] 无法加载对象类 {alias}: {target}"
+                ) from exc
 
-                elif tool_name in white_tools:
-                    allowed_tools[tool_name] = tools[tool_name]
+            if not inspect.isclass(value):
+                raise TypeError(
+                    f"SKILL [{skill_name}] objects[{alias}] 指向的不是类: {target}"
+                )
 
-                else:
-                    forbidden_tools[tool_name] = "WHITELIST"
+            loaded[alias] = value
 
-        else:
-            for tool_name in tools:
-                if tool_name in forbid_tools:
-                    forbidden_tools[tool_name] = "BLACKLIST"
+        return loaded
 
-                else:
-                    allowed_tools[tool_name] = tools[tool_name]
+    def _addition_tools_filter(
+            self,
+            whitelist: list[str] | tuple[str, ...],
+            blacklist: list[str] | tuple[str, ...],
+            tools: dict[str, Callable]
+    ) -> SkillToolsFilteredResult:
+        """按公开成员、可选白名单和优先黑名单过滤能力。"""
+        public_tools = {
+            name: tool
+            for name, tool in tools.items()
+            if not self._is_private_capability(name)
+        }
+        forbidden_tools = {}
+        allowed_tools = {}
+        for tool_name, tool in public_tools.items():
+            if self._matches_capability_rules(tool_name, blacklist):
+                forbidden_tools[tool_name] = "BLACKLIST"
+
+            elif whitelist and not self._matches_capability_rules(tool_name, whitelist):
+                forbidden_tools[tool_name] = "WHITELIST"
+
+            else:
+                allowed_tools[tool_name] = tool
 
         return SkillToolsFilteredResult(
             agent_level=self.agent_level,
-            all_tools=tools.copy(),
+            all_tools=public_tools,
             allowed_tools=allowed_tools,
             forbidden_tools=forbidden_tools
         )
 
+    @staticmethod
+    def _is_private_capability(name: str) -> bool:
+        return any(part.startswith("_") for part in name.split("."))
+
+    @staticmethod
+    def _matches_capability_rules(name: str, rules: list[str] | tuple[str, ...]) -> bool:
+        """判断是否符合过滤器规则"""
+        for rule in rules:
+            if rule == "*" or rule == name:
+                return True
+
+            if rule.endswith(".*") and name.startswith(rule[:-1]):
+                return True
+
+        return False
+
     def _parse_object_oriented_tools(
             self,
             tools_result: SkillToolsFilteredResult,
-            classes: set[type]
+            classes: set[type],
+            whitelist: list[str] | tuple[str, ...] = (),
+            blacklist: list[str] | tuple[str, ...] = (),
+            class_names: dict[type, str] | None = None,
+            configured_classes: set[type] | None = None,
     ):
         """检查面向对象的工具，以及是否有配套的合法类对象"""
         parsed_classes: set[type] = set()
+        class_names = class_names or {}
 
         def __object_methods_recursion(_class: type):
             if _class in parsed_classes:
                 return
 
             parsed_classes.add(_class)
-            _object_methods = self._parse_class_methods(_class)  # 返回对象方法
+            _class_name = class_names.get(_class, _class.__name__)
+            _object_methods = {}
+            for _method_name, _method in self._parse_class_methods(_class).items():
+                _capability_name = f"{_class_name}.{_method_name}"
+                if self._is_private_capability(_capability_name):
+                    continue
+
+                if self._matches_capability_rules(_capability_name, blacklist):
+                    tools_result.forbidden_tools[_capability_name] = "BLACKLIST"
+                    continue
+
+                if whitelist and not self._matches_capability_rules(
+                        _capability_name,
+                        whitelist,
+                ):
+                    tools_result.forbidden_tools[_capability_name] = "WHITELIST"
+                    continue
+
+                _object_methods[_method_name] = _method
+
             _current_obj = tools_result.object_methods.get(_class)
             if _current_obj is None:
                 _current_obj = ObjectToolsMethods(
                     hook_class=_class,
-                    methods=self._parse_class_methods(_class),
+                    methods=_object_methods,
                 )
                 tools_result.object_methods[_class] = _current_obj
 
@@ -997,7 +1152,8 @@ class SkillManager:
                         __object_methods_recursion(_sub_class)
 
         for tool_name, tool in tools_result.allowed_tools.copy().items():
-            tool_type, detected_classes = self._check_object_tool(tool, classes)
+            # 返回注解本身就是开发者声明的对象入口；classes 负责补充运行时实现。
+            tool_type, detected_classes = self._check_object_tool(tool)
             if tool_type in {"INVALID", "NESTED"}:
                 tools_result.forbidden_tools[tool_name] = (
                     "CLASS_NOT_MATCH"
@@ -1011,8 +1167,14 @@ class SkillManager:
 
             else:
                 # 递归注册
+                tools_result.object_tools[tool_name] = tool
+                classes.update(detected_classes)
                 for valid_class in detected_classes:
                     __object_methods_recursion(valid_class)
+
+        # objects 中显式声明的运行时类可以开放自身的公开能力。
+        for configured_class in configured_classes or ():
+            __object_methods_recursion(configured_class)
 
         # 用 wrapper 包装成普通工具
 
