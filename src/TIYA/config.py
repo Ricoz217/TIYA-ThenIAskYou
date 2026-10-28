@@ -1654,7 +1654,7 @@ class Configer:
     def _render_document(self, document: Mapping[str, Any]) -> str:
         """Keep one readable heading per known root, including legacy YAML files."""
         stream = StringIO()
-        self._yaml.dump(document, stream)
+        self._yaml.dump(copy.deepcopy(document), stream)
         lines = stream.getvalue().splitlines(keepends=True)
         titles = tuple(dict.fromkeys((*self._default_config, TITLE_SETTING)))
         heading_pattern = re.compile(
@@ -1885,7 +1885,7 @@ def initiate_config_2(*, group_list: Mapping[str, str]) -> ConfigWriteResult:
     template = groups.Group_Default_Setting
     for group_id, group_name in group_list.items():
         if group_id not in groups:
-            groups[group_id] = copy.deepcopy(template)
+            groups[group_id] = _plain(template)
             changed = True
 
         if groups[group_id].name != group_name:
