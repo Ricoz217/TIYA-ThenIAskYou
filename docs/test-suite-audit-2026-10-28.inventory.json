@@ -1,0 +1,3667 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-10-28",
+  "timezone": "Asia/Hong_Kong",
+  "scope": "分析与报告；不修改或删除现有测试、源码和运行数据",
+  "head_commit": "57e2ab5e",
+  "working_snapshot": {
+    "files": 104,
+    "lines": 25258,
+    "test_functions": 824,
+    "collection_partial_cases": 707,
+    "collection_error_files": 22,
+    "blocker": {
+      "path": "src/TIYA/agent/agent_object_tool.py",
+      "line": 167,
+      "error": "SyntaxError: expected colon after class _ObjectInfo"
+    }
+  },
+  "baseline": {
+    "source": "Git HEAD exported into temporary workspace",
+    "python": "project .venv, Python 3.12",
+    "command": "python -m pytest -q tests --durations=15 --tb=short --junitxml=<temporary file>",
+    "environment": {
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONIOENCODING": "utf-8",
+      "PYTHONPATH": "temporary workspace/src"
+    },
+    "local_config_and_runtime_data_copied": false,
+    "head_test_files": 103,
+    "head_test_functions": 812,
+    "cases": 879,
+    "failures": 25,
+    "errors": 2,
+    "skipped": 0,
+    "seconds": 42.238,
+    "passed": 852,
+    "pytest_terminal_seconds": 42.27,
+    "failed_or_errored_cases": [
+      {
+        "nodeid": "tests.test_advance_query_mock.TestAdvanceQueryMock::test_best_effort_dispatches_to_best_effort_runner_on_overflow",
+        "status": "error",
+        "seconds": 0.02
+      },
+      {
+        "nodeid": "tests.test_advance_query_mock.TestAdvanceQueryMock::test_single_shot_mock_returns_raw_response",
+        "status": "error",
+        "seconds": 0.0
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_set_values::test_set_value_type_round_trips_first_level_values",
+        "status": "failed",
+        "seconds": 0.001
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_set_values::test_set_value_type_does_not_convert_nested_sets",
+        "status": "failed",
+        "seconds": 0.008
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_set_values::test_default_value_type_does_not_enable_set_conversion",
+        "status": "failed",
+        "seconds": 0.004
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_set_values::test_touch_persists_mutated_set",
+        "status": "failed",
+        "seconds": 0.003
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_set_values::test_set_value_type_applies_to_defaults_and_bulk_updates",
+        "status": "failed",
+        "seconds": 0.003
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_new_mapping_persists_to_derived_sqlite_path",
+        "status": "failed",
+        "seconds": 0.005
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_legacy_json_migrates_atomically_and_keeps_backup",
+        "status": "failed",
+        "seconds": 0.007
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_migration_discards_expired_entries",
+        "status": "failed",
+        "seconds": 0.002
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_corrupt_legacy_json_fails_without_replacing_source",
+        "status": "failed",
+        "seconds": 0.003
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_existing_sqlite_takes_precedence_over_legacy_json",
+        "status": "failed",
+        "seconds": 0.001
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_getitem_renews_ttl_but_contains_live_can_avoid_touch",
+        "status": "failed",
+        "seconds": 0.0
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_contains_live_removes_expired_key_without_renewing_it",
+        "status": "failed",
+        "seconds": 0.0
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_callable_expire_day_is_resolved_lazily",
+        "status": "failed",
+        "seconds": 0.0
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_bulk_updates_and_delete_upsert_order_persist_final_state",
+        "status": "failed",
+        "seconds": 0.005
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_flush_async_works_and_blocking_flush_rejects_event_loop_thread",
+        "status": "failed",
+        "seconds": 0.002
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_update_does_not_wait_for_sqlite_transaction",
+        "status": "failed",
+        "seconds": 0.001
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_async_open_loads_mapping_and_close_rejects_new_writes",
+        "status": "failed",
+        "seconds": 0.001
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_close_flushes_pending_changes",
+        "status": "failed",
+        "seconds": 0.002
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_failed_transaction_keeps_dirty_data_for_retry",
+        "status": "failed",
+        "seconds": 0.001
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_no_storage_path_keeps_full_in_memory_api",
+        "status": "failed",
+        "seconds": 0.0
+      },
+      {
+        "nodeid": "tests.test_auto_mapping_sqlite::test_load_dict_is_a_compatible_import_and_persists",
+        "status": "failed",
+        "seconds": 0.001
+      },
+      {
+        "nodeid": "tests.test_config_core::test_public_helpers_use_normal_lists_and_write_results",
+        "status": "failed",
+        "seconds": 0.008
+      },
+      {
+        "nodeid": "tests.test_group_fav_tools::test_manual_fav_title_is_trimmed",
+        "status": "failed",
+        "seconds": 0.004
+      },
+      {
+        "nodeid": "tests.test_image_to_text_fav_cache::test_auto_fav_rehydrates_persisted_titles_into_shared_cache",
+        "status": "failed",
+        "seconds": 0.003
+      },
+      {
+        "nodeid": "tests.test_private_chat::test_central_reaper_reclaims_an_inactive_private_chat",
+        "status": "failed",
+        "seconds": 2.004
+      }
+    ],
+    "slowest_cases": [
+      {
+        "nodeid": "tests.test_memory_index_repository_v4::test_query_cache_keeps_latest_5000_entries",
+        "status": "passed",
+        "seconds": 6.183
+      },
+      {
+        "nodeid": "tests.test_memory_index_v4_performance_gates::test_resident_index_100k_stays_below_128_mib_and_single_delta_is_o1",
+        "status": "passed",
+        "seconds": 2.105
+      },
+      {
+        "nodeid": "tests.test_private_chat::test_central_reaper_reclaims_an_inactive_private_chat",
+        "status": "failed",
+        "seconds": 2.004
+      },
+      {
+        "nodeid": "tests.test_websearch_settings::test_runtime_builder_registers_local_and_configured_providers",
+        "status": "passed",
+        "seconds": 1.94
+      },
+      {
+        "nodeid": "tests.test_httpx_provider::test_http_failures_are_mapped_to_stable_contract_errors",
+        "status": "passed",
+        "seconds": 1.755
+      },
+      {
+        "nodeid": "tests.test_relatedness_audit::test_public_api_automatically_writes_complete_audit",
+        "status": "passed",
+        "seconds": 1.567
+      },
+      {
+        "nodeid": "tests.test_relatedness_new_words::test_discovers_word_that_jieba_splits",
+        "status": "passed",
+        "seconds": 1.339
+      },
+      {
+        "nodeid": "tests.test_deepseek_websearch::test_invalid_request_is_rejected_before_dispatch[<lambda>-query0]",
+        "status": "passed",
+        "seconds": 0.686
+      },
+      {
+        "nodeid": "tests.test_file_cache_async_call_safety::test_async_business_code_does_not_call_blocking_file_cache_apis",
+        "status": "passed",
+        "seconds": 0.673
+      },
+      {
+        "nodeid": "tests.test_deepseek_websearch::test_invalid_request_is_rejected_before_dispatch[<lambda>-query1]",
+        "status": "passed",
+        "seconds": 0.63
+      },
+      {
+        "nodeid": "tests.test_websearch_settings::test_runtime_builder_configures_real_browser_channel_and_reduced_signals",
+        "status": "passed",
+        "seconds": 0.612
+      },
+      {
+        "nodeid": "tests.test_httpx_provider::test_download_rejects_unsafe_explicit_filenames[sub/file.txt]",
+        "status": "passed",
+        "seconds": 0.583
+      },
+      {
+        "nodeid": "tests.test_httpx_provider::test_fetch_rejects_obvious_private_network_targets",
+        "status": "passed",
+        "seconds": 0.58
+      },
+      {
+        "nodeid": "tests.test_httpx_provider::test_fetch_rejects_binary_content_and_javascript_rendering",
+        "status": "passed",
+        "seconds": 0.579
+      },
+      {
+        "nodeid": "tests.test_deepseek_websearch::test_invalid_request_is_rejected_before_dispatch[<lambda>-url0]",
+        "status": "passed",
+        "seconds": 0.573
+      }
+    ]
+  },
+  "targeted_verification": {
+    "config_single": {
+      "cases": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 0.241
+    },
+    "favorite_single": {
+      "cases": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 0.841
+    },
+    "image_cache_single": {
+      "cases": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 0.376
+    },
+    "private_reaper_single": {
+      "cases": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 0.884
+    },
+    "private_entire_file": {
+      "cases": 31,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 1.127
+    },
+    "mock_second_run_after_first_run_generated_default_config": {
+      "cases": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 0.894
+    },
+    "promotable_manual_tests": {
+      "cases": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 3.264
+    }
+  },
+  "domain_summary": {
+    "memory": {
+      "label": "Memory、查询、别名与迁移",
+      "files": 21,
+      "lines": 3669,
+      "test_functions": 103
+    },
+    "agent": {
+      "label": "Agent 核心",
+      "files": 8,
+      "lines": 1538,
+      "test_functions": 54
+    },
+    "messages_qq": {
+      "label": "QQ、群消息和消息模型",
+      "files": 12,
+      "lines": 1267,
+      "test_functions": 44
+    },
+    "cache_favorites_images": {
+      "label": "文件缓存、收藏与图片",
+      "files": 9,
+      "lines": 1862,
+      "test_functions": 59
+    },
+    "infrastructure": {
+      "label": "配置、日志、调度、LLM 等基础设施",
+      "files": 17,
+      "lines": 3553,
+      "test_functions": 145
+    },
+    "websearch": {
+      "label": "WebSearch 和各 Provider",
+      "files": 11,
+      "lines": 3806,
+      "test_functions": 105
+    },
+    "setu_pixiv": {
+      "label": "Setu 与 Pixiv",
+      "files": 10,
+      "lines": 2081,
+      "test_functions": 75
+    },
+    "private_chat": {
+      "label": "私聊",
+      "files": 4,
+      "lines": 3746,
+      "test_functions": 109
+    },
+    "relatedness": {
+      "label": "Relatedness",
+      "files": 12,
+      "lines": 3736,
+      "test_functions": 130
+    }
+  },
+  "files": [
+    {
+      "path": "tests/test_advance_query.py",
+      "domain": "memory",
+      "lines": 212,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "0993ddb58aa4e26835937af9312a8915fdff7a284af3248062e566df44e487ce",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.217,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_restructure_memory_is_stable_and_sorted",
+        "test_single_shot_overflow_raises",
+        "test_chunk_tools_disabled_and_final_tools_enabled",
+        "test_aliasing_only_grows_target_bucket_map"
+      ]
+    },
+    {
+      "path": "tests/test_advance_query_alias_safety.py",
+      "domain": "memory",
+      "lines": 205,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "f76f4ca69789153dbf2d6d47e3e0104f8e0f9a3156c3a7b466b11258133180f1",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.198,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_single_shot_and_best_effort_send_alias_only_markdown",
+        "test_chunk_request_converts_real_ids_in_keys_labels_and_sources",
+        "test_single_shot_counts_the_exact_markdown_it_sends",
+        "test_fail_closed_prevents_llm_call_when_real_id_survives"
+      ]
+    },
+    {
+      "path": "tests/test_advance_query_mock.py",
+      "domain": "memory",
+      "lines": 93,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "ce6d3ce9e7ac2e355125dc3cfde0b378161abc36bbd55f661892f6d24017a370",
+      "head_result": {
+        "error": 2
+      },
+      "head_total_seconds": 0.02,
+      "head_failed_cases": [
+        {
+          "nodeid": "tests.test_advance_query_mock.TestAdvanceQueryMock::test_best_effort_dispatches_to_best_effort_runner_on_overflow",
+          "status": "error",
+          "seconds": 0.02
+        },
+        {
+          "nodeid": "tests.test_advance_query_mock.TestAdvanceQueryMock::test_single_shot_mock_returns_raw_response",
+          "status": "error",
+          "seconds": 0.0
+        }
+      ],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "移除 debug_mode 对本地配置及首次运行副作用的依赖，再归组查询测试。",
+      "test_names": [
+        "test_single_shot_mock_returns_raw_response",
+        "test_best_effort_dispatches_to_best_effort_runner_on_overflow"
+      ]
+    },
+    {
+      "path": "tests/test_advance_query_snapshot_performance.py",
+      "domain": "memory",
+      "lines": 157,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "49f08d51335253f4e082d87df78b11d27020adae89cec4fd750fae1a7edf47ee",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.625,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_advance_snapshot_reads_indexes_once_and_only_target_revisions",
+        "test_advance_snapshot_slow_io_does_not_block_event_loop",
+        "test_advance_query_entrypoint_never_uses_global_record_scan"
+      ]
+    },
+    {
+      "path": "tests/test_agent_compress_pinned_skill_content.py",
+      "domain": "agent",
+      "lines": 94,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "848194be3a8ae2daf42f3e8e137390407b6680062e7be5e6681dfc3500e05ced",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.0,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_compress_pinned_ignores_string_leaf_title_tree",
+        "test_compress_pinned_merges_only_valid_title_trees"
+      ]
+    },
+    {
+      "path": "tests/test_agent_object_tool.py",
+      "domain": "agent",
+      "lines": 308,
+      "test_functions": 11,
+      "fixture_definitions": 1,
+      "snapshot_sha256": "19f82fe67447660d5e14128bf6405197fdf628b10d5de5ed629d7dab7e069d56",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.002,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head",
+        "source_or_signature_introspection"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_get_attr_reads_property_once_and_renews_only_on_success",
+        "test_set_attr_changes_existing_attributes_and_preserves_failed_ttl",
+        "test_set_attr_calls_setter_without_reading_property",
+        "test_renewal_object_updates_ttl_from_current_time",
+        "test_renewal_object_rejects_invalid_ttl_without_mutation",
+        "test_object_access_rejects_missing_and_expired_objects",
+        "test_attribute_tools_have_parameter_and_return_descriptions",
+        "test_object_proxy_uses_sliding_expiration_time",
+        "test_register_wraps_allowed_concrete_subclass_and_reuses_object_id",
+        "test_register_allows_serializable_mismatch_but_rejects_illegal_object",
+        "test_register_is_idempotent_but_rejects_name_collisions"
+      ]
+    },
+    {
+      "path": "tests/test_agent_persistence.py",
+      "domain": "agent",
+      "lines": 210,
+      "test_functions": 7,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "e24be3844cf5417c01a9354987dc12e2e1465664c2d7dbf9e35a0bf3b599dc6d",
+      "head_result": {
+        "passed": 7
+      },
+      "head_total_seconds": 0.05,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_agent_history_serializes_event_id",
+        "test_split_context_files_round_trip",
+        "test_new_current_context_uses_legacy_history_fallback",
+        "test_ordinary_save_does_not_create_checkpoint",
+        "test_async_saves_use_agent_executor_and_serialize_per_agent",
+        "test_task_queue_serialization_copies_pending_tasks_before_iteration",
+        "test_task_queue_serialization_copies_accomplished_tasks_before_iteration"
+      ]
+    },
+    {
+      "path": "tests/test_agent_schedule_execution.py",
+      "domain": "agent",
+      "lines": 111,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "89595597595cd7c60ad6d89ebf300f3f311014538b8dc6e9678a54222c1ac2be",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.014,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_recurring_task_gets_a_fresh_retry_budget_each_fire",
+        "test_retry_exhaustion_logs_and_keeps_failure_status"
+      ]
+    },
+    {
+      "path": "tests/test_agent_skill_object_parsing.py",
+      "domain": "agent",
+      "lines": 406,
+      "test_functions": 14,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "a1ca7033faafd5c782e8055bceee7cbc41bc6b66ead976b4d5eff74d8c9d4367",
+      "head_result": {
+        "passed": 14
+      },
+      "head_total_seconds": 0.015,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head",
+        "module_registry_manipulation_requires_isolation"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_addition_tools_only_require_python_package",
+        "test_missing_or_empty_tools_config_uses_open_defaults",
+        "test_tools_config_rejects_invalid_json_and_field_types",
+        "test_tools_config_reads_optional_object_class_targets",
+        "test_agent_level_filter_skips_package_before_import",
+        "test_filter_defaults_to_public_and_blacklist_wins",
+        "test_python_package_is_reused_without_reexecution",
+        "test_configured_object_classes_are_loaded_relative_to_tools_package",
+        "test_object_tool_detection_handles_unions_and_builtins",
+        "test_object_tool_detection_rejects_nested_object_returns",
+        "test_parse_class_methods_handles_descriptors_and_private_names",
+        "test_recursive_object_method_parsing_stops_on_cycles",
+        "test_return_annotations_are_object_roots_and_member_rules_apply",
+        "test_explicit_object_class_gets_its_own_public_method_directory"
+      ]
+    },
+    {
+      "path": "tests/test_agent_tool_protocol_fallback.py",
+      "domain": "agent",
+      "lines": 228,
+      "test_functions": 10,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "3464a46605c9684d39bc3140245f4e5cb59222941ef3edb6c0e27956acfd5a25",
+      "head_result": {
+        "passed": 10
+      },
+      "head_total_seconds": 0.101,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "source_or_signature_introspection"
+      ],
+      "recommendation": "保留协议回归，替换源码字符串和出现顺序检查。",
+      "test_names": [
+        "test_detach_preserves_task_and_clears_native_call_mapping",
+        "test_both_compress_implementations_detach_native_tool_protocol",
+        "test_run_rolls_back_before_collecting_tool_responses",
+        "test_back2last_round_preserves_system_prompt",
+        "test_payload_downgrades_orphan_tool_response",
+        "test_discarding_from_context_copy_does_not_modify_original_rounds",
+        "test_payload_cleanup_reaches_chat_managed_context",
+        "test_payload_keeps_valid_tool_response",
+        "test_payload_closes_unfinished_tool_call_before_user_message",
+        "test_payload_closes_pending_call_before_orphan_notice"
+      ]
+    },
+    {
+      "path": "tests/test_agent_typeddict_returns.py",
+      "domain": "agent",
+      "lines": 102,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "5373381c17a20b2b9dc3d83a8bd444acbcfb77f1468bc72264f66d0af6234b73",
+      "head_result": null,
+      "head_total_seconds": 0,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_new_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_typeddict_returns_remain_ordinary_tools",
+        "test_typeddict_fields_still_reject_nested_objects",
+        "test_union_only_registers_the_actual_object_class",
+        "test_typeddict_runtime_checks_are_permissive",
+        "test_object_union_preserves_typeddict_result_and_checks_serialization"
+      ]
+    },
+    {
+      "path": "tests/test_agent_worker_recovery.py",
+      "domain": "agent",
+      "lines": 79,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "90b1b6cdf05d91a13ee98ac1760bbb09255a05778167f97adbe51dde8d878fff",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.002,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_aqueue_replaces_finished_workers",
+        "test_adjust_worker_replaces_finished_workers",
+        "test_agent_task_submission_checks_worker_health"
+      ]
+    },
+    {
+      "path": "tests/test_alias_async_performance.py",
+      "domain": "memory",
+      "lines": 202,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "f9d31fa2ed91baa6422296c9526f4cca1ae9436d305c382eed03408a64c0e615",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.355,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "source_or_signature_introspection"
+      ],
+      "recommendation": "保留批处理与线程边界，复核 60ms 墙钟阈值；勿整文件排除。",
+      "test_names": [
+        "test_transactional_batch_resolve_loads_one_alias_snapshot",
+        "test_alias_write_transaction_uses_delta_without_deepcopy",
+        "test_query_alias_work_is_batched_and_never_blocks_event_loop",
+        "test_async_business_methods_never_call_blocking_alias_methods_directly"
+      ]
+    },
+    {
+      "path": "tests/test_alias_batch_business.py",
+      "domain": "memory",
+      "lines": 106,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "7dc858c27798d1adb77c0c20494ed5e5ed396fb9544c15c7928594a08e10f99e",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.004,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_group_persona_search_resolves_matches_once_before_loop",
+        "test_remove_memory_candidates_resolve_once_and_keep_scoring_semantics"
+      ]
+    },
+    {
+      "path": "tests/test_aliasing.py",
+      "domain": "memory",
+      "lines": 99,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "057942badf5ecbe620b9f7268ff31be4660291d9b3667e7b223496475c7ad6f3",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.0,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_roundtrip",
+        "test_failfast_leak",
+        "test_strict_output_rejects_real_key"
+      ]
+    },
+    {
+      "path": "tests/test_aliasing_refactor.py",
+      "domain": "memory",
+      "lines": 387,
+      "test_functions": 15,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "576a1b89dbb57c37437969c686d17bcba765446766ffa4487856ea724f2574e7",
+      "head_result": {
+        "passed": 15
+      },
+      "head_total_seconds": 0.742,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留事务、并发和泄漏回归；按职责重命名，共享引擎构造。",
+      "test_names": [
+        "test_callback_storage_fallback_uses_the_same_generic_converter",
+        "test_to_real_many_returns_successes_and_preserves_strict_errors",
+        "test_scalar_mapping_is_append_only_and_bucket_scoped",
+        "test_encode_tree_converts_keys_lists_and_embedded_ids",
+        "test_decode_tree_restores_structured_aliases_without_rewriting_prose",
+        "test_decode_tree_rejects_unknown_aliases_and_key_collisions",
+        "test_assert_safe_detects_real_ids_in_any_key_or_string",
+        "test_encode_tree_rejects_alias_key_collisions",
+        "test_failed_commit_does_not_publish_mapping_to_cache",
+        "test_sealed_table_rejects_new_aliases",
+        "test_validation_read_only_and_async_store_paths",
+        "test_engine_async_paths_use_alias_table_instead_of_compatibility_codec",
+        "test_corrupt_or_counter_inconsistent_maps_fail_closed",
+        "test_concurrent_allocation_has_no_duplicates_or_lost_entries",
+        "test_async_prepare_does_not_block_event_loop"
+      ]
+    },
+    {
+      "path": "tests/test_attention_speak_probability.py",
+      "domain": "messages_qq",
+      "lines": 84,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "104b87c135b4c4dd4a491b608aea12284d4247ea625b1d0060b83fef5ac17fdb",
+      "head_result": {
+        "passed": 5
+      },
+      "head_total_seconds": 0.01,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_probability_bounds_always_valid",
+        "test_sleep_timeout_then_wake_jump",
+        "test_penalty_drops_probability_under_frequent_wakes",
+        "test_time_normalization_reduces_frequency_coupling_when_min_is_zero",
+        "test_new_api_wake_and_get_probability_works_without_explicit_advance"
+      ]
+    },
+    {
+      "path": "tests/test_auto_fav_validity.py",
+      "domain": "cache_favorites_images",
+      "lines": 80,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "8b0b2d51a23f24da156c10fb7f8a043ee12e0612ac612f469384c4e0b572084d",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.008,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_get_fav_removes_missing_hash_from_every_title_and_persists",
+        "test_get_fav_keeps_existing_hash",
+        "test_combined_fav_view_removes_missing_hash_from_source_indexes"
+      ]
+    },
+    {
+      "path": "tests/test_auto_mapping_set_values.py",
+      "domain": "infrastructure",
+      "lines": 79,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "e53aea02fb11eba80ae7fec8b9442e93652ee96bd1fcc24858dbac4271d3a7ea",
+      "head_result": {
+        "failed": 5
+      },
+      "head_total_seconds": 0.019,
+      "head_failed_cases": [
+        {
+          "nodeid": "tests.test_auto_mapping_set_values::test_set_value_type_round_trips_first_level_values",
+          "status": "failed",
+          "seconds": 0.001
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_set_values::test_set_value_type_does_not_convert_nested_sets",
+          "status": "failed",
+          "seconds": 0.008
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_set_values::test_default_value_type_does_not_enable_set_conversion",
+          "status": "failed",
+          "seconds": 0.004
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_set_values::test_touch_persists_mutated_set",
+          "status": "failed",
+          "seconds": 0.003
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_set_values::test_set_value_type_applies_to_defaults_and_bulk_updates",
+          "status": "failed",
+          "seconds": 0.003
+        }
+      ],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "优先确认 AutoMapping 初始化、持久化屏障和序列化契约；5 个提交版用例失败，含不存在的接口。",
+      "test_names": [
+        "test_set_value_type_round_trips_first_level_values",
+        "test_set_value_type_does_not_convert_nested_sets",
+        "test_default_value_type_does_not_enable_set_conversion",
+        "test_touch_persists_mutated_set",
+        "test_set_value_type_applies_to_defaults_and_bulk_updates"
+      ]
+    },
+    {
+      "path": "tests/test_auto_mapping_sqlite.py",
+      "domain": "infrastructure",
+      "lines": 315,
+      "test_functions": 16,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "f794e4d7bcdb35cf01d13922e9f1e0603ba9e5f2720af21b7d301b2ba08a46a8",
+      "head_result": {
+        "failed": 16
+      },
+      "head_total_seconds": 0.031,
+      "head_failed_cases": [
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_new_mapping_persists_to_derived_sqlite_path",
+          "status": "failed",
+          "seconds": 0.005
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_legacy_json_migrates_atomically_and_keeps_backup",
+          "status": "failed",
+          "seconds": 0.007
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_migration_discards_expired_entries",
+          "status": "failed",
+          "seconds": 0.002
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_corrupt_legacy_json_fails_without_replacing_source",
+          "status": "failed",
+          "seconds": 0.003
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_existing_sqlite_takes_precedence_over_legacy_json",
+          "status": "failed",
+          "seconds": 0.001
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_getitem_renews_ttl_but_contains_live_can_avoid_touch",
+          "status": "failed",
+          "seconds": 0.0
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_contains_live_removes_expired_key_without_renewing_it",
+          "status": "failed",
+          "seconds": 0.0
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_callable_expire_day_is_resolved_lazily",
+          "status": "failed",
+          "seconds": 0.0
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_bulk_updates_and_delete_upsert_order_persist_final_state",
+          "status": "failed",
+          "seconds": 0.005
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_flush_async_works_and_blocking_flush_rejects_event_loop_thread",
+          "status": "failed",
+          "seconds": 0.002
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_update_does_not_wait_for_sqlite_transaction",
+          "status": "failed",
+          "seconds": 0.001
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_async_open_loads_mapping_and_close_rejects_new_writes",
+          "status": "failed",
+          "seconds": 0.001
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_close_flushes_pending_changes",
+          "status": "failed",
+          "seconds": 0.002
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_failed_transaction_keeps_dirty_data_for_retry",
+          "status": "failed",
+          "seconds": 0.001
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_no_storage_path_keeps_full_in_memory_api",
+          "status": "failed",
+          "seconds": 0.0
+        },
+        {
+          "nodeid": "tests.test_auto_mapping_sqlite::test_load_dict_is_a_compatible_import_and_persists",
+          "status": "failed",
+          "seconds": 0.001
+        }
+      ],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "优先确认 AutoMapping 当前支持的公开契约；16 个提交版用例失败，不直接按失败删除。",
+      "test_names": [
+        "test_new_mapping_persists_to_derived_sqlite_path",
+        "test_legacy_json_migrates_atomically_and_keeps_backup",
+        "test_migration_discards_expired_entries",
+        "test_corrupt_legacy_json_fails_without_replacing_source",
+        "test_existing_sqlite_takes_precedence_over_legacy_json",
+        "test_getitem_renews_ttl_but_contains_live_can_avoid_touch",
+        "test_contains_live_removes_expired_key_without_renewing_it",
+        "test_callable_expire_day_is_resolved_lazily",
+        "test_bulk_updates_and_delete_upsert_order_persist_final_state",
+        "test_flush_async_works_and_blocking_flush_rejects_event_loop_thread",
+        "test_update_does_not_wait_for_sqlite_transaction",
+        "test_async_open_loads_mapping_and_close_rejects_new_writes",
+        "test_close_flushes_pending_changes",
+        "test_failed_transaction_keeps_dirty_data_for_retry",
+        "test_no_storage_path_keeps_full_in_memory_api",
+        "test_load_dict_is_a_compatible_import_and_persists"
+      ]
+    },
+    {
+      "path": "tests/test_bucket_handle_aliasing.py",
+      "domain": "memory",
+      "lines": 95,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "916e169ef80dccb9cfa504b4f40483667612401cc2e045320ccb92c6348199cf",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.449,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_bucket_handle_resolve_alias_handles_memory_bucket_and_bucket_node",
+        "test_bucket_handle_resolve_alias_preserves_validation_errors",
+        "test_bucket_handle_resolve_aliases_batches_successes_with_one_refresh"
+      ]
+    },
+    {
+      "path": "tests/test_bucket_handle_index_iteration.py",
+      "domain": "memory",
+      "lines": 89,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "c486396afb30080a6a70a8c7d2344a09251e7241b85f06de0bdb61bc05dc1c2c",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.297,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_bucket_handle_iterator_loads_records_lazily_off_event_loop",
+        "test_bucket_handle_contains_uses_index_without_loading_record_files",
+        "test_bucket_handle_iterator_preserves_memory_then_bucket_order"
+      ]
+    },
+    {
+      "path": "tests/test_builtin_resources.py",
+      "domain": "infrastructure",
+      "lines": 209,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "ea774bba3681e5a83a708675850a86063424c374658a63c4f3f50da23207c991",
+      "head_result": {
+        "passed": 5
+      },
+      "head_total_seconds": 0.186,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_new_character_index_is_created_and_default_files_become_permanent",
+        "test_existing_user_index_is_not_overwritten_and_removed_defaults_stay_removed",
+        "test_second_start_does_not_rewrite_already_permanent_files",
+        "test_corrupted_builtin_file_is_rejected",
+        "test_repository_builtin_pack_installs_into_isolated_cache"
+      ]
+    },
+    {
+      "path": "tests/test_character_modes.py",
+      "domain": "messages_qq",
+      "lines": 54,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "ce3a917bd17aaf1e5b4cda1495f082c31feb75a68135a3bfdc89942a3560e84d",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.006,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_character_directory_loads_group_and_private_prompts",
+        "test_incomplete_character_directory_is_rejected"
+      ]
+    },
+    {
+      "path": "tests/test_command.py",
+      "domain": "infrastructure",
+      "lines": 238,
+      "test_functions": 20,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "decbb159acad7ff2efe14be6705434d95a574ed31d4347cbb531f1631646007f",
+      "head_result": {
+        "passed": 20
+      },
+      "head_total_seconds": 0.008,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_parse_positionals_options_and_quoted_text",
+        "test_alias_and_command_name_are_case_insensitive",
+        "test_long_option_supports_equals_syntax",
+        "test_double_dash_stops_option_parsing",
+        "test_backslashes_are_not_treated_as_shell_escapes",
+        "test_unknown_command_raises_specific_error",
+        "test_unclosed_quote_raises_syntax_error",
+        "test_missing_prefix_or_command_name_raises_syntax_error",
+        "test_unknown_option_raises_argument_error",
+        "test_raw_remainder_preserves_nested_command_text",
+        "test_raw_remainder_uses_default_when_tail_is_empty",
+        "test_raw_remainder_must_be_the_only_argument",
+        "test_missing_required_positional_raises_argument_error",
+        "test_type_and_choices_are_validated",
+        "test_help_is_generated_from_registered_metadata",
+        "test_help_list_can_be_filtered_by_permission",
+        "test_specific_help_requires_sufficient_permission",
+        "test_command_permission_defaults_to_open",
+        "test_invalid_command_permission_is_rejected",
+        "test_command_permissions_have_a_strict_level_order"
+      ]
+    },
+    {
+      "path": "tests/test_config_core.py",
+      "domain": "infrastructure",
+      "lines": 800,
+      "test_functions": 25,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "188a9d1a02a6afefae03b6a73fd605f9cbcb3b2e62e76457b286f7e34ed80bcf",
+      "head_result": {
+        "passed": 24,
+        "failed": 1
+      },
+      "head_total_seconds": 0.435,
+      "head_failed_cases": [
+        {
+          "nodeid": "tests.test_config_core::test_public_helpers_use_normal_lists_and_write_results",
+          "status": "failed",
+          "seconds": 0.008
+        }
+      ],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "large_file_800_lines_or_more",
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "对齐 get_llm 缺省行为；按容器、校验和公开辅助函数整理大文件。",
+      "test_names": [
+        "test_missing_runtime_attribute_uses_public_config_name",
+        "test_setting_missing_values_are_materialized_once",
+        "test_non_setting_missing_value_uses_default_but_is_not_written",
+        "test_explicit_mutation_of_fallback_value_is_persisted_alone",
+        "test_wrong_type_falls_back_without_overwriting_raw_value",
+        "test_lists_have_no_comment_sentinel_and_round_trip_comments",
+        "test_llm_items_and_dynamic_groups_use_templates",
+        "test_reload_is_transactional_and_keeps_root_identity",
+        "test_report_supports_combined_tree_and_path_list",
+        "test_unknown_keys_survive_round_trip",
+        "test_module_defaults_include_complete_relative_group",
+        "test_atomic_write_failure_keeps_original_file",
+        "test_missing_unknown_attribute_is_strict_and_does_not_mutate",
+        "test_runtime_mapping_and_list_mutations_are_persisted",
+        "test_load_failures_return_results_and_keep_last_report",
+        "test_public_helpers_use_normal_lists_and_write_results",
+        "test_reload_rebinds_groups_before_notifying",
+        "test_default_document_generation_and_character_helpers",
+        "test_generated_config_has_one_heading_per_root_group",
+        "test_save_normalizes_old_root_headings_and_preserves_other_comments",
+        "test_complete_module_defaults_validate_cleanly_and_include_comments",
+        "test_list_comments_follow_existing_items_after_insert_remove_and_reorder",
+        "test_private_users_are_sparse_overrides",
+        "test_existing_private_root_survives_setting_repair_and_config_update",
+        "test_private_config_root_identity_survives_reload"
+      ]
+    },
+    {
+      "path": "tests/test_crawl4ai_provider.py",
+      "domain": "websearch",
+      "lines": 199,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "f7e53348dedf3422fffea962115544cf2badd7d1fc1342e98d72157eeaf85b39",
+      "head_result": {
+        "passed": 5
+      },
+      "head_total_seconds": 0.007,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_crawl4ai_fetch_normalizes_document_and_reuses_identity",
+        "test_crawl4ai_marks_pages_that_need_human_interaction",
+        "test_crawl4ai_map_uses_bounded_deep_crawl_and_deduplicates_links",
+        "test_crawl4ai_failure_maps_to_provider_error",
+        "test_crawl4ai_antibot_failure_requests_human_verification"
+      ]
+    },
+    {
+      "path": "tests/test_deepseek_websearch.py",
+      "domain": "websearch",
+      "lines": 315,
+      "test_functions": 9,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "02fd2abb40d69c07646060dbfb84bc3cc24c6bb751ed9fcb17980267609dd4a1",
+      "head_result": {
+        "passed": 16
+      },
+      "head_total_seconds": 3.598,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_search_sends_official_payload_and_returns_typed_results",
+        "test_search_uses_documented_defaults_and_accepts_empty_results",
+        "test_provider_rejects_filters_it_cannot_honor_without_calling_api",
+        "test_provider_compiles_stable_filters_to_documented_query_operators",
+        "test_fetch_returns_title_and_markdown",
+        "test_api_error_exposes_official_error_fields",
+        "test_malformed_success_response_raises_adapter_error",
+        "test_invalid_request_is_rejected_before_dispatch",
+        "test_client_requires_a_non_empty_key"
+      ]
+    },
+    {
+      "path": "tests/test_engine_structure_contract.py",
+      "domain": "memory",
+      "lines": 119,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "727ebd97efa74f38d1ddaf2ef8bc165016f04ddaa15f51a2006532a70d64a909",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.141,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "source_or_signature_introspection"
+      ],
+      "recommendation": "逐条评估签名 hash、行数及布局冻结；保留有明确理由的兼容与架构契约。",
+      "test_names": [
+        "test_public_engine_handle_and_config_contracts_are_stable",
+        "test_public_compatibility_exports_keep_type_identity",
+        "test_engine_and_services_respect_architecture_boundaries"
+      ]
+    },
+    {
+      "path": "tests/test_event_loop_monitor.py",
+      "domain": "infrastructure",
+      "lines": 107,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "b4ecacf18f46f54f602cfd65fd597c8809b015c10311fe3b592476c643d9427b",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.189,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_monitor_does_not_report_when_event_loop_is_responsive",
+        "test_monitor_reports_blocking_stack_and_recovery_once",
+        "test_monitor_close_is_idempotent",
+        "test_monitor_can_be_signalled_from_a_non_async_shutdown_path"
+      ]
+    },
+    {
+      "path": "tests/test_fav_system.py",
+      "domain": "cache_favorites_images",
+      "lines": 987,
+      "test_functions": 30,
+      "fixture_definitions": 1,
+      "snapshot_sha256": "de2cf6b043de81b2491e68f6375efcd4255c5d6dcbffae1afd91b1a9af3cc310",
+      "head_result": {
+        "passed": 30
+      },
+      "head_total_seconds": 0.041,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "large_file_800_lines_or_more",
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留选择集、持久化和容错，按职责分组大文件。",
+      "test_names": [
+        "test_list_builds_unique_ordered_selection_without_sending_images",
+        "test_navigation_sends_one_image_and_does_not_wrap",
+        "test_image_output_uses_system_sender_instead_of_say",
+        "test_select_accepts_items_and_ranges_and_rebuilds_indexes",
+        "test_select_deduplicates_overlapping_choices_in_input_order",
+        "test_select_rejects_invalid_or_out_of_range_choice_without_mutating",
+        "test_images_ignore_attached_text_and_skip_missing_hash_name",
+        "test_image_waits_until_download_provides_hash_name",
+        "test_check_add_requires_titles_then_adds_the_confirmed_whole_queue",
+        "test_any_mutation_invalidates_confirmation",
+        "test_delete_requires_check_and_removes_all_staged_hashes",
+        "test_add_delete_with_cursor_stages_only_current_item",
+        "test_remove_updates_backing_queue_and_previews_adjusted_cursor",
+        "test_plain_text_renames_current_hash_without_resending_image",
+        "test_unknown_command_is_not_used_as_a_title",
+        "test_fav_help_exports_command_set_help_without_sending_images",
+        "test_check_does_not_confirm_when_image_delivery_fails",
+        "test_exit_uses_close_callback",
+        "test_private_fav_entry_requires_management_and_transfers_target",
+        "test_private_fav_target_rejects_multiple_target_kinds",
+        "test_private_fav_target_opens_an_existing_offline_user_directory",
+        "test_private_fav_target_rejects_an_unknown_user",
+        "test_private_fav_target_rejects_invalid_qq_and_uninitialized_store",
+        "test_private_help_exports_only_commands_allowed_by_permission",
+        "test_private_management_messages_use_system_send",
+        "test_private_fav_dialog_is_a_thin_transfer_object",
+        "test_private_chat_places_fav_before_management_and_destroys_it",
+        "test_fav_activity_refreshes_management_timeout",
+        "test_fav_exit_destroys_only_fav_dialog",
+        "test_auto_fav_crud_preserves_many_hashes_but_rename_collapses_titles"
+      ]
+    },
+    {
+      "path": "tests/test_file_cache_async_call_safety.py",
+      "domain": "cache_favorites_images",
+      "lines": 63,
+      "test_functions": 1,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "863eccf0e823d88142df6669f29b043dc1dd414813e19cc4c044894b77ebdaa2",
+      "head_result": {
+        "passed": 1
+      },
+      "head_total_seconds": 0.673,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "source_or_signature_introspection"
+      ],
+      "recommendation": "保留异步禁止同步 I/O 的架构目标，单独归组源码扫描。",
+      "test_names": [
+        "test_async_business_code_does_not_call_blocking_file_cache_apis"
+      ]
+    },
+    {
+      "path": "tests/test_file_cache_concurrency.py",
+      "domain": "cache_favorites_images",
+      "lines": 50,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "f657038eaa3811f026d650fed0fa5c9db3ad096fcdf1ddf3471a2e18f77ff719",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.121,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "candidate_for_domain_consolidation"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_file_cache_executor_has_startup_headroom",
+        "test_concurrent_same_hash_operations_do_not_deadlock",
+        "test_cleanup_and_access_race_always_completes"
+      ]
+    },
+    {
+      "path": "tests/test_file_cache_exists.py",
+      "domain": "cache_favorites_images",
+      "lines": 39,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "dad3e7abda429c69ad54d7a4b8ecec813779840261daacc0d4239e8414f4817d",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.028,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "candidate_for_domain_consolidation"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_check_file_exists_only_checks_physical_file",
+        "test_async_interfaces_preserve_results_and_exceptions"
+      ]
+    },
+    {
+      "path": "tests/test_file_cache_orphans.py",
+      "domain": "cache_favorites_images",
+      "lines": 102,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "e8d30843d540d5e39c61892bbffd230cd125cf981ccb68ff2994bb524c80d44a",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.082,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "candidate_for_domain_consolidation"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_cleanup_rebuilds_expiring_metadata_for_orphan_hash_file",
+        "test_rebuilt_orphan_expires_after_full_retention_period",
+        "test_cleanup_ignores_files_outside_the_hash_layout",
+        "test_rebuild_does_not_restore_index_for_file_removed_before_flush"
+      ]
+    },
+    {
+      "path": "tests/test_group_api_audit_log.py",
+      "domain": "messages_qq",
+      "lines": 65,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "2e045352161fe5defd6ffee38ace35a1d6e79addd5bc71ecc555b1301f8759ea",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.002,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_say_logs_sdk_send_exception",
+        "test_say_logs_not_ok_response"
+      ]
+    },
+    {
+      "path": "tests/test_group_fav_tools.py",
+      "domain": "cache_favorites_images",
+      "lines": 173,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "34963a4265a40b205177011ba67515584840e960ad6895b673863a76fddf3a7a",
+      "head_result": {
+        "passed": 3,
+        "failed": 1
+      },
+      "head_total_seconds": 0.058,
+      "head_failed_cases": [
+        {
+          "nodeid": "tests.test_group_fav_tools::test_manual_fav_title_is_trimmed",
+          "status": "failed",
+          "seconds": 0.004
+        }
+      ],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "核对重载收藏标题缺失；保留行为回归，共享收藏配置构造。",
+      "test_names": [
+        "test_speaker_can_resolve_character_fav",
+        "test_manual_fav_title_is_trimmed",
+        "test_manual_fav_title_rejects_over_30_characters",
+        "test_add_group_fav_rejects_truncated_image"
+      ]
+    },
+    {
+      "path": "tests/test_group_speaker_backpressure.py",
+      "domain": "messages_qq",
+      "lines": 97,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "c8fe6042f47c685caaf98d8f007aa04a41376b1fb99f98b1666ba008feff006f",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.053,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_non_retryable_speaker_failure_guidance_forbids_retry",
+        "test_random_speak_is_skipped_while_speaker_is_busy",
+        "test_speaker_lock_queue_timeout_is_non_retryable"
+      ]
+    },
+    {
+      "path": "tests/test_group_speaker_validation_retry.py",
+      "domain": "messages_qq",
+      "lines": 228,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "176e1b1c0885d04a33215e3d2c22644e588382032b2f3a171a3bbe6d229d2ef8",
+      "head_result": {
+        "passed": 5
+      },
+      "head_total_seconds": 0.02,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_speaker_retries_with_sanitized_error_and_commits_cursor",
+        "test_speaker_keeps_cursor_when_all_validation_attempts_fail",
+        "test_speaker_stops_retry_when_context_rollback_is_empty",
+        "test_speaker_does_not_rollback_none_response",
+        "test_chat_back_to_last_round_returns_removed_prompts"
+      ]
+    },
+    {
+      "path": "tests/test_httpx_provider.py",
+      "domain": "websearch",
+      "lines": 1056,
+      "test_functions": 29,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "9290af8439668404e5154755a4c97950d5129e0ce65b8a1aa27e46b42370f184",
+      "head_result": {
+        "passed": 31
+      },
+      "head_total_seconds": 4.779,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "large_file_800_lines_or_more",
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留抓取、下载和错误边界，按职责分组大文件。",
+      "test_names": [
+        "test_profile_declares_lightweight_http_capabilities",
+        "test_fetch_extracts_a_normalized_document_without_a_browser",
+        "test_fetch_marks_login_pages_for_agent_escalation",
+        "test_fetch_ignores_incidental_challenge_and_mfa_terms",
+        "test_fetch_ignores_a_login_widget_outside_readable_article",
+        "test_fetch_detects_structural_captcha_evidence",
+        "test_fetch_returns_media_semantic_context_and_discovery_source",
+        "test_fetch_recommends_rendering_for_a_javascript_shell",
+        "test_fetch_rejects_binary_content_and_javascript_rendering",
+        "test_fetch_enforces_document_size_before_parsing",
+        "test_map_crawls_same_origin_to_the_requested_depth",
+        "test_map_uses_a_redirected_root_as_the_canonical_origin",
+        "test_fetch_rejects_obvious_private_network_targets",
+        "test_download_streams_a_bounded_file_and_returns_verified_metadata",
+        "test_download_derives_a_safe_unique_filename",
+        "test_download_rejects_unsafe_explicit_filenames",
+        "test_download_rejects_content_length_over_limit_without_creating_a_file",
+        "test_download_enforces_streamed_size_and_removes_partial_file",
+        "test_download_reconnects_and_resumes_the_current_transfer",
+        "test_download_retries_a_transient_range_probe",
+        "test_download_preserves_partial_state_and_resumes_on_a_later_call",
+        "test_download_discards_interrupted_state_without_a_validator",
+        "test_download_uses_concurrent_ranges_when_the_server_supports_them",
+        "test_download_falls_back_when_the_server_ignores_ranges",
+        "test_download_falls_back_when_the_server_rejects_the_range_probe",
+        "test_download_rejects_a_ranged_resource_over_the_size_limit",
+        "test_http_failures_are_mapped_to_stable_contract_errors",
+        "test_runtime_dispatches_httpx_download",
+        "test_runtime_dispatches_httpx_fetch"
+      ]
+    },
+    {
+      "path": "tests/test_image_postprocess.py",
+      "domain": "cache_favorites_images",
+      "lines": 108,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "83b1b992b2853b890cc50555663c3c117009036f82ac993d51d48fa9ca97ebc2",
+      "head_result": {
+        "passed": 7
+      },
+      "head_total_seconds": 0.073,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_postprocess_image_crops_all_gif_frames_with_the_same_offsets",
+        "test_postprocess_image_adds_exact_number_of_static_noise_pixels",
+        "test_postprocess_image_rejects_noise_larger_than_cropped_image",
+        "test_postprocess_image_uses_white_noise_for_jpeg_paths",
+        "test_postprocess_image_validates_input_and_noise_count"
+      ]
+    },
+    {
+      "path": "tests/test_image_to_text_fav_cache.py",
+      "domain": "cache_favorites_images",
+      "lines": 260,
+      "test_functions": 7,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "18943da553b1dc580bd6ee6f4e1a86793fe80df93f224b5d8e8567f8c8a9b075",
+      "head_result": {
+        "passed": 6,
+        "failed": 1
+      },
+      "head_total_seconds": 0.015,
+      "head_failed_cases": [
+        {
+          "nodeid": "tests.test_image_to_text_fav_cache::test_auto_fav_rehydrates_persisted_titles_into_shared_cache",
+          "status": "failed",
+          "seconds": 0.003
+        }
+      ],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "核对持久化后缓存重建；单独运行仍失败，不直接判定过期。",
+      "test_names": [
+        "test_normal_lookup_can_prefer_existing_fav_title",
+        "test_fav_mode_parses_llm_json_before_caching",
+        "test_fav_title_cache_only_accepts_parsed_short_title",
+        "test_img_message_reads_fav_without_creating_it",
+        "test_auto_fav_registers_manual_title_in_shared_cache",
+        "test_auto_fav_rehydrates_persisted_titles_into_shared_cache",
+        "test_auto_generated_fav_title_is_already_parsed"
+      ]
+    },
+    {
+      "path": "tests/test_llm_client_refresh.py",
+      "domain": "infrastructure",
+      "lines": 154,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "eef2f88d41e2dec850ac77ad8353a4adf0625b8fe2b975cb6cab8bcd28c1e6ff",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.037,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_keep_alive_client_is_rebuilt_after_switching_preset",
+        "test_creating_client_does_not_consume_proxy_configuration",
+        "test_switching_only_model_keeps_existing_client_pool"
+      ]
+    },
+    {
+      "path": "tests/test_llm_usage_free_price.py",
+      "domain": "infrastructure",
+      "lines": 72,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "ae885c85f38635cc274b0fb9296efa79a7f9421d96d684561e4b56127ad107da",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.003,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_zero_price_and_missing_price_have_different_hashes",
+        "test_usage_storage_keeps_missing_and_zero_price_separate",
+        "test_parse_llm_setting_preserves_explicit_zero_price",
+        "test_parse_llm_setting_keeps_empty_price_unconfigured"
+      ]
+    },
+    {
+      "path": "tests/test_logger_persistence.py",
+      "domain": "infrastructure",
+      "lines": 156,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "47e6772a60e20517679bb2f5f53b6a030acd1abbae5fd5997a971a24b95754d4",
+      "head_result": {
+        "passed": 5
+      },
+      "head_total_seconds": 0.436,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "candidate_for_domain_consolidation"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_full_event_queue_accounts_for_discarded_item",
+        "test_full_file_queue_accounts_for_discarded_item",
+        "test_shutdown_waits_for_records_created_by_pending_events",
+        "test_writer_continues_after_one_record_fails",
+        "test_writer_rolls_files_by_current_date"
+      ]
+    },
+    {
+      "path": "tests/test_logger_root_path.py",
+      "domain": "infrastructure",
+      "lines": 32,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "a1110bdabd5f27e8b81cfa6b79360a8e4df27fe8d766eb801f5ed693754ae560",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.001,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "source_or_signature_introspection",
+        "candidate_for_domain_consolidation"
+      ],
+      "recommendation": "保留根路径回归，评估减少对构造语法的绑定。",
+      "test_names": [
+        "test_logs_dir_is_root_anchored",
+        "test_initiate_instance_uses_root_anchored_logs_dir"
+      ]
+    },
+    {
+      "path": "tests/test_logger_stream_persistence.py",
+      "domain": "infrastructure",
+      "lines": 250,
+      "test_functions": 11,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "11fc37feebc4146de2090da4d4baef091414ed3adb28cfd7a0568ee97c012977",
+      "head_result": {
+        "passed": 11
+      },
+      "head_total_seconds": 1.223,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "candidate_for_domain_consolidation"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_write_is_buffered_until_close_and_persisted_once",
+        "test_context_manager_exception_still_persists_partial_stream",
+        "test_write_flush_creates_checkpoint_without_close_duplicate",
+        "test_write_after_checkpoint_persists_new_final_snapshot",
+        "test_update_persists_each_snapshot_without_close_duplicate",
+        "test_mixed_update_and_write_persists_only_complete_states",
+        "test_file_buffer_is_not_limited_by_ui_stream_tail",
+        "test_block_expiry_does_not_discard_pending_file_stream",
+        "test_shutdown_finalizes_unclosed_stream",
+        "test_stream_levels_keep_existing_file_routing",
+        "test_status_streams_do_not_persist"
+      ]
+    },
+    {
+      "path": "tests/test_logger_worker_titles.py",
+      "domain": "infrastructure",
+      "lines": 86,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "df6a9b83ee583530170eb35a27c804414c4192adeba9274d409d8eea81783d53",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.434,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "candidate_for_domain_consolidation"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_worker_title_survives_info_wakeup_after_timeout",
+        "test_worker_title_survives_status_wakeup_after_timeout",
+        "test_explicit_remove_forgets_worker_title",
+        "test_recreating_worker_updates_remembered_title"
+      ]
+    },
+    {
+      "path": "tests/test_main_entry.py",
+      "domain": "infrastructure",
+      "lines": 15,
+      "test_functions": 1,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "b85dfc81d604b1fd0e3eb831c65f9c6a7c490febb2273681df9fc23cb6a92906",
+      "head_result": {
+        "passed": 1
+      },
+      "head_total_seconds": 0.001,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "module_registry_manipulation_requires_isolation"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_python_m_tiya_runs_qq_bot_main"
+      ]
+    },
+    {
+      "path": "tests/test_memory_auto_manage_locking.py",
+      "domain": "memory",
+      "lines": 66,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "61d6473362d76770b68a2ee22df33936bf9ebf8dbf994317bd15fe2259bc65ce",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.297,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_add_memory_auto_forget_does_not_reenter_bucket_lock",
+        "test_update_memory_auto_forget_does_not_reenter_bucket_lock",
+        "test_force_split_auto_forget_does_not_reenter_bucket_lock"
+      ]
+    },
+    {
+      "path": "tests/test_memory_config_max_context.py",
+      "domain": "memory",
+      "lines": 67,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "30cc680186f05e60888fc05d96c38b2980c26b1d758f498dccd0003e0daf027d",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.072,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_empty_llm_preset_uses_default_max_context_window",
+        "test_apply_config_reloads_max_context_window_from_llm_preset"
+      ]
+    },
+    {
+      "path": "tests/test_memory_index_listing_and_tokens.py",
+      "domain": "memory",
+      "lines": 355,
+      "test_functions": 11,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "599a38243b39ea076c5e1919d5c72a5abfcb3f7a25404bcacd824bc345ec527d",
+      "head_result": {
+        "passed": 11
+      },
+      "head_total_seconds": 1.245,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_list_memories_returns_index_result_without_loading_revisions",
+        "test_large_index_listing_does_not_require_revision_files",
+        "test_list_memories_offloads_index_context_and_tokenizer_work",
+        "test_subtree_count_respects_gray_nodes_successors_and_cycles",
+        "test_context_usage_uses_tokenizer_and_marks_display_fallback",
+        "test_token_counter_strict_mode_never_uses_character_fallback",
+        "test_context_usage_cache_and_version_invalidation",
+        "test_slow_list_storage_does_not_block_event_loop",
+        "test_compress_token_failure_is_fail_closed",
+        "test_optimize_token_failure_is_fail_closed",
+        "test_compress_payload_tokens_match_actual_outbound_json"
+      ]
+    },
+    {
+      "path": "tests/test_memory_index_repository_v4.py",
+      "domain": "memory",
+      "lines": 168,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "46cfcc1022cdb89f4e6a596e7cfe4d967f991d38ed698019bc1460848255ea4e",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 6.285,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留索引行为；5000 条缓存淘汰用例约 6.18 秒，单独评估规模。",
+      "test_names": [
+        "test_repository_imports_legacy_index_and_rebuilds_memory_view",
+        "test_repository_delta_is_published_only_after_commit",
+        "test_query_cache_keeps_latest_5000_entries",
+        "test_whole_legacy_snapshot_save_is_rejected_in_v4"
+      ]
+    },
+    {
+      "path": "tests/test_memory_index_v4_performance_gates.py",
+      "domain": "memory",
+      "lines": 264,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "1dc23cb89a4c3e2e344bd6a23e4129cc710840700e2acf3b95c24b0399452c40",
+      "head_result": {
+        "passed": 5
+      },
+      "head_total_seconds": 2.422,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "source_or_signature_introspection"
+      ],
+      "recommendation": "按用例区分 100k 规模验证、功能回归和静态布局检查。",
+      "test_names": [
+        "test_non_empty_optimize_applies_successor_rebuild",
+        "test_global_recall_loads_all_scanned_buckets_in_one_batch",
+        "test_resident_index_100k_stays_below_128_mib_and_single_delta_is_o1",
+        "test_static_business_storage_gates",
+        "test_warm_locator_and_topology_reads_do_not_touch_sqlite"
+      ]
+    },
+    {
+      "path": "tests/test_message_from_message.py",
+      "domain": "messages_qq",
+      "lines": 128,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "da96e409412935befea596d470d9bddd2b905d6ce7fffc97ae632bb6040a1c7b",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.002,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_group_msg_from_message_supports_slots_dataclass",
+        "test_message_manager_add_message_accepts_group_message",
+        "test_group_msg_from_send_uses_non_mutating_file_check",
+        "test_private_msg_from_send_uses_non_mutating_file_check"
+      ]
+    },
+    {
+      "path": "tests/test_message_process_retry.py",
+      "domain": "messages_qq",
+      "lines": 230,
+      "test_functions": 8,
+      "fixture_definitions": 1,
+      "snapshot_sha256": "d8778fab7e5ea4a2177d29384914c2a06d4864075356c85421b1c46f827dd209",
+      "head_result": {
+        "passed": 8
+      },
+      "head_total_seconds": 0.008,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_broken_messages_do_not_process_content",
+        "test_retry_discards_an_already_broken_message",
+        "test_retry_discards_a_message_missing_from_history",
+        "test_successful_processing_clears_a_stale_failure",
+        "test_untracked_processing_does_not_create_a_retry_entry",
+        "test_retry_limit_marks_message_broken_and_stops_processing",
+        "test_concurrent_retries_process_each_message_only_once",
+        "test_singleflight_is_shared_by_managers"
+      ]
+    },
+    {
+      "path": "tests/test_message_relative_cal.py",
+      "domain": "messages_qq",
+      "lines": 76,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "4c3a035412fcbf04747d3655cd51563493cbfa1aedc26034aa10071240aa0bc2",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.0,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_to_relative_cal_returns_structured_multimodal_evidence",
+        "test_to_relative_cal_marks_unparsed_images_as_pending"
+      ]
+    },
+    {
+      "path": "tests/test_mybot_websocket_reconnect.py",
+      "domain": "messages_qq",
+      "lines": 71,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "ed061ce86cde25dfff1a58263a8af3d1331656e400a54ae358ca87b1cdee6759",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.009,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_custom_websocket_reconnects_after_network_error",
+        "test_custom_websocket_does_not_retry_cancellation",
+        "test_custom_websocket_does_not_hide_programming_errors"
+      ]
+    },
+    {
+      "path": "tests/test_parent_scoped_title_mapping.py",
+      "domain": "memory",
+      "lines": 345,
+      "test_functions": 13,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "a4b0f9f3815e0359a44355f41706f7300372ec790d4dd5445173e735968f3bef",
+      "head_result": {
+        "passed": 13
+      },
+      "head_total_seconds": 1.4,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_set_bucket_is_scoped_to_its_parent",
+        "test_deleted_parent_title_does_not_resurrect_old_children",
+        "test_same_parent_set_bucket_is_concurrent_setdefault",
+        "test_explicit_create_bucket_does_not_register_setdefault_title",
+        "test_parent_scoped_mapping_survives_restart",
+        "test_child_successor_replaces_parent_title_target",
+        "test_parent_successor_inherits_child_title_map",
+        "test_root_successor_inherits_child_title_map",
+        "test_reparent_title_conflict_is_atomic",
+        "test_gc_removes_deleted_bucket_title_map_and_inbound_refs",
+        "test_group_main_dialog_reset_memory_does_not_restore_old_member_persona",
+        "test_add_memory_from_dir_scopes_same_folder_name_to_each_branch",
+        "test_corrupt_child_title_maps_fails_closed"
+      ]
+    },
+    {
+      "path": "tests/test_pixiv_login.py",
+      "domain": "setu_pixiv",
+      "lines": 202,
+      "test_functions": 11,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "967a2b8d08492671800d22fd2ecedafcfd474ae22780eecd40b5a8dcb2d8a27b",
+      "head_result": {
+        "passed": 22
+      },
+      "head_total_seconds": 0.007,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_extract_pixiv_code_only_accepts_known_callbacks",
+        "test_public_login_url_requires_https",
+        "test_auto_discovered_public_url_can_explicitly_allow_http",
+        "test_public_login_url_accepts_https_or_loopback_http",
+        "test_tls_certificate_and_key_must_be_configured_together",
+        "test_format_public_base_url",
+        "test_auto_discovered_ipv6_listens_on_ipv6",
+        "test_extract_global_ip_from_common_response_formats",
+        "test_repeated_submission_click_is_suppressed",
+        "test_enter_is_suppressed_after_submission_click",
+        "test_first_remote_client_permanently_claims_session"
+      ]
+    },
+    {
+      "path": "tests/test_pixiv_storage_chunk.py",
+      "domain": "setu_pixiv",
+      "lines": 121,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "eb7a474c1f3a721901bf13bf58e6fbe086e5c1b46c9449a7e2a27cc32212713e",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.008,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_chunk_keeps_illustration_objects_in_memory",
+        "test_chunk_serializes_illustrations_only_at_persistence_boundary",
+        "test_chunk_load_restores_illustration_objects",
+        "test_chunk_replaces_existing_illustration_object"
+      ]
+    },
+    {
+      "path": "tests/test_pixiv_tags_searching.py",
+      "domain": "setu_pixiv",
+      "lines": 120,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "3252db8ede51ab45b9dbbb8646295bd6c21f0f9aa38d82775d9ec5c8bd6df5d4",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 0.004,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_result_without_tag_match_is_filtered_even_with_full_bookmark_score",
+        "test_maximum_tag_and_bookmark_score_reaches_one",
+        "test_tag_match_is_a_positive_reward_over_bookmark_weight",
+        "test_empty_search_data_returns_empty_mapping"
+      ]
+    },
+    {
+      "path": "tests/test_playwright_provider.py",
+      "domain": "websearch",
+      "lines": 516,
+      "test_functions": 11,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "62e231888661f79348a3e50d07e20bd9b613184cd95c5b2f77f94da033ce3826",
+      "head_result": {
+        "passed": 11
+      },
+      "head_total_seconds": 0.048,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_profile_declares_browse_capability",
+        "test_snapshot_returns_document_elements_links_and_media",
+        "test_snapshot_detects_cloudflare_human_verification",
+        "test_snapshot_detects_cloudflare_bootstrap_before_widget_loads",
+        "test_execute_maps_every_stable_action_to_playwright",
+        "test_upload_sets_input_files_within_allowed_roots",
+        "test_upload_rejects_files_outside_allowed_roots",
+        "test_unknown_element_reference_is_rejected",
+        "test_screenshot_reads_png_dimensions",
+        "test_closing_provider_closes_all_sessions_but_not_injected_browser",
+        "test_identity_browse_uses_visible_persistent_context"
+      ]
+    },
+    {
+      "path": "tests/test_private_chat.py",
+      "domain": "private_chat",
+      "lines": 1050,
+      "test_functions": 31,
+      "fixture_definitions": 1,
+      "snapshot_sha256": "bfab7e50ae603fc4ffb7af6fa11a796150519f9a8a3e2ea4978cea379912d1bc",
+      "head_result": {
+        "passed": 30,
+        "failed": 1
+      },
+      "head_total_seconds": 2.242,
+      "head_failed_cases": [
+        {
+          "nodeid": "tests.test_private_chat::test_central_reaper_reclaims_an_inactive_private_chat",
+          "status": "failed",
+          "seconds": 2.004
+        }
+      ],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "large_file_800_lines_or_more"
+      ],
+      "recommendation": "消息、通知、生命周期分组；全套运行出现回收超时，单文件 31 个用例通过。",
+      "test_names": [
+        "test_private_msg_round_trip_and_copy",
+        "test_private_msg_from_send_uses_successful_message_ids",
+        "test_aqueue_can_skip_config_observer",
+        "test_private_chat_processes_messages_in_fifo_order",
+        "test_private_chat_initializes_own_fav_store",
+        "test_private_chat_message_flow_updates_own_fav_store",
+        "test_notice_requests_are_consumed_fifo_and_respect_intercept",
+        "test_wait_any_cancels_other_targets",
+        "test_wait_any_ignores_cancelled_target",
+        "test_wait_someone_timeout_cancels_notice",
+        "test_wait_any_timeout_cancels_all_targets",
+        "test_notice_response_expires_without_waiter",
+        "test_send_failure_does_not_register_notice",
+        "test_private_chat_say_records_successful_message",
+        "test_private_chat_say_delays_only_after_first_message_chain",
+        "test_private_chat_system_send_uses_default_fixed_delay",
+        "test_private_chat_system_send_accepts_callable_delay",
+        "test_notice_targets_filter_placeholders_and_invalid_values",
+        "test_request_all_registers_same_echo_for_every_target",
+        "test_request_all_applies_response_timeout",
+        "test_private_api_sends_message_chain",
+        "test_shutdown_cancels_waiters_and_stops_queue",
+        "test_private_main_dialog_is_loaded_only_for_unhandled_chat",
+        "test_private_chat_idle_expiry_defers_while_main_dialog_busy",
+        "test_private_chat_activity_refresh_only_updates_timestamp",
+        "test_private_chats_share_one_central_reaper",
+        "test_central_reaper_reclaims_an_inactive_private_chat",
+        "test_central_reaper_waits_for_busy_private_chat",
+        "test_activity_refresh_restarts_a_stopped_reaper",
+        "test_one_chat_reap_failure_does_not_stop_other_expirations",
+        "test_reaper_loop_retries_after_unexpected_cycle_error"
+      ]
+    },
+    {
+      "path": "tests/test_private_chat_agent.py",
+      "domain": "private_chat",
+      "lines": 1398,
+      "test_functions": 37,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "cab6ccffbc0e1207e7ffe83cbe63adaed44ba45517e4bbe0c29e4b0d7469854f",
+      "head_result": {
+        "passed": 41
+      },
+      "head_total_seconds": 0.062,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "large_file_800_lines_or_more"
+      ],
+      "recommendation": "保留 Agent/Speaker 行为，按职责拆分大文件。",
+      "test_names": [
+        "test_base_dialog_owns_configurable_message_history",
+        "test_private_main_history_is_independent_but_aqueue_is_shared",
+        "test_private_main_commits_only_messages_it_accepts",
+        "test_private_post_reason_always_uses_a_speaking_group",
+        "test_private_post_task_matches_group_single_reason_queue",
+        "test_private_speak_tool_is_configured_as_background_task",
+        "test_private_payloads_anchor_bot_and_keep_lunar_time",
+        "test_private_agent_payload_includes_internal_notification",
+        "test_private_agent_payload_constructor_reads_notice",
+        "test_private_payloads_attach_aliases_by_message_sender",
+        "test_private_main_dialog_keeps_separate_user_and_bot_aliases",
+        "test_private_alias_cache_is_unchanged_when_memory_write_fails",
+        "test_private_speaker_payload_omits_empty_optional_sections",
+        "test_fallback_only_observes_whether_speak_was_requested",
+        "test_old_fallback_observer_is_invalidated_by_any_speak_request",
+        "test_private_said_review_uses_internal_run_without_fallback",
+        "test_private_speaker_merges_calls_arriving_while_busy",
+        "test_private_speaker_releases_busy_state_after_unexpected_failure",
+        "test_private_speaker_payload_includes_private_and_character_favs",
+        "test_private_speaker_resolves_private_fav_before_character_fav",
+        "test_private_speaker_rejects_response_without_intention",
+        "test_private_speaker_rejects_invalid_intention_schema",
+        "test_private_agent_get_fav_list_returns_private_and_character_favs",
+        "test_private_agent_uses_single_bucket_memory_tools",
+        "test_private_agent_set_alias_delegates_to_main_dialog",
+        "test_private_agent_tool_schemas_include_real_descriptions",
+        "test_private_agent_add_private_fav_returns_private_result",
+        "test_private_agent_add_private_fav_rejects_truncated_image",
+        "test_private_memory_summary_keeps_fixed_nonempty_subjects",
+        "test_private_memory_summary_rejects_missing_required_events",
+        "test_private_dialog_restores_saved_message_cursors",
+        "test_private_main_dialog_start_clears_persisted_notice_and_recreates_memory_tip",
+        "test_private_main_dialog_start_marks_stale_global_clear_epoch",
+        "test_private_speaker_does_not_block_private_chat_queue",
+        "test_private_main_dialog_adds_notice_when_bot_repeats_paraphrase_words",
+        "test_private_main_dialog_ignores_merged_speaker_task",
+        "test_private_speaker_llm_request_uses_shared_aqueue"
+      ]
+    },
+    {
+      "path": "tests/test_private_management_dialog.py",
+      "domain": "private_chat",
+      "lines": 1009,
+      "test_functions": 33,
+      "fixture_definitions": 1,
+      "snapshot_sha256": "a6d6a8aeb28b6dfe28e3940e42fc255def2fe86a2f3d64f992d45fb38823661c",
+      "head_result": {
+        "passed": 33
+      },
+      "head_total_seconds": 0.216,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "large_file_800_lines_or_more"
+      ],
+      "recommendation": "保留管理交互回归，按生命周期与具体操作拆分。",
+      "test_names": [
+        "test_management_dialog_is_paused_until_started",
+        "test_management_dialog_intercepts_and_refreshes_timeout",
+        "test_management_dialog_timeout_asks_host_to_destroy_it",
+        "test_closed_management_dialog_cannot_be_reused",
+        "test_manage_command_supports_positional_and_cli_exit",
+        "test_groups_command_lists_current_loaded_groups",
+        "test_groups_command_reports_empty_runtime",
+        "test_reload_command_uses_shared_runtime_hot_reload",
+        "test_reload_command_reports_runtime_failure",
+        "test_restart_command_is_owner_only_and_requests_restart_after_reply",
+        "test_restart_command_rejects_bot_admin",
+        "test_restart_command_rejects_injected_arguments",
+        "test_cleanup_command_scans_then_executes_pending_plan",
+        "test_cleanup_command_handles_empty_scan_without_pending_plan",
+        "test_cleanup_command_can_abort_pending_plan",
+        "test_cleanup_command_rejects_expired_or_conflicting_confirmation",
+        "test_cleanup_command_requires_owner_permission",
+        "test_cleanup_rescan_failure_discards_previous_plan",
+        "test_manage_command_requires_bot_admin",
+        "test_non_command_passes_through_command_dialog",
+        "test_private_clear_and_refresh_commands_use_main_dialog",
+        "test_private_named_context_commands_support_current_active_and_all",
+        "test_refresh_private_context_rejects_all_option",
+        "test_private_model_switch_commands_support_agent_and_speaker",
+        "test_private_context_commands_do_not_start_an_agent_for_lightweight_chat",
+        "test_private_chat_places_notice_trigger_before_dialogs",
+        "test_private_chat_uses_dialog_list_order",
+        "test_private_chat_inserts_management_dialog_only_while_open",
+        "test_reopening_management_dialog_does_not_inherit_context",
+        "test_opening_existing_management_dialog_only_refreshes_timeout",
+        "test_stale_dialog_cannot_close_a_new_management_dialog",
+        "test_automatic_timeout_removes_and_destroys_management_dialog",
+        "test_private_chat_shutdown_destroys_active_management_dialog"
+      ]
+    },
+    {
+      "path": "tests/test_private_persona.py",
+      "domain": "private_chat",
+      "lines": 289,
+      "test_functions": 8,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "9cf6d1f0f4c16e49f57e742b82f310234d326fdcab0475282fda5905da29008f",
+      "head_result": {
+        "passed": 8
+      },
+      "head_total_seconds": 0.011,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_private_persona_uses_one_direct_relation_bucket",
+        "test_private_persona_result_parses_each_field_independently",
+        "test_private_persona_generates_three_views_in_one_request",
+        "test_group_persona_accepts_markdown_fenced_json",
+        "test_group_member_persona_accepts_markdown_fenced_json",
+        "test_private_persona_exposes_one_memory_query",
+        "test_private_persona_result_serializes_nested_schema",
+        "test_private_persona_prompt_schema_matches_result_models"
+      ]
+    },
+    {
+      "path": "tests/test_qq_bot_notices.py",
+      "domain": "messages_qq",
+      "lines": 110,
+      "test_functions": 6,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "7a754d0f0478093b6be17fef4cca1e8cc6a8ef883a85248474620c1159ee3021",
+      "head_result": {
+        "passed": 7
+      },
+      "head_total_seconds": 0.008,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_group_ban_notice_forces_member_list_refresh",
+        "test_group_unban_notice_also_forces_member_list_refresh",
+        "test_group_ban_notice_ignores_groups_not_loaded",
+        "test_self_group_increase_refreshes_groups_after_delay",
+        "test_group_increase_for_other_member_does_not_refresh_groups",
+        "test_self_group_increase_logs_refresh_failure"
+      ]
+    },
+    {
+      "path": "tests/test_qq_bot_storage_lifecycle.py",
+      "domain": "messages_qq",
+      "lines": 52,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "34155253bd417dc605a23eb49c7dd69b8ee643d8ed7cc2e5b8c98e7815de0515",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.004,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_storage_runtime_starts_cache_before_importing_builtin_resources",
+        "test_builtin_resource_failure_does_not_hide_successful_cache_start",
+        "test_storage_runtime_close_delegates_to_file_cache"
+      ]
+    },
+    {
+      "path": "tests/test_qq_group_message_flow.py",
+      "domain": "messages_qq",
+      "lines": 72,
+      "test_functions": 1,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "527a1d30bbd9f575cc85e919ba7a7d4c2a0747d39261e9e62518b71d246286ad",
+      "head_result": {
+        "passed": 1
+      },
+      "head_total_seconds": 0.008,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "module_registry_manipulation_requires_isolation"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_true_stops_message_propagation"
+      ]
+    },
+    {
+      "path": "tests/test_record_service_export.py",
+      "domain": "memory",
+      "lines": 28,
+      "test_functions": 1,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "7a9bdd0a8786e73b57efd67b7982efe633554eed371e12052064ff40dc56bd75",
+      "head_result": {
+        "passed": 1
+      },
+      "head_total_seconds": 0.061,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_export_memory_to_markdown_after_service_split"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_analytics.py",
+      "domain": "relatedness",
+      "lines": 515,
+      "test_functions": 17,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "51d9cd4e5f658bf778f344f59a449f577922762a3824bad91456429a356fa69b",
+      "head_result": {
+        "passed": 17
+      },
+      "head_total_seconds": 0.008,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_hotwords_are_built_without_legacy_dynamic_terms",
+        "test_empty_snapshot_returns_empty_analytics",
+        "test_hotwords_keep_nouns_and_verbs_and_prefer_nouns",
+        "test_pure_media_description_can_become_hot_sentence",
+        "test_dynamic_stopword_filters_cross_user_background_term",
+        "test_dynamic_stopword_aggressively_filters_ten_percent_background_term",
+        "test_dynamic_stopword_finds_evenly_distributed_low_frequency_background",
+        "test_dynamic_stopword_keeps_short_lived_topic_burst",
+        "test_dynamic_stopword_uses_full_message_window_before_content_dedup",
+        "test_dynamic_stopword_filters_low_frequency_term_spread_across_quarter_users",
+        "test_repeated_media_is_deduplicated_for_hotwords_and_sentences",
+        "test_graph_central_sentence_beats_long_isolated_sentence",
+        "test_primary_chat_terms_rank_above_image_description_layout_words",
+        "test_hotword_shape_filter_rejects_numeric_and_short_ascii_noise",
+        "test_hotword_shape_noise_is_not_learned_as_dynamic_stopword",
+        "test_semantic_only_ascii_terms_are_excluded_from_hotwords",
+        "test_new_word_refresh_does_not_run_hot_sentence_analysis"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_audit.py",
+      "domain": "relatedness",
+      "lines": 193,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "be3b8c93e1da0316ad756fd465c63d6f8f277c267f38d76c0aec503a353affd5",
+      "head_result": {
+        "passed": 4
+      },
+      "head_total_seconds": 1.576,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_public_api_automatically_writes_complete_audit",
+        "test_relatedness_audit_write_failure_never_blocks_shutdown",
+        "test_relatedness_audit_writes_ordered_ndjson_and_drains_on_close",
+        "test_relatedness_audit_drops_instead_of_waiting_when_queue_is_full"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_bot.py",
+      "domain": "relatedness",
+      "lines": 298,
+      "test_functions": 8,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "71174bdd6b03032ab84074c0e92cebe5f55409182567bf7be4dad7b5a134ddf9",
+      "head_result": {
+        "passed": 8
+      },
+      "head_total_seconds": 0.101,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "source_or_signature_introspection"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_bot_state_survives_restart",
+        "test_tiny_unfiltered_topic_does_not_create_interest",
+        "test_record_output_is_required_to_seed_bot_continuity",
+        "test_record_output_requires_existing_bot_message",
+        "test_output_content_not_dispatch_trigger_becomes_anchor",
+        "test_record_output_api_contains_no_dispatch_metadata",
+        "test_corrupt_bot_state_recovers_as_empty_model",
+        "test_member_state_before_automatic_interest_is_rejected"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_continuity.py",
+      "domain": "relatedness",
+      "lines": 337,
+      "test_functions": 14,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "77bcd79327dd52e0ad06c033c635015e14f1e71cc2df9a1f06dcfec864dd6388",
+      "head_result": {
+        "passed": 14
+      },
+      "head_total_seconds": 0.002,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_time_penalty_is_monotonic_and_has_a_hard_window",
+        "test_chain_contribution_uses_candidate_weighted_mean",
+        "test_existing_group_edge_uses_its_complete_raw_weight",
+        "test_missing_edge_uses_cached_vectors_without_mutating_snapshot",
+        "test_relation_below_threshold_does_not_propagate_or_join",
+        "test_reply_builds_a_filtered_chain_and_can_immediately_become_static",
+        "test_reply_initialization_scans_the_full_range_without_reserving_capacity",
+        "test_mention_and_member_output_are_seed_nodes_without_trigger_link",
+        "test_static_chains_score_but_never_receive_normal_messages",
+        "test_final_continuity_is_the_maximum_across_chains",
+        "test_capacity_progress_and_low_streak_are_derived_from_x",
+        "test_static_chain_expires_when_progress_reaches_twice_x",
+        "test_non_text_message_can_join_but_returns_zero",
+        "test_chain_expires_at_the_fifteen_minute_hard_limit"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_engine.py",
+      "domain": "relatedness",
+      "lines": 419,
+      "test_functions": 12,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "2e1b402ffb0864311457cc5ddae2c190ec39a79149c425fda4eb3b59f4dd8090",
+      "head_result": {
+        "passed": 12
+      },
+      "head_total_seconds": 0.474,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_ingest_and_query_related_messages",
+        "test_topic_refresh_does_not_build_hotword_snapshot",
+        "test_ingest_updates_live_topic_compensation",
+        "test_duplicate_message_is_idempotent",
+        "test_manual_new_word_refresh_updates_and_persists_dynamic_lexicon",
+        "test_state_round_trip_restores_live_topic_compensation",
+        "test_group_message_adapter_extracts_mentions",
+        "test_group_message_adapter_extracts_structured_media_content",
+        "test_pending_image_enriches_graph_without_reingest",
+        "test_maintenance_dynamic_stopword_applies_to_future_messages",
+        "test_legacy_dynamic_terms_are_not_loaded_as_new_words",
+        "test_analytics_refresh_cannot_replace_manual_new_word_lexicon"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_graph.py",
+      "domain": "relatedness",
+      "lines": 332,
+      "test_functions": 14,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "06dc92741ac146c46e64ddf2b61c93393a6a547067928989fc0f7e3550bfdf8c",
+      "head_result": {
+        "passed": 14
+      },
+      "head_total_seconds": 0.001,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_reply_is_stronger_than_plain_text_and_propagates",
+        "test_mention_links_to_recent_messages_from_mentioned_user",
+        "test_window_evicts_nodes_and_edges",
+        "test_raw_edge_weight_adds_all_evidence_before_result_normalization",
+        "test_context_and_time_alone_do_not_become_related_result",
+        "test_bm25_score_only_selects_candidate_not_text_edge_weight",
+        "test_reply_edge_stays_strong_without_forcing_final_score_to_point_eight",
+        "test_propagation_can_produce_a_meaningful_two_hop_score",
+        "test_propagation_adds_to_direct_evidence_at_result_stage",
+        "test_enrichment_replaces_stale_text_edge",
+        "test_support_only_direct_edge_does_not_amplify_weak_propagation",
+        "test_anchor_evidence_reads_multiple_targets_with_one_propagation",
+        "test_relation_propagation_is_disabled_by_default",
+        "test_local_snapshot_is_bounded_and_never_reads_future_messages"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_integration.py",
+      "domain": "relatedness",
+      "lines": 41,
+      "test_functions": 1,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "0a881e61e1d37d90c5ce61c64bb70ccb8b2907f40c69a9cdcc5c145a5e2835bc",
+      "head_result": {
+        "passed": 1
+      },
+      "head_total_seconds": 0.01,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_history_rebuild_and_snapshot_refresh"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_member.py",
+      "domain": "relatedness",
+      "lines": 620,
+      "test_functions": 16,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "f1637e7e07c3b4d40cd30d5b9ce33d0ab8c72caec0b3e42e3b1d494225362c1b",
+      "head_result": {
+        "passed": 16
+      },
+      "head_total_seconds": 0.175,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_public_member_score_contains_only_interest_and_continuity",
+        "test_recorded_bot_output_creates_a_chain_for_natural_messages",
+        "test_reply_to_bot_creates_a_new_chain_and_relays_can_continue_it",
+        "test_complete_group_context_edge_can_maintain_a_dialogue_chain",
+        "test_bot_interest_and_continuity_are_independent",
+        "test_member_topic_profile_updates_incrementally",
+        "test_time_only_penalizes_existing_continuity_evidence",
+        "test_repeated_bot_outputs_join_the_same_active_chain",
+        "test_dialogue_chains_are_restored_after_member_restart",
+        "test_member_state_v5_keeps_interest_and_starts_with_empty_chains",
+        "test_continuity_is_zero_after_the_hard_time_window",
+        "test_consecutive_low_contributions_close_fast_moving_conversation",
+        "test_member_configuration_rejects_invalid_continuity_limits",
+        "test_topic_interest_preserves_absolute_evidence_strength",
+        "test_repeated_member_outputs_accumulate_instead_of_being_penalized",
+        "test_bot_interest_is_learned_from_recent_topic_distribution"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_new_words.py",
+      "domain": "relatedness",
+      "lines": 316,
+      "test_functions": 17,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "608ed070d4eaef7a048a35b6dda7d4ece95b83ac40c8743d5a56454cc662b048",
+      "head_result": {
+        "passed": 17
+      },
+      "head_total_seconds": 1.37,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_discovers_word_that_jieba_splits",
+        "test_jieba_known_word_is_not_promoted",
+        "test_project_user_dictionary_marks_existing_group_terms_as_known",
+        "test_function_phrase_stop_filter_is_auditable",
+        "test_dynamic_stopword_filter_is_auditable",
+        "test_repeated_sentence_does_not_promote_many_fragments",
+        "test_low_boundary_entropy_fragment_is_rejected",
+        "test_nested_fragments_are_suppressed_by_complete_candidate",
+        "test_multiple_users_and_documents_raise_priority",
+        "test_report_contains_metrics_and_reject_reasons",
+        "test_score_weights_are_auditable_and_adjustable",
+        "test_config_rejects_invalid_limits",
+        "test_default_document_and_user_thresholds_are_relaxed",
+        "test_default_candidate_length_keeps_long_candidates",
+        "test_default_npmi_floor_is_conservative",
+        "test_default_promoted_score_floor_is_conservative",
+        "test_default_score_weights_follow_quality_first_ratio"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_runtime.py",
+      "domain": "relatedness",
+      "lines": 68,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "8506ecef8361a5edf4987897bbbd412d0c943a828da5217c7297bded49d983be",
+      "head_result": {
+        "passed": 3
+      },
+      "head_total_seconds": 0.055,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_realtime_work_runs_outside_event_loop",
+        "test_realtime_queue_is_bounded",
+        "test_maintenance_calls_with_same_key_are_coalesced"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_text.py",
+      "domain": "relatedness",
+      "lines": 166,
+      "test_functions": 10,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "eadcb3caeb41c844b354c7ee82fe7fbe570dbe50d0f350ac8af4befc954137cd",
+      "head_result": {
+        "passed": 10
+      },
+      "head_total_seconds": 0.004,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_dynamic_lexicon_is_isolated_per_group",
+        "test_bm25_index_returns_relevant_candidates_and_removes_evicted_docs",
+        "test_stopwords_do_not_become_lexical_features",
+        "test_numeric_terms_remain_available_for_realtime_retrieval",
+        "test_hotword_shape_limits_must_be_consistent",
+        "test_semantic_text_is_indexed_with_a_smaller_weight",
+        "test_media_hash_is_a_temporary_word_replaced_by_semantic_terms",
+        "test_lexical_terms_use_local_pos_dictionary_with_noun_fallback",
+        "test_production_terms_use_exact_hmm_segmentation_and_real_pos",
+        "test_tokenization_mode_comparison_includes_jieba_variants"
+      ]
+    },
+    {
+      "path": "tests/test_relatedness_topics.py",
+      "domain": "relatedness",
+      "lines": 431,
+      "test_functions": 14,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "76a662d4e1ee0bd0bd6be7c2db2572020d86a8049ec2f6a2511840771fd4178d",
+      "head_result": {
+        "passed": 14
+      },
+      "head_total_seconds": 0.016,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_overlapping_label_propagation_allows_bridge_membership",
+        "test_expired_topic_is_not_published",
+        "test_dense_core_is_not_fragmented_into_many_small_topics",
+        "test_topic_core_uses_complete_edge_weight",
+        "test_default_topic_model_allows_soft_boundary_overlap",
+        "test_louvain_restarts_select_highest_modularity",
+        "test_louvain_restarts_must_be_positive",
+        "test_topic_profile_centroid_scores_new_message",
+        "test_topic_refresh_records_split_inheritance",
+        "test_topic_refresh_records_merge_inheritance",
+        "test_new_message_is_compensated_against_current_topics",
+        "test_unrelated_compensation_does_not_create_topic_activity",
+        "test_recompensation_replaces_message_instead_of_double_counting",
+        "test_recluster_inherits_activity_and_clears_compensation"
+      ]
+    },
+    {
+      "path": "tests/test_runtime_control.py",
+      "domain": "infrastructure",
+      "lines": 363,
+      "test_functions": 16,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "f32759309593a5a24fc2dbd9504e550165affc76fb2692b1c917e2a574eb20ad",
+      "head_result": {
+        "passed": 16
+      },
+      "head_total_seconds": 0.111,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_hot_reload_calls_registered_async_handler",
+        "test_hot_reload_rejects_calls_before_runtime_registration",
+        "test_hot_reload_serializes_concurrent_calls",
+        "test_restart_request_publishes_only_fixed_terminal_command",
+        "test_save_groups_attempts_every_group",
+        "test_shutdown_groups_attempts_every_group",
+        "test_shutdown_groups_respects_timeout",
+        "test_start_new_groups_starts_only_new_configured_groups",
+        "test_start_new_groups_starts_configured_groups_concurrently",
+        "test_start_new_groups_keeps_unconfigured_groups_pending",
+        "test_start_new_groups_rejects_unconfigured_groups_in_strict_mode",
+        "test_pause_before_exit_waits_in_interactive_terminal",
+        "test_pause_before_exit_skips_non_interactive_stream",
+        "test_build_restart_command_uses_current_interpreter_and_module",
+        "test_spawn_restart_process_uses_new_console_on_windows",
+        "test_spawn_restart_process_starts_new_session_elsewhere"
+      ]
+    },
+    {
+      "path": "tests/test_schema_migration.py",
+      "domain": "memory",
+      "lines": 290,
+      "test_functions": 7,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "cfeb7e3cd4c59f6de062d66e0221f3775b63e9133f0fb2022719c0aa3257deeb",
+      "head_result": {
+        "passed": 7
+      },
+      "head_total_seconds": 0.51,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "preserve_legacy_migration_behavior"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_missing_schema_file_creates_v4_directly",
+        "test_data_newer_than_code_is_rejected",
+        "test_upgrade_success_cleans_checkpoints_and_keeps_single_prebackup",
+        "test_lock_exists_blocks_upgrade",
+        "test_failed_step_keeps_live_dataset_usable_and_marks_failed",
+        "test_runtime_confidence_type_and_last_event_at_propagation",
+        "test_v1_to_v2_migration_patches_old_dataset_fields"
+      ]
+    },
+    {
+      "path": "tests/test_schema_v3_title_mapping.py",
+      "domain": "memory",
+      "lines": 228,
+      "test_functions": 9,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "ad55052a6118a2a17c95616ad8e5594d27e4af340673b1ba5de888c6cb915ab1",
+      "head_result": {
+        "passed": 9
+      },
+      "head_total_seconds": 1.151,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "preserve_legacy_migration_behavior"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_v2_global_mapping_migrates_to_parent_scoped_tree",
+        "test_v3_migration_preserves_valid_alias_map_bytes",
+        "test_v3_migration_normalizes_alias_metadata_without_renumbering",
+        "test_corrupt_alias_map_aborts_v3_migration_and_preserves_live_v2",
+        "test_v3_migration_drops_stale_legacy_target",
+        "test_v3_migration_keeps_terminal_archived_alias_map_but_drops_legacy_route",
+        "test_v3_migration_rejects_existing_target_with_broken_topology",
+        "test_v3_migration_rejects_wrong_existing_alias_bucket_id",
+        "test_v3_migration_dry_run_reports_step_without_mutating_data"
+      ]
+    },
+    {
+      "path": "tests/test_schema_v4_sqlite_migration.py",
+      "domain": "memory",
+      "lines": 94,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "69a9e55d1de207ddb4b78ce55677258559b77bb4690adb8e138144155e62f69a",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.064,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "preserve_legacy_migration_behavior"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_v3_to_v4_imports_index_and_removes_only_legacy_index_files",
+        "test_v3_to_v4_rejects_missing_latest_revision_without_deleting_legacy"
+      ]
+    },
+    {
+      "path": "tests/test_setu_adapter_persistence.py",
+      "domain": "setu_pixiv",
+      "lines": 131,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "fa4fe715e53a46a1a772869e20077f1be0b4b6092e84479e5581a389e3ed5b80",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.007,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_setu_restores_persisted_group_state",
+        "test_setu_load_dict_ignores_malformed_entries"
+      ]
+    },
+    {
+      "path": "tests/test_setu_ban_marks.py",
+      "domain": "setu_pixiv",
+      "lines": 49,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "5689c2bfb5bc8cd526ff2a86fa5fd86a53cc795b710ff44dd212ecf81a96fc6a",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.002,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_mark_unban_combines_explicit_targets_in_one_persist",
+        "test_mark_unban_illust_id_is_idempotent"
+      ]
+    },
+    {
+      "path": "tests/test_setu_command_registration.py",
+      "domain": "setu_pixiv",
+      "lines": 69,
+      "test_functions": 1,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "53c382cb5fe7354ac71291eeb82cb5189f0b6d4d0976b87f76ceb0f2f8f4635c",
+      "head_result": {
+        "passed": 1
+      },
+      "head_total_seconds": 0.006,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_registration_is_reusable_and_dispatches_current_dialog"
+      ]
+    },
+    {
+      "path": "tests/test_setu_interactions.py",
+      "domain": "setu_pixiv",
+      "lines": 546,
+      "test_functions": 18,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "5788fe43727f6338ce6a2b9fdef6a377f0f83be6531fc9bf2da0c5710e9ad472",
+      "head_result": {
+        "passed": 18
+      },
+      "head_total_seconds": 0.016,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_score_is_clamped_quantized_and_overwrites_user_vote",
+        "test_five_scores_rebuild_tag_and_artist_weights",
+        "test_flat_commands_accept_arbitrary_tags_and_check_state",
+        "test_flat_page_artist_and_info_commands",
+        "test_unban_uses_explicit_targets_and_supports_both_commas",
+        "test_unban_rejects_page_without_illust_id",
+        "test_global_option_has_an_independent_permission_gate",
+        "test_non_interaction_reply_propagates_and_expired_command_is_handled",
+        "test_mark_used_commits_history_used_and_freeze_together",
+        "test_query_search_keeps_only_group_available_pages",
+        "test_freeze_rejects_page_missing_from_available",
+        "test_random_setu_continues_when_nothing_can_be_frozen",
+        "test_used_page_receives_a_rating_penalty",
+        "test_illust_scores_round_trip",
+        "test_used_history_eviction_rebuilds_rating_weights",
+        "test_setu_trigger_passes_global_permission_and_targets",
+        "test_setu_trigger_schedules_pixiv_artwork_and_user_links",
+        "test_setu_trigger_ignores_pixiv_text_inside_another_domain"
+      ]
+    },
+    {
+      "path": "tests/test_setu_login.py",
+      "domain": "setu_pixiv",
+      "lines": 239,
+      "test_functions": 6,
+      "fixture_definitions": 1,
+      "snapshot_sha256": "807dc6ce71aae8ac07e92d1f3aef3f5c76808cbe95dfea85b4dd2ab1f37a14eb",
+      "head_result": {
+        "passed": 6
+      },
+      "head_total_seconds": 0.014,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_remote_login_is_preferred_when_configured",
+        "test_remote_login_failure_falls_back_to_manual",
+        "test_empty_public_url_uses_manual_login",
+        "test_empty_public_url_uses_discovered_ip",
+        "test_remote_login_cancel_does_not_fall_back",
+        "test_pending_login_rejects_second_login_without_inspecting_exception"
+      ]
+    },
+    {
+      "path": "tests/test_setu_message_tips.py",
+      "domain": "setu_pixiv",
+      "lines": 83,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "12d5d421a062a0e7f2ca3467e47590988feb1f6d6049217be1200a3ba85fe7d0",
+      "head_result": {
+        "passed": 6
+      },
+      "head_total_seconds": 0.016,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_setu_reply_tip_clamps_and_quantizes_score",
+        "test_setu_reply_tip_marks_interaction_command",
+        "test_setu_reply_tip_marks_plain_comment",
+        "test_normal_reply_keeps_generic_tip"
+      ]
+    },
+    {
+      "path": "tests/test_setu_ocr.py",
+      "domain": "setu_pixiv",
+      "lines": 521,
+      "test_functions": 23,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "46204c08279a940aafd11360f693e634c2b2cfb960d4aa606917721d4daf7036",
+      "head_result": {
+        "passed": 23
+      },
+      "head_total_seconds": 0.224,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_setu_ocr_line_is_only_an_immutable_box_and_text",
+        "test_real_sample_signature_is_not_advertisement",
+        "test_real_sample_large_edge_promotion_is_advertisement",
+        "test_keyword_box_inside_edge_safe_area_is_ignored",
+        "test_partial_edge_box_only_counts_area_entering_the_center",
+        "test_edge_box_with_large_center_intrusion_is_advertisement",
+        "test_bottom_signature_from_real_sample_is_inside_safe_area",
+        "test_extreme_aspect_ratio_is_rejected_without_running_ocr",
+        "test_animated_image_skips_all_advertisement_detection",
+        "test_large_text_without_promotion_keyword_is_not_advertisement",
+        "test_normalization_and_adjacent_lines_can_complete_keyword",
+        "test_complete_keyword_does_not_include_adjacent_ocr_noise",
+        "test_multiple_small_promotion_boxes_use_combined_area",
+        "test_ocr_failure_fails_open",
+        "test_detect_advertisement_fails_open_when_image_inspection_crashes",
+        "test_detect_advertisement_fails_open_when_classification_crashes",
+        "test_detect_advertisement_does_not_swallow_cancellation",
+        "test_detect_advertisement_uses_default_rapidocr_provider",
+        "test_rapidocr_provider_converts_output_and_initializes_once",
+        "test_http_provider_uses_tiya_protocol_and_authorization",
+        "test_http_provider_resizes_long_edge_and_maps_boxes_to_original",
+        "test_http_provider_compresses_upload_to_one_megabyte",
+        "test_http_provider_rejects_invalid_response_shape"
+      ]
+    },
+    {
+      "path": "tests/test_start_script.py",
+      "domain": "infrastructure",
+      "lines": 12,
+      "test_functions": 1,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "1da2d3f6c2bc6f3654a8a915b8740688e05983c3d9b60ca95847476f79056f28",
+      "head_result": {
+        "passed": 1
+      },
+      "head_total_seconds": 0.001,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions"
+      ],
+      "recommendation": "保留启动定位契约，核对精确源码字符串是否必要。",
+      "test_names": [
+        "test_start_script_forces_and_verifies_local_source_tree"
+      ]
+    },
+    {
+      "path": "tests/test_storage_cleanup.py",
+      "domain": "infrastructure",
+      "lines": 468,
+      "test_functions": 13,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "df19b429687aee687ada4734135ba5eb0376b40586ae7b85b31f9b9a8523dd0c",
+      "head_result": {
+        "passed": 13
+      },
+      "head_total_seconds": 0.205,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_scan_is_non_destructive_and_only_counts_strict_matches",
+        "test_execute_deletes_plan_and_preserves_structure_and_latest_five",
+        "test_execute_skips_file_changed_after_scan",
+        "test_execute_reports_one_failure_and_continues",
+        "test_plan_cannot_execute_against_different_roots",
+        "test_cleanup_convenience_method_scans_and_executes",
+        "test_service_rejects_misconfigured_or_overlapping_roots",
+        "test_scan_ignores_symlink_even_when_name_matches",
+        "test_policy_rejects_unsafe_values",
+        "test_default_service_is_lazy_and_process_shared",
+        "test_auto_cleanup_waits_ten_minutes_then_runs_every_three_days",
+        "test_auto_cleanup_logs_summary_without_exposing_paths",
+        "test_auto_cleanup_logs_failure_and_keeps_schedule_alive"
+      ]
+    },
+    {
+      "path": "tests/test_tavily_provider.py",
+      "domain": "websearch",
+      "lines": 431,
+      "test_functions": 12,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "3e1c3743372cff6d5fe0bd514c14da2ab100f556b0203408e3be87e89bc34538",
+      "head_result": {
+        "passed": 16
+      },
+      "head_total_seconds": 0.033,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_profile_declares_only_the_supported_stable_operations",
+        "test_search_normalizes_results_and_preserves_response_metadata",
+        "test_search_omits_raw_content_when_not_requested",
+        "test_search_accepts_http_date_from_live_tavily_response",
+        "test_search_maps_stable_filters_to_tavily_native_parameters",
+        "test_fetch_normalizes_extracted_content_images_and_favicon",
+        "test_fetch_supports_plain_text_and_rejects_html",
+        "test_fetch_surfaces_provider_reported_failure",
+        "test_map_normalizes_links_and_forwards_mapping_constraints",
+        "test_malformed_provider_response_raises_stable_error",
+        "test_sdk_errors_are_mapped_to_stable_contract_errors",
+        "test_runtime_dispatches_tavily_and_closes_the_sdk_client"
+      ]
+    },
+    {
+      "path": "tests/test_time_id.py",
+      "domain": "infrastructure",
+      "lines": 197,
+      "test_functions": 10,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "de0262d56e2e2bb3dd83441371ac8fc1f29757e7d29471c33c4588794a8f5813",
+      "head_result": {
+        "passed": 10
+      },
+      "head_total_seconds": 0.101,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_ids_are_unique_and_monotonic_when_time_does_not_move",
+        "test_burst_persists_one_time_window_reservation",
+        "test_steady_traffic_persists_once_per_minute",
+        "test_restart_does_not_conflict_with_history",
+        "test_restarts_do_not_accumulate_reservation_window",
+        "test_global_generator_is_singleton",
+        "test_next_id_survives_persist_permission_error",
+        "test_next_id_survives_state_directory_error",
+        "test_save_state_retries_on_transient_permission_error",
+        "test_default_state_file_is_data_root_anchored"
+      ]
+    },
+    {
+      "path": "tests/test_websearch_browse_bridge.py",
+      "domain": "websearch",
+      "lines": 408,
+      "test_functions": 8,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "2366bc0f73cbab0a3d9ddfa0c7d4a2d677dbb0ec0bedea686578d454fa7934d3",
+      "head_result": {
+        "passed": 10
+      },
+      "head_total_seconds": 0.069,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_bridge_keeps_a_session_and_serializes_browser_objects",
+        "test_bridge_converts_fill_targets_and_writes_screenshots",
+        "test_bridge_json_line_protocol_returns_structured_errors",
+        "test_bridge_converts_all_remaining_stable_actions",
+        "test_bridge_does_not_replace_an_invalid_zero_timeout",
+        "test_bridge_profiles_reopen_defaults_and_shutdown",
+        "test_bridge_rejects_invalid_commands_and_wraps_success",
+        "test_bridge_rejects_unsafe_screenshot_names"
+      ]
+    },
+    {
+      "path": "tests/test_websearch_browser.py",
+      "domain": "websearch",
+      "lines": 184,
+      "test_functions": 4,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "edc77ff248eed7e83223a45ce21f6899a372a66702ebfaad50282baa286ed00f",
+      "head_result": {
+        "passed": 16
+      },
+      "head_total_seconds": 0.007,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_browser_session_exposes_stable_convenience_operations",
+        "test_browser_session_is_an_async_context_manager",
+        "test_browser_page_supports_object_lookup_and_filtering",
+        "test_browser_contract_rejects_invalid_values"
+      ]
+    },
+    {
+      "path": "tests/test_websearch_identity.py",
+      "domain": "websearch",
+      "lines": 39,
+      "test_functions": 3,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "1b2b9c2a1027fd25d6d40b7717bd8cf105127398bf24f4ed86cb9be7a7ca9dff",
+      "head_result": {
+        "passed": 7
+      },
+      "head_total_seconds": 0.003,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_identity_store_resolves_profiles_below_its_root",
+        "test_identity_ref_rejects_unsafe_profile_ids",
+        "test_web_requests_carry_an_opaque_identity_reference"
+      ]
+    },
+    {
+      "path": "tests/test_websearch_layout.py",
+      "domain": "websearch",
+      "lines": 32,
+      "test_functions": 2,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "16acc0234e155545008ea28a96e8443f4b6fc94d73a646ce0a11a6df580a2bc9",
+      "head_result": {
+        "passed": 2
+      },
+      "head_total_seconds": 0.001,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "small_file_1_to_3_test_functions",
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "核对动态加载的真实布局需求，减少精确文件集合对扩展的阻碍。",
+      "test_names": [
+        "test_websearch_root_contains_only_skill_tools_and_scripts",
+        "test_provider_implementations_live_in_a_non_package_subdirectory"
+      ]
+    },
+    {
+      "path": "tests/test_websearch_runtime.py",
+      "domain": "websearch",
+      "lines": 515,
+      "test_functions": 17,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "2065150189b3e21c5a0a0771b74e31916cac82355a2edaf9d1f451929a20fbe1",
+      "head_result": {
+        "passed": 32
+      },
+      "head_total_seconds": 0.022,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_runtime_delegates_to_the_only_registered_provider",
+        "test_runtime_uses_default_or_explicit_provider_without_hidden_fallback",
+        "test_runtime_rejects_ambiguous_or_unknown_provider_selection",
+        "test_runtime_rejects_duplicate_provider_ids_per_capability",
+        "test_runtime_rejects_provider_methods_that_are_not_async",
+        "test_runtime_dispatches_every_contract_and_closes_provider_once",
+        "test_runtime_can_change_and_remove_a_default_provider",
+        "test_contract_models_reject_invalid_requests",
+        "test_contract_models_freeze_sequences_and_metadata",
+        "test_runtime_exposes_configured_provider_profiles",
+        "test_search_filters_are_immutable_and_report_requested_fields",
+        "test_search_filters_reject_ambiguous_or_invalid_values",
+        "test_search_filters_treat_naive_iso_time_as_server_local_time",
+        "test_runtime_rejects_filters_a_provider_does_not_declare",
+        "test_provider_profile_freezes_declared_search_filter_support",
+        "test_deepseek_provider_normalizes_search_and_fetch_results",
+        "test_deepseek_provider_maps_api_failures_to_contract_error"
+      ]
+    },
+    {
+      "path": "tests/test_websearch_settings.py",
+      "domain": "websearch",
+      "lines": 111,
+      "test_functions": 5,
+      "fixture_definitions": 0,
+      "snapshot_sha256": "bbe1d7d2a1df56191084d14392bd32cff0807853322d9a84a6f5f4d2385eac53",
+      "head_result": {
+        "passed": 5
+      },
+      "head_total_seconds": 2.561,
+      "head_failed_cases": [],
+      "working_snapshot_runtime_status": "unverified_due_to_collection_blocker",
+      "flags": [
+        "working_copy_changed_since_head"
+      ],
+      "recommendation": "保留现有行为覆盖，按业务域归组；是否合并需逐项比较场景。",
+      "test_names": [
+        "test_settings_load_env_file_and_environment_takes_precedence",
+        "test_runtime_builder_registers_local_and_configured_providers",
+        "test_runtime_builder_configures_real_browser_channel_and_reduced_signals",
+        "test_settings_reject_unsupported_browser_channel",
+        "test_runtime_builder_explains_missing_optional_crawl4ai"
+      ]
+    }
+  ],
+  "exact_top_level_clone_groups": [
+    [
+      {
+        "path": "tests/test_advance_query.py",
+        "symbol": "_create_engine",
+        "line": 15,
+        "end_line": 21
+      },
+      {
+        "path": "tests/test_advance_query_alias_safety.py",
+        "symbol": "_create_engine",
+        "line": 20,
+        "end_line": 26
+      },
+      {
+        "path": "tests/test_advance_query_mock.py",
+        "symbol": "_create_engine",
+        "line": 15,
+        "end_line": 21
+      },
+      {
+        "path": "tests/test_aliasing_refactor.py",
+        "symbol": "_create_engine",
+        "line": 58,
+        "end_line": 64
+      },
+      {
+        "path": "tests/test_schema_migration.py",
+        "symbol": "_create_engine",
+        "line": 58,
+        "end_line": 64
+      }
+    ],
+    [
+      {
+        "path": "tests/test_advance_query_alias_safety.py",
+        "symbol": "_temporary_engine",
+        "line": 29,
+        "end_line": 36
+      },
+      {
+        "path": "tests/test_aliasing_refactor.py",
+        "symbol": "_temporary_engine",
+        "line": 67,
+        "end_line": 74
+      }
+    ],
+    [
+      {
+        "path": "tests/test_advance_query_snapshot_performance.py",
+        "symbol": "_create_engine",
+        "line": 13,
+        "end_line": 21
+      },
+      {
+        "path": "tests/test_alias_async_performance.py",
+        "symbol": "_create_engine",
+        "line": 32,
+        "end_line": 40
+      },
+      {
+        "path": "tests/test_bucket_handle_index_iteration.py",
+        "symbol": "_create_engine",
+        "line": 11,
+        "end_line": 19
+      },
+      {
+        "path": "tests/test_memory_index_listing_and_tokens.py",
+        "symbol": "_create_engine",
+        "line": 18,
+        "end_line": 26
+      },
+      {
+        "path": "tests/test_memory_index_v4_performance_gates.py",
+        "symbol": "_create_engine",
+        "line": 13,
+        "end_line": 21
+      },
+      {
+        "path": "tests/test_parent_scoped_title_mapping.py",
+        "symbol": "_create_engine",
+        "line": 15,
+        "end_line": 23
+      },
+      {
+        "path": "tests/test_schema_v3_title_mapping.py",
+        "symbol": "_create_engine",
+        "line": 15,
+        "end_line": 23
+      }
+    ],
+    [
+      {
+        "path": "tests/test_group_fav_tools.py",
+        "symbol": "_set_auto_fav_config",
+        "line": 49,
+        "end_line": 54
+      },
+      {
+        "path": "tests/test_image_to_text_fav_cache.py",
+        "symbol": "_set_auto_fav_config",
+        "line": 24,
+        "end_line": 29
+      }
+    ],
+    [
+      {
+        "path": "tests/test_setu_adapter_persistence.py",
+        "symbol": "_async_test",
+        "line": 11,
+        "end_line": 16
+      },
+      {
+        "path": "tests/test_setu_interactions.py",
+        "symbol": "_async_test",
+        "line": 16,
+        "end_line": 21
+      }
+    ]
+  ],
+  "manual_files": [
+    {
+      "path": "scripts/manual_tests/benchmark_memory_full.py",
+      "lines": 194,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/message_rebuild_test_tool.py",
+      "lines": 119,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [
+        "legacy_import_path",
+        "no_main_guard"
+      ],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/smoke_advance_query_cache.py",
+      "lines": 230,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_agent.py",
+      "lines": 55,
+      "test_named_functions": 1,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_decouple_jsonrpc_httpx.py",
+      "lines": 183,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_LLM_connect.py",
+      "lines": 140,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_logger.py",
+      "lines": 54,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_memory.py",
+      "lines": 197,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_message.py",
+      "lines": 178,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [
+        "legacy_import_path"
+      ],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_notification.py",
+      "lines": 29,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [
+        "no_main_guard"
+      ],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_plot_bot_affinity_scores.py",
+      "lines": 37,
+      "test_named_functions": 1,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": 1,
+      "flags": [
+        "no_main_guard"
+      ],
+      "recommendation": "候选纳入版本管理的自动化测试，需同时管理所依赖的工具和绘图依赖。"
+    },
+    {
+      "path": "scripts/manual_tests/test_plot_relatedness_graph.py",
+      "lines": 66,
+      "test_named_functions": 3,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": 3,
+      "flags": [
+        "no_main_guard"
+      ],
+      "recommendation": "候选纳入版本管理的自动化测试，需同时管理所依赖的工具和绘图依赖。"
+    },
+    {
+      "path": "scripts/manual_tests/test_relatedness_bot_report.py",
+      "lines": 148,
+      "test_named_functions": 2,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": 2,
+      "flags": [
+        "no_main_guard"
+      ],
+      "recommendation": "候选纳入版本管理的自动化测试，需同时管理所依赖的工具和绘图依赖。"
+    },
+    {
+      "path": "scripts/manual_tests/test_relatedness_report.py",
+      "lines": 152,
+      "test_named_functions": 4,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": 4,
+      "flags": [
+        "no_main_guard"
+      ],
+      "recommendation": "候选纳入版本管理的自动化测试，需同时管理所依赖的工具和绘图依赖。"
+    },
+    {
+      "path": "scripts/manual_tests/test_setu.py",
+      "lines": 136,
+      "test_named_functions": 2,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_speak_prob.py",
+      "lines": 97,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    },
+    {
+      "path": "scripts/manual_tests/test_tavily.py",
+      "lines": 81,
+      "test_named_functions": 0,
+      "tracked_by_git": false,
+      "default_pytest_collection": false,
+      "verified_deterministic_cases": null,
+      "flags": [],
+      "recommendation": "人工实测、基准或辅助脚本；明确用途后决定维护、改名或归档。"
+    }
+  ],
+  "local_data_summary": {
+    "tests_data_files": 1615,
+    "tests_data_mib": 568.7,
+    "agent_test_mib": 316.0,
+    "tracked_by_git": false,
+    "content_audited": false
+  },
+  "limits": [
+    "当前未提交版本未执行完整测试；HEAD 结果不可替代新测试验证。",
+    "整套回收超时的根因未定位；单独与单文件运行通过。",
+    "未生成覆盖率，不用旧 .coverage 判断覆盖。",
+    "语义重复尚未逐场景证明，不提供自动删除清单。"
+  ]
+}

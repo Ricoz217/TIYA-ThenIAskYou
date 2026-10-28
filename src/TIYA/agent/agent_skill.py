@@ -23,7 +23,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from hashlib import blake2b
 from types import UnionType
-from typing import Annotated, Callable, Awaitable, Any, TypedDict, Literal, get_type_hints, get_origin, get_args, Union
+from typing import Annotated, Callable, Awaitable, Any, TypedDict, Literal, get_type_hints, get_origin, get_args, Union, is_typeddict
 from ruamel.yaml import YAML
 from PIL import Image
 
@@ -33,7 +33,6 @@ from TIYA.config import BASE_SKILL_DIR, ROOT_DIR, SETTING_CFG
 from TIYA.utils import httpx_downloader
 from TIYA.file_cache import add_file, add_file_async
 from TIYA.logger import get_logger
-from TIYA.model.model import SkillToolsFilteredResult, ObjectToolsMethods
 from TIYA.agent.agent_object_tool import AgentObjectToolManager
 
 _PATH_BLACKLIST = {ROOT_DIR / "config"}
@@ -52,6 +51,34 @@ class DownloadError(RuntimeError):
 class ToolsSetting(TypedDict):
     wait: bool
     callback: Literal["ALWAYS", "EXCEPTION", "NEVER", "CALL"]
+
+
+@dataclass(slots=True)
+class ObjectToolsMethods:
+    hook_class: type
+    methods: dict[str, Callable] = field(default_factory=dict)
+    sub_object_methods: dict[str, list[type]] = field(default_factory=dict)  # 对象方法指向下一个对象 {method: class}
+
+    @property
+    def name(self) -> str:
+        return self.hook_class.__name__
+
+
+@dataclass(slots=True)
+class SkillToolsFilteredResult:
+    FORBID_REASON = Literal[
+        "WHITELIST",
+        "BLACKLIST",
+        "CLASS_NOT_MATCH",
+        "NESTED_OBJECT_RETURN",
+    ]
+    agent_level: str
+    all_tools: dict[str, Callable] = field(default_factory=dict)
+    allowed_tools: dict[str, Callable] = field(default_factory=dict)
+    ordinary_tools: dict[str, Callable] = field(default_factory=dict)
+    object_tools: dict[str, Callable] = field(default_factory=dict)  # 面向对象方法
+    object_methods: dict[type, ObjectToolsMethods] = field(default_factory=dict)  # 该对象支持的方法
+    forbidden_tools: dict[str, FORBID_REASON] = field(default_factory=dict)  # {函数名: 理由}
 
 
 @dataclass(slots=True)
@@ -1189,8 +1216,19 @@ class SkillManager:
         detected_classes: set[type] = set()
         nested_classes: set[type] = set()
         invalid_classes: set[type] = set()
+        scanned_typed_dicts: set[type] = set()
 
         def _scan(annotation: Any, nested: bool = False) -> None:
+            if is_typeddict(annotation):
+                if annotation in scanned_typed_dicts:
+                    return
+
+                scanned_typed_dicts.add(annotation)
+                for field_type in get_type_hints(annotation).values():
+                    _scan(field_type, True)
+
+                return
+
             origin = get_origin(annotation)
             if origin in (UnionType, Union):
                 for argument in get_args(annotation):

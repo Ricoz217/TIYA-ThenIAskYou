@@ -10,7 +10,7 @@ import inspect
 import json
 
 from functools import reduce, wraps
-from math import ceil
+from math import ceil, isfinite
 from operator import or_
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +26,7 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
+    is_typeddict,
 )
 
 from TIYA.time_id import next_time_id
@@ -35,12 +36,30 @@ from TIYA.logger import get_logger
 _log = get_logger()
 
 
-class ObjectToolRegistrationError(RuntimeError):
+class ObjectToolError(Exception):
+    """所有对象工具错误的基类"""
+
+
+class ObjectToolRegistrationError(ObjectToolError):
     """对象工具注册信息互相冲突或不完整。"""
 
 
-class ObjectToolReturnTypeError(TypeError):
+class ObjectToolReturnTypeError(ObjectToolError):
     """对象工具返回了既不能托管、也不能发送给 LLM 的值。"""
+
+
+class ObjectToolProxyNotFoundError(ObjectToolError):
+    """找不到对象"""
+    def __init__(self, object_id: str):
+        self.object_id = object_id
+        super().__init__(object_id)
+
+    def __str__(self):
+        return f"代理对象 [{self.object_id}] 不存在或已被回收"
+
+
+class ObjectToolAttributeError(ObjectToolError):
+    """属性相关错误"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +81,7 @@ class AgentObjectTool:
 
 @dataclass(slots=True)
 class ObjectProxy:
-    hook_object: Any
+    _hook_object: type | None
     source_skill_name: str
     source_method_name: str
     create_time: float
@@ -70,8 +89,25 @@ class ObjectProxy:
     ttl: float
     object_id: str
 
+    @property
+    def object(self) -> type | None:
+        """没啥用，就是防御一下乱改代理的类"""
+        if self.expired():
+            self.kill()
+            return None
+
+        return self._hook_object
+
+    @property
+    def class_name(self) -> str | None:
+        if self.expired():
+            self.kill()
+            return None
+
+        return self._hook_object.__name__
+
     def expired_at(self, now: float | None = None) -> str:
-        """返回自动回收的 提示字符串，主要是 LLM 阅读友好"""
+        """返回自动回收的提示字符串，主要是 LLM 阅读友好"""
         if now is None:
             now = time.time()
 
@@ -116,13 +152,38 @@ class ObjectProxy:
         self.renewal_time = time.time() if now is None else now
 
     def kill(self):
-        self.hook_object = None
+        self._hook_object = None
+
+
+class _ObjectAttributeGetResult(TypedDict):
+    success: bool
+    object_id: str
+    attribute: str
+    value: Any
 
 
 class _ObjectAttributeSetResult(TypedDict):
     success: bool
+    object_id: str
+    attribute: str
     new_value: Any
-    message: str
+
+
+class _ObjectRenewResult(TypedDict):
+    success: bool
+    object_id: str
+    ttl: float
+    expires_at: str
+
+
+class _ObjectInfoResult(TypedDict):
+    object_id: str
+    object_class_name: str
+    source_skill_name: str
+    source_tool_name: str
+    expired_at: str
+    attributes: list[str]
+    methods: list[str]
 
 
 class AgentObjectToolManager:
@@ -135,9 +196,9 @@ class AgentObjectToolManager:
         self._skill_to_objects_mapping: dict[str, dict[str, set[str]]] = {}  # {skill_name: {method_name: {object_id}}}，这个管运行
         self._object_identity_mapping: dict[int, str] = {}  # {id(object): object_id}
 
-    """
-    框架逻辑
-    """
+    # =========================================================
+    # 框架逻辑
+    # =========================================================
 
     def register(
             self,
@@ -338,7 +399,7 @@ class AgentObjectToolManager:
             known_proxy = self._hook_objects.get(known_id)
             if (
                     known_proxy is not None
-                    and known_proxy.hook_object is result
+                    and known_proxy.object is result
                     and not known_proxy.expired(now)
             ):
                 known_proxy.renew(now)
@@ -349,7 +410,7 @@ class AgentObjectToolManager:
             object_id = f"obj:{skill_name}:{source_name}:{next_time_id()}"
 
         self._hook_objects[object_id] = ObjectProxy(
-            hook_object=result,
+            _hook_object=result,
             source_skill_name=skill_name,
             source_method_name=source_name,
             create_time=now,
@@ -369,6 +430,9 @@ class AgentObjectToolManager:
         """宽容校验只用于诊断，不作为可序列化普通结果的拒绝条件。"""
         if annotation in (Any, inspect.Signature.empty):
             return True
+
+        if is_typeddict(annotation):
+            return isinstance(value, dict)
 
         origin = get_origin(annotation)
         if origin is Annotated:
@@ -441,29 +505,198 @@ class AgentObjectToolManager:
 
         return True
 
-    """
-    对象方法通用接口
-    """
+    def _get_object_proxy(self, object_id: str) -> ObjectProxy:
+        """获取对象代理，没有直接报错"""
+        proxy = self._hook_objects.get(object_id)
+        if proxy is None:
+            raise ObjectToolProxyNotFoundError(object_id)
 
-    def get_attr(self, object_id: str, attribute: str) -> Any:
-        """获取指定对象的属性"""
-        ...
+        return proxy
+
+    @staticmethod
+    def _check_json_serialization(obj: Any) -> bool:
+        try:
+            json.dumps(obj, ensure_ascii=False, allow_nan=False)
+
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            return False
+
+        return True
+
+    @staticmethod
+    def _get_attributes_and_methods(obj: type) -> tuple[list[str], list[str]]:
+        """返回两个列表 [属性名], [方法名]"""
+        attributes = []
+        methods = []
+        for name, raw in inspect.getmembers_static(obj):
+            if name.startswith('_'):
+                continue
+
+        if isinstance(raw, property):
+            attributes.append(raw)
+
+        elif isinstance(raw, (staticmethod, classmethod)):
+            methods.append(name)
+
+        elif inspect.isroutine(raw):
+            methods.append(name)
+
+        else:
+            attributes.append(name)
+
+        return attributes, methods
+
+    def _drain_expired_object(self):
+        """回收已经过期的对象"""
+        deleted = []
+        now = time.time()
+        for object_id, proxy in self._hook_objects.items():
+            if proxy.expired(now):
+                proxy.kill()
+                deleted.append(object_id)
+
+        for object_id in deleted:
+            self._hook_objects.pop(object_id, None)
+
+    # =========================================================
+    # 对象方法通用接口，直接对接 LLM
+    # =========================================================
+
+    def get_attr(self, object_id: str, attribute: str) -> _ObjectAttributeGetResult:
+        """
+        读取指定对象属性.
+        :param object_id: 对象id.
+        :param attribute: 属性名，不支持私有属性.
+        :return: 成功: 一个结果字典; 失败: 抛出异常.
+        """
+        if attribute.startswith('_'):
+            raise ObjectToolAttributeError("对象工具不允许访问私有属性")
+
+        proxy = self._get_object_proxy(object_id)
+        obj = proxy.object
+        if obj is None:
+            raise ObjectToolProxyNotFoundError(object_id)
+
+        try:
+            value = getattr(obj, attribute)
+
+        except AttributeError as exc:
+            raise ObjectToolAttributeError(
+                f"对象 [{object_id}] 属性 [{attribute}] 不存在或不可读"
+            ) from exc
+
+        if not self._check_json_serialization(value):
+            raise ObjectToolAttributeError(f"对象 [{object_id}] 属性 [{attribute}] 无法序列化")
+
+        proxy.renew()
+        return _ObjectAttributeGetResult(
+            success=True,
+            object_id=object_id,
+            attribute=attribute,
+            value=value
+        )
 
     def set_attr(self, object_id: str, attribute: str, value: Any) -> _ObjectAttributeSetResult:
-        """设置指定对象的属性"""
-        ...
+        """
+        修改指定对象的属性，不允许新增属性.
+        :param object_id: 对象id.
+        :param attribute: 属性名，不支持私有属性/不存在的属性.
+        :param value: 新值.
+        :return: 成功: 一个结果字典; 失败: 抛出异常
+        """
+        if attribute.startswith('_'):
+            raise ObjectToolAttributeError("对象工具不允许修改私有属性")
 
-    def renewal_object(self, object_id: str, new_ttl: float) -> dict:
-        """显式给指定对象续期，设置一个新 TTL，从当前时间开始计算回收时间"""
-        ...
+        proxy = self._get_object_proxy(object_id)
+        obj = proxy.object
+        if obj is None:
+            raise ObjectToolProxyNotFoundError(object_id)
 
-    def get_object_info(self, object_id: str) -> dict:
-        """获取指定对象信息"""
-        ...
+        # 静态读取只检查属性是否存在，避免为赋值额外执行 property getter。
+        try:
+            raw = inspect.getattr_static(obj, attribute)
 
-    def get_object_methods(self, object_id: str) -> dict:
-        """获取指定对象的所有方法"""
-        ...
+        except AttributeError as exc:
+            raise ObjectToolAttributeError(
+                f"对象 [{object_id}] 不存在名为 [{attribute}] 的属性"
+            ) from exc
+
+        if inspect.isroutine(raw) or isinstance(raw, (staticmethod, classmethod)):
+            raise ObjectToolAttributeError(f"对象 [{object_id}] 不允许覆盖方法 [{attribute}]")
+
+        setattr(obj, attribute, value)
+        proxy.renew()
+        return _ObjectAttributeSetResult(
+            success=True,
+            object_id=object_id,
+            attribute=attribute,
+            new_value=value
+        )
+
+    def renew_object(self, object_id: str, new_ttl: float) -> _ObjectRenewResult:
+        """
+        给指定对象设置新的自动回收 TTL，以当前时间为起点计算.
+        :param object_id: 对象id.
+        :param new_ttl: 新的 TTL，单位为秒.
+        :return: 成功: 一个结果字典; 失败: 抛出异常
+        """
+        if isinstance(new_ttl, bool) or not isinstance(new_ttl, (int, float)):
+            raise TypeError("new_ttl 必须是数值")
+
+        if not isfinite(new_ttl) or new_ttl <= 0:
+            raise ValueError("new_ttl 必须是大于 0 的有限数值")
+
+        proxy = self._get_object_proxy(object_id)
+        if proxy.object is None:
+            raise ObjectToolProxyNotFoundError(object_id)
+
+        proxy.ttl = new_ttl
+        proxy.renew()
+        return _ObjectRenewResult(
+            success=True,
+            object_id=object_id,
+            ttl=proxy.ttl,
+            expires_at=proxy.expired_at()
+        )
+
+    def get_active_object_list(self) -> dict:
+        """
+        获取活跃对象列表.
+        :return: 成功/失败: 返回当前活跃的对象结果字典，按照 `skill_name -> tool_name -> object_id` 划分
+        """
+        if not self._hook_objects:
+            return {}
+
+        self._drain_expired_object()
+        result = {}
+        for object_id, proxy in self._hook_objects.items():
+            result.setdefault(proxy.source_skill_name, {}).setdefault(proxy.source_method_name, []).append(object_id)
+
+        return result
+
+    def get_object_info(self, object_id: str) -> _ObjectInfoResult:
+        """
+        获取指定对象详细信息. 其中 `attributes` 代表属性名，`methods` 代表对象方法名，
+        使用对应工具时应采取里面明确给出的名字.
+        :param object_id: 对象id.
+        :return: 成功: 对象详细信息的字典; 失败： 抛出对应异常
+        """
+        proxy = self._get_object_proxy(object_id)
+        if proxy.object is None:
+            raise ObjectToolProxyNotFoundError(object_id)
+
+        attributes, methods = self._get_attributes_and_methods(proxy.object)
+        now = time.time()
+        proxy.renew(now)
+        return _ObjectInfoResult(
+            object_id=object_id,
+            object_class_name=proxy.class_name,
+            source_skill_name=proxy.source_skill_name,
+            source_tool_name=proxy.source_method_name,
+            expired_at=proxy.expired_at(now),
+            attributes=attributes,
+            methods=methods
+        )
 
     def get_object_method_schema(self, object_id: str, method_name: str) -> dict:
         """获取指定对象方法的详细签名，具体使用 schema"""
