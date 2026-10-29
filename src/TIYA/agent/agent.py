@@ -35,7 +35,7 @@ from TIYA.agent.agent_skill import SkillManager
 from TIYA.agent.web_search import WebSearch
 from .agent_scheduler import AsyncSchedulerManager, _AGENTS
 from TIYA.time_id import next_time_id
-from TIYA.LLM_connect import (Chat, ChatConfig, Prompts, Context, ContextOverflowError, ContextEmptyError,
+from TIYA.LLM_connect import (Chat, Prompts, Context, ContextOverflowError, ContextEmptyError,
                               ToolCall, TextPrompt, build_tool_payloads, ToolInput, SystemPrompt,
                               ToolResponse, ImagePrompt, parse_llm_setting)
 
@@ -2385,8 +2385,7 @@ class BaseAgent:
         summary_chat = self.control.copy()
         model_params = summary_chat.model.get("parameter", {})
         model_params.setdefault("response_format", {}).update({'type': 'json_object'})
-        new_set = ChatConfig(model_params=model_params, keep_alive=False)
-        summary_chat.setting(new_set)
+        summary_chat.update_config(model_params=model_params, keep_alive=False)
         summary_system_prompt = self.get_last_version_prompt("base_summary_context_system")
         if summary_system_prompt is None:
             summary_system_prompt = self.register_prompt(
@@ -2479,8 +2478,7 @@ class BaseAgent:
         summary_chat = self.control.copy()
         model_params = summary_chat.model.get("parameter", {})
         model_params.setdefault("response_format", {}).update({'type': 'json_object'})
-        new_set = ChatConfig(model_params=model_params, keep_alive=False)
-        summary_chat.setting(new_set)
+        summary_chat.update_config(model_params=model_params, keep_alive=False)
         summary_system_prompt = self.get_last_version_prompt("base_summary_context_system")
         if summary_system_prompt is None:
             summary_system_prompt = self.register_prompt(

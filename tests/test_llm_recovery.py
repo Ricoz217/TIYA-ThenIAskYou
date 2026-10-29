@@ -5,7 +5,8 @@ import json
 import httpx
 import pytest
 
-from TIYA.llm.config import Preset, Route, fingerprint
+from TIYA.llm.config import fingerprint
+from llm_config_fixtures import configuration, candidate
 from TIYA.llm.gateway import Gateway
 from TIYA.llm.model import Context, Prompts, TextPrompt, SystemPrompt
 from TIYA.llm.runtime import Runtime
@@ -28,17 +29,17 @@ def test_fallback_cooldown_survives_restart_and_does_not_slide(tmp_path, monkeyp
             return httpx.Response(429, json={"error": {"code": "insufficient_quota"}})
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
-    config = Preset(
+    config = configuration(
         "p",
         [
-            Route(
+            candidate(
                 "chat_completions:a:m",
                 "chat_completions",
                 "a",
                 "m",
                 {"endpoint": "https://primary"},
             ),
-            Route(
+            candidate(
                 "chat_completions:b:m",
                 "chat_completions",
                 "b",
@@ -98,7 +99,7 @@ def test_system_prompt_is_stable_and_rollback_can_use_an_earlier_checkpoint(tmp_
             },
         )
 
-    route = Route(
+    route = candidate(
         "responses_api:a:m",
         "responses_api",
         "a",
@@ -108,7 +109,7 @@ def test_system_prompt_is_stable_and_rollback_can_use_an_earlier_checkpoint(tmp_
             "responses": {"supports_previous_response_id": True},
         },
     )
-    config = Preset("p", [route])
+    config = configuration("p", [route])
 
     async def run():
         rt = services(tmp_path)
@@ -150,7 +151,7 @@ def test_stream_partial_failure_stops_all_candidates_and_preserves_usage(tmp_pat
             ),
         )
 
-    route = Route(
+    route = candidate(
         "chat_completions:a:m",
         "chat_completions",
         "a",
@@ -161,7 +162,7 @@ def test_stream_partial_failure_stops_all_candidates_and_preserves_usage(tmp_pat
 
     async def run():
         rt = services(tmp_path)
-        config = Preset("p", [route, copy.deepcopy(route)])
+        config = configuration("p", [route, copy.deepcopy(route)])
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
 
             async def gateway(route):
@@ -205,7 +206,7 @@ def test_invalid_parent_is_not_probed_again_after_failed_full_replay(tmp_path):
 
     async def run():
         rt = services(tmp_path)
-        route = Route(
+        route = candidate(
             "responses_api:x:m",
             "responses_api",
             "x",
@@ -215,7 +216,7 @@ def test_invalid_parent_is_not_probed_again_after_failed_full_replay(tmp_path):
                 "responses": {"supports_previous_response_id": True},
             },
         )
-        config = Preset("p", [route])
+        config = configuration("p", [route])
         context = Context()
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
 
@@ -249,17 +250,17 @@ def test_cross_model_fallback_commits_with_existing_model_usage(tmp_path):
             TextPrompt("assistant", "old answer"),
             TokenUsage(10, 2, 0, 12, "large"),
         )
-        config = Preset(
+        config = configuration(
             "p",
             [
-                Route(
+                candidate(
                     "chat_completions:a:large",
                     "chat_completions",
                     "a",
                     "large",
                     {"endpoint": "https://primary"},
                 ),
-                Route(
+                candidate(
                     "chat_completions:b:small",
                     "chat_completions",
                     "b",

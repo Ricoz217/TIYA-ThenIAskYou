@@ -61,11 +61,11 @@ def test_file_dialects_encode_expiry_and_parse_metadata():
 
 
 def test_images_edit_keeps_mask_and_reference_order():
-    from TIYA.llm.config import Route
+    from llm_config_fixtures import candidate
     from TIYA.llm.model import ImageEditRequest, MediaRef
     from TIYA.llm.provider.openai_images import Images
 
-    route = Route(
+    route = candidate(
         "image_generation:x:image-2.5",
         "image_generation",
         "x",
@@ -96,7 +96,7 @@ def test_images_edit_keeps_mask_and_reference_order():
 def test_unsupported_files_business_error_falls_back_without_losing_image(
     tmp_path, monkeypatch
 ):
-    from TIYA.llm.config import Route
+    from llm_config_fixtures import candidate
     from TIYA.llm.media import MediaService
     from TIYA.llm.state import StateStore
     from TIYA.llm.provider import get_provider
@@ -121,7 +121,7 @@ def test_unsupported_files_business_error_falls_back_without_losing_image(
         return {"error": {"code": "file_reference_not_supported"}}
 
     async def run():
-        route = Route(
+        route = candidate(
             "responses_api:x:m",
             "responses_api",
             "x",
@@ -171,7 +171,7 @@ def test_long_concurrent_upload_renews_lease_and_uploads_once(tmp_path):
 def test_state_database_failure_uses_inline_and_keeps_the_image(tmp_path, monkeypatch):
     import sqlite3
     import TIYA.llm.media as module
-    from TIYA.llm.config import Route
+    from llm_config_fixtures import candidate
     from TIYA.llm.media import MediaService
     from TIYA.llm.model import ImagePrompt
     from TIYA.llm.provider import get_provider
@@ -200,7 +200,7 @@ def test_state_database_failure_uses_inline_and_keeps_the_image(tmp_path, monkey
 
     async def run():
         provider = get_provider(
-            Route(
+            candidate(
                 "responses_api:x:m",
                 "responses_api",
                 "x",
@@ -222,7 +222,7 @@ def test_missing_legacy_variant_is_rebuilt_once_from_available_original(
     tmp_path, monkeypatch
 ):
     import TIYA.llm.media as module
-    from TIYA.llm.config import Route
+    from llm_config_fixtures import candidate
     from TIYA.llm.media import MediaService
     from TIYA.llm.model import ImagePrompt
     from TIYA.llm.provider import get_provider
@@ -253,7 +253,7 @@ def test_missing_legacy_variant_is_rebuilt_once_from_available_original(
         prompt = ImagePrompt("user", original)
         prompt.image = ["expired"]
         provider = get_provider(
-            Route("chat_completions:x:m", "chat_completions", "x", "m", {})
+            candidate("chat_completions:x:m", "chat_completions", "x", "m", {})
         )
         refs = await MediaService(
             StateStore(tmp_path / "state.sqlite3")

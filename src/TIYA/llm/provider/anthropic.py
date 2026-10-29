@@ -12,7 +12,6 @@ from ..model import (
     ToolResponse,
 )
 from ..tool_schema import build_tool_payloads
-from ..config import credential
 from .base import Provider, Result, merge_headers
 from .common import tool_arguments, attach_native, native_items
 
@@ -22,15 +21,16 @@ class Messages(Provider):
         return True
 
     def headers(self):
-        settings = self.route.settings
         headers = {
-            "x-api-key": credential(settings),
-            "anthropic-version": settings.get("anthropic_version", "2023-06-01"),
-            **(settings.get("headers") or {}),
+            "x-api-key": self.route.token,
+            "anthropic-version": self.route.provider_options.get(
+                "anthropic_version", "2023-06-01"
+            ),
+            **self.route.headers,
         }
-        if (self.route.files_settings or {}).get("anthropic_beta"):
+        if self.route.files and self.route.files.provider_options.get("anthropic_beta"):
             headers.setdefault(
-                "anthropic-beta", self.route.files_settings["anthropic_beta"]
+                "anthropic-beta", self.route.files.provider_options["anthropic_beta"]
             )
         return merge_headers(headers, self.route.client_params.get("headers"))
 
@@ -96,7 +96,7 @@ class Messages(Provider):
             else:
                 messages.append({"role": role, "content": content})
         payload = {
-            **copy.deepcopy(self.route.params),
+            **copy.deepcopy(self.route.model_params),
             "model": self.route.model,
             "messages": messages,
         }

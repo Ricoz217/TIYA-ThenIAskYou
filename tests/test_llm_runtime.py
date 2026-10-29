@@ -3,15 +3,15 @@ import asyncio
 import httpx
 import pytest
 
-from TIYA.llm.config import Preset, Route
+from llm_config_fixtures import configuration, candidate
 from TIYA.llm.model import Context, Prompts, TextPrompt
 
 
 def preset():
-    return Preset(
+    return configuration(
         "p",
         [
-            Route(
+            candidate(
                 "responses_api:a:m",
                 "responses_api",
                 "a",
@@ -109,8 +109,8 @@ def test_partial_output_or_unknown_execution_never_falls_back(tmp_path):
     async def run():
         rt = runtime(tmp_path)
         config = preset()
-        config.routes.append(
-            Route(
+        config.candidates.append(
+            candidate(
                 "chat_completions:b:m",
                 "chat_completions",
                 "b",

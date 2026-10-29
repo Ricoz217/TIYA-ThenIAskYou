@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import httpx
 
 from .config import fingerprint
+from .config_model import ChatConfig, LLMConfig
+from .provider.base import Result
 from .gateway import WireRequest, HTTPFailure, Frame
 from .media import MediaService, MediaError
 from .model import (
@@ -32,12 +34,12 @@ from .snapshot import stable, prefix, context_signature, estimate
 
 @dataclass
 class Pending:
-    result: object
+    result: Result
     planned: Context
     expected: str
     session: str
-    preset: object
-    route: object
+    config: ChatConfig
+    route: LLMConfig
     route_index: int
     call_id: str
     checkpoint: dict | None
@@ -82,36 +84,40 @@ class Runtime:
         except (sqlite3.Error, OSError) as exc:
             self._log(f"LLM 状态写入失败，当前调用保守恢复: {type(exc).__name__}")
 
-    async def execute(self, context, prompts, preset, gateway_for_route, timeout):
+    async def execute(
+        self, context, prompts, config: ChatConfig, gateway_for_route, timeout
+    ):
+        if not config.candidates or config.request_policy is None:
+            raise ValueError("Runtime 只接受完整 ChatConfig")
         self.media.degraded = False
         expected = context_signature(context)
         planned = copy.deepcopy(context)
         planned.append(copy.deepcopy(prompts))
         planned = normalize(planned)
         deadline = time.monotonic() + timeout
-        call_id = await self._db(self.ledger.begin_call, preset.name)
-        route_key = fingerprint([context.session_id, preset.revision])
+        call_id = await self._db(self.ledger.begin_call, config.preset_name)
+        route_key = fingerprint([context.session_id, config.revision])
         cooldown = await asyncio.to_thread(self._state_get, "cooldown", route_key)
         selected = (
             cooldown.get("index", 0)
             if cooldown and cooldown["until"] > time.time()
             else 0
         )
-        if selected >= len(preset.routes):
+        if selected >= len(config.candidates):
             selected = 0
-        order = list(range(selected, len(preset.routes)))
-        attempts, max_attempts = 0, int(preset.options.get("max_attempts", 6))
+        order = list(range(selected, len(config.candidates)))
+        attempts, max_attempts = 0, int(config.request_policy.max_attempts)
         last_error, reason, overflow = None, "", False
         last_request_id = ""
         last_remote_state = "not_sent"
         last_category = "preflight"
         try:
             for index in order:
-                route = copy.deepcopy(preset.routes[index])
+                route = copy.deepcopy(config.candidates[index])
                 provider = get_provider(route)
                 if not callable(getattr(provider, "encode", None)):
                     raise ValueError(
-                        f"{route.category} 不是对话操作，请使用对应的独立客户端"
+                        f"{route.provider_type} 不是对话操作，请使用对应的独立客户端"
                     )
                 parent_enabled = (
                     provider.supports_parent
@@ -119,9 +125,11 @@ class Runtime:
                         self._state_get, "unsupported_parent", route.scope
                     )
                 )
-                if route.params.get("background") and not route.settings.get(
-                    "responses", {}
-                ).get("supports_background"):
+                if route.model_params.get(
+                    "background"
+                ) and not route.provider_options.get("responses", {}).get(
+                    "supports_background"
+                ):
                     raise ValueError(
                         "后台 Responses 需要显式声明 responses.supports_background"
                     )
@@ -155,8 +163,8 @@ class Runtime:
                 parent = (
                     max(matching, key=lambda c: len(c["prefix"]), default=None)
                     if (
-                        route.category == "responses_api"
-                        and route.history_mode != "full"
+                        route.provider_type == "responses_api"
+                        and route.context_history_mode != "full"
                         and parent_enabled
                     )
                     else None
@@ -202,13 +210,13 @@ class Runtime:
                         payload["previous_response_id"] = parent["response_id"]
                         payload["store"] = True
                     elif (
-                        route.category == "responses_api"
+                        route.provider_type == "responses_api"
                         and parent_enabled
-                        and route.history_mode != "full"
+                        and route.context_history_mode != "full"
                     ):
                         payload["store"] = True
                     if any(
-                        key in route.params
+                        key in route.model_params
                         for key in (
                             "messages",
                             "input",
@@ -220,12 +228,12 @@ class Runtime:
                             "llm_params 不能覆盖 Runtime 管理的上下文或工具字段"
                         )
                     identity = {
-                        "preset": preset.name,
+                        "preset": config.preset_name,
                         "provider": route.ref,
                         "scope": route.scope,
                         "model": route.model,
-                        "operation": route.category,
-                        "config_revision": preset.revision,
+                        "operation": route.provider_type,
+                        "config_revision": config.revision,
                     }
                     price = None
                     if self.prices:
@@ -239,8 +247,8 @@ class Runtime:
                             )
                         except (sqlite3.Error, OSError, ValueError):
                             self._log("LLM 定价目录不可读，本次费用保留未知")
-                    if price is None and route.settings.get("legacy_price") is not None:
-                        legacy = route.settings["legacy_price"]
+                    if price is None and route.legacy_price is not None:
+                        legacy = route.legacy_price.to_dict()
                         price = {
                             "version": "legacy",
                             "rules": {
@@ -411,7 +419,7 @@ class Runtime:
                                 parent_enabled
                                 and result.stored is not False
                                 and result.response_id
-                                and route.history_mode != "full"
+                                and route.context_history_mode != "full"
                             )
                             else None
                         )
@@ -421,7 +429,7 @@ class Runtime:
                             planned,
                             expected,
                             context.session_id,
-                            preset,
+                            config,
                             route,
                             index,
                             call_id,
@@ -629,12 +637,12 @@ class Runtime:
                                     for ref in refs
                                 )
                             }
-                            if not inline and route.files_settings:
+                            if not inline and route.files is not None:
                                 from .provider.files import get_files_provider
 
                                 scope = get_files_provider(
-                                    route.files_settings,
-                                    route.files_ref.split(":", 1)[0],
+                                    route.files.as_provider_settings(),
+                                    route.files.provider_type,
                                 ).scope
                                 await self._db(
                                     self.state.put,
@@ -657,7 +665,11 @@ class Runtime:
                         if failure.category in (
                             "rate_limit",
                             "connection",
-                        ) and retries < int(route.settings.get("retries", 1)):
+                        ) and retries < (
+                            route.max_retries
+                            if route.max_retries is not None
+                            else config.request_policy.max_retries_per_candidate
+                        ):
                             retries += 1
                             delay = min(
                                 failure.retry_after or 0.2,
@@ -736,20 +748,19 @@ class Runtime:
     ):
         from .provider.files import get_files_provider
 
-        file_provider = (
-            get_files_provider(
-                route.files_settings,
-                (route.files_ref or "files_api:direct").split(":", 1)[0],
+        file_provider = None
+        if operation == "files":
+            if route.files is None:
+                raise ValueError("未配置 Files 服务")
+            file_provider = get_files_provider(
+                route.files.as_provider_settings(), route.files.provider_type
             )
-            if operation == "files"
-            else None
-        )
         request_id = await self._db(
             self.ledger.begin_request,
             call_id,
             {
                 "preset": "",
-                "provider": route.files_ref if operation == "files" else route.ref,
+                "provider": route.files.ref if operation == "files" else route.ref,
                 "model": "",
                 "operation": operation,
                 "token_usage": "not_applicable",
@@ -826,7 +837,7 @@ class Runtime:
                 entries = self.state.get("checkpoints", key) or []
                 entries.append(pending.checkpoint)
                 self.state.put("checkpoints", key, entries[-64:])
-            route_key = fingerprint([session_id, pending.preset.revision])
+            route_key = fingerprint([session_id, pending.config.revision])
             old = self.state.get("cooldown", route_key)
             if pending.route_index:
                 if (
@@ -835,7 +846,7 @@ class Runtime:
                     or old["until"] <= time.time()
                 ):
                     until = time.time() + float(
-                        pending.preset.options.get("fallback_cooldown_seconds", 3600)
+                        pending.config.request_policy.fallback_cooldown_seconds
                     )
                     self.state.put(
                         "cooldown",
@@ -843,7 +854,7 @@ class Runtime:
                         {"index": pending.route_index, "until": until},
                     )
                     self._log(
-                        f"LLM 已进入 fallback: {pending.preset.routes[0].ref} -> {pending.route.ref}; "
+                        f"LLM 已进入 fallback: {pending.config.candidates[0].ref} -> {pending.route.ref}; "
                         f"原因={pending.fallback_reason}; call={pending.call_id}; request={pending.result.request_id}; 冷却至={until}"
                     )
             elif old:

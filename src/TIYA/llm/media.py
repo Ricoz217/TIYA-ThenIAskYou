@@ -186,6 +186,7 @@ class MediaService:
         self, prompt, provider, send, *, inline=False, force=False, _rebuilt=False
     ):
         route = provider.route
+        files_settings = route.files.as_provider_settings() if route.files else {}
         descriptor = (
             prompt.media_descriptor
             if prompt.prepared_input == str(prompt.image_input)
@@ -200,7 +201,7 @@ class MediaService:
             )
         )
         key = fingerprint(
-            [route.scope, route.files_settings, prompt.id, descriptor, prompt.image]
+            [route.scope, files_settings, prompt.id, descriptor, prompt.image]
         )
         previous = await self._meta("get", "media", key)
         if previous and previous.get("prepared_input"):
@@ -247,9 +248,7 @@ class MediaService:
                 prompt.media_descriptor = descriptor
                 prompt.prepared_input = str(prompt.image_input)
         prepared = []
-        allow_files = (
-            route.files_settings and provider.accepts_image_files() and not inline
-        )
+        allow_files = files_settings and provider.accepts_image_files() and not inline
         disabled = await self._meta("get", "unsupported_files", route.scope)
         allow_files = allow_files and not disabled
         allow_files = allow_files and not self.degraded
@@ -295,12 +294,10 @@ class MediaService:
                     prepared.append(
                         await self.upload(
                             ref,
-                            route.files_settings,
+                            files_settings,
                             send,
                             force=False,  # Concrete invalid IDs are marked above; valid sibling parts stay reusable.
-                            category=(route.files_ref or "files_api:direct").split(
-                                ":", 1
-                            )[0],
+                            category=route.files.provider_type,
                         )
                     )
                     continue
@@ -308,7 +305,7 @@ class MediaService:
                     failure = classify_error(
                         exc.status,
                         exc.body,
-                        route.files_settings.get("error_dialect", "openai"),
+                        files_settings.get("error_dialect", "openai"),
                         exc.headers,
                     )
                     # These are upload failures, not model-generation failures. Auth/malformed must stay visible.
@@ -337,7 +334,7 @@ class MediaService:
                 MediaRef("base64", base64.b64encode(data).decode(), ref.mime_type)
             )
         remote = all(r.kind == "remote" for r in prepared)
-        ttl = (route.files_settings or {}).get("expires_after_seconds")
+        ttl = (files_settings or {}).get("expires_after_seconds")
         expiries = [ref.expires_at for ref in prepared if ref.expires_at is not None]
         await self._meta(
             "put",

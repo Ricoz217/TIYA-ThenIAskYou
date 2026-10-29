@@ -18,10 +18,10 @@ def test_explicit_migration_backs_up_and_is_idempotent(tmp_path):
     changed = path.read_bytes()
     migrate_file(path, apply=True, pricing_path=tmp_path / "pricing.sqlite3")
     assert path.read_bytes() == changed
-    from TIYA.llm.config import resolve_preset
+    from TIYA.llm.settings import resolve_chat_config
     from TIYA.llm.pricing import PriceCatalog
 
-    route = resolve_preset(preview["LLM模型配置"], "old").routes[0]
+    route = resolve_chat_config(preview["LLM模型配置"], "old").primary
     assert (
         PriceCatalog(tmp_path / "pricing.sqlite3").snapshot(
             {

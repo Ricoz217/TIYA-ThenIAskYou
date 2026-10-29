@@ -2,16 +2,21 @@ import asyncio
 
 import httpx
 
-from TIYA.LLM_connect import Chat, ChatConfig
+from TIYA.LLM_connect import Chat, ChatConfig, LLMConfig
 
 
 def config():
     return ChatConfig(
-        endpoint="https://test/chat",
-        model="m",
-        token="k",
-        api_provider="openai",
-        model_params={"stream": False},
+        [
+            LLMConfig(
+                "chat_completions",
+                "test",
+                "https://test/chat",
+                "k",
+                "m",
+                model_params={"stream": False},
+            )
+        ],
         log_off=True,
     )
 

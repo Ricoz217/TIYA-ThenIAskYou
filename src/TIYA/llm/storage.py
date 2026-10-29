@@ -4,8 +4,25 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
+
+
+_INIT_LOCKS = weakref.WeakValueDictionary()
+_INIT_LOCKS_GUARD = threading.Lock()
+
+
+def _initialization_lock(path):
+    # Different stores can open the same database concurrently during first use.
+    # Serializing WAL/schema setup by path avoids an immediate journal-mode BUSY.
+    with _INIT_LOCKS_GUARD:
+        key = path.resolve()
+        lock = _INIT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _INIT_LOCKS[key] = lock
+        return lock
 
 
 class Database:
@@ -13,7 +30,7 @@ class Database:
         self.path = Path(path)
         self.schema = schema
         self._ready = False
-        self._lock = threading.Lock()
+        self._lock = _initialization_lock(self.path)
 
     @contextmanager
     def transaction(self):

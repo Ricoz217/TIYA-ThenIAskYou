@@ -3,7 +3,7 @@ import json
 
 import httpx
 
-from TIYA.llm.config import Preset, Route
+from llm_config_fixtures import configuration, candidate
 from TIYA.llm.gateway import Gateway
 from TIYA.llm.model import Context, Prompts, TextPrompt
 from TIYA.llm.runtime import Runtime
@@ -27,7 +27,7 @@ def test_explicit_background_job_is_cancelled_by_protocol(tmp_path):
     async def run():
         ledger = Ledger(tmp_path / "usage.sqlite3")
         rt = Runtime(StateStore(tmp_path / "runtime.sqlite3"), ledger)
-        route = Route(
+        route = candidate(
             "responses_api:x:m",
             "responses_api",
             "x",
@@ -47,7 +47,7 @@ def test_explicit_background_job_is_cancelled_by_protocol(tmp_path):
                 rt.execute(
                     Context(),
                     Prompts(TextPrompt("user", "hi")),
-                    Preset("p", [route]),
+                    configuration("p", [route]),
                     gateway,
                     10,
                 )

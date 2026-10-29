@@ -107,11 +107,11 @@ def test_provider_error_dialects_do_not_conflate_quota_and_rate():
 
 
 def test_responses_preserves_function_calls_and_reasoning_native_items():
-    from TIYA.llm.config import Route
+    from llm_config_fixtures import candidate
     from TIYA.llm.provider import get_provider
     from TIYA.LLM_connect import Context, TextPrompt
 
-    route = Route(
+    route = candidate(
         "responses_api:any:m", "responses_api", "any", "m", {"endpoint": "https://test"}
     )
     provider = get_provider(route)
@@ -150,11 +150,11 @@ def test_responses_preserves_function_calls_and_reasoning_native_items():
 
 
 def test_broken_tool_json_fails_instead_of_executing_empty_arguments():
-    from TIYA.llm.config import Route
+    from llm_config_fixtures import candidate
     from TIYA.llm.provider import get_provider
 
     provider = get_provider(
-        Route("chat_completions:a:m", "chat_completions", "a", "m", {})
+        candidate("chat_completions:a:m", "chat_completions", "a", "m", {})
     )
     with pytest.raises(ValueError):
         provider.decode(
@@ -173,10 +173,12 @@ def test_broken_tool_json_fails_instead_of_executing_empty_arguments():
 
 
 def test_anthropic_staged_usage_is_merged_not_max_selected():
-    from TIYA.llm.config import Route
+    from llm_config_fixtures import candidate
     from TIYA.llm.provider import get_provider
 
-    provider = get_provider(Route("anthropic_api:a:m", "anthropic_api", "a", "m", {}))
+    provider = get_provider(
+        candidate("anthropic_api:a:m", "anthropic_api", "a", "m", {})
+    )
     stream = provider.stream_decoder()
     stream.feed(
         {
@@ -206,12 +208,12 @@ def test_anthropic_staged_usage_is_merged_not_max_selected():
 
 
 def test_native_projection_must_not_resurrect_a_deleted_or_edited_message():
-    from TIYA.llm.config import Route
+    from llm_config_fixtures import candidate
     from TIYA.llm.provider import get_provider
     from TIYA.llm.model import Context
 
     provider = get_provider(
-        Route(
+        candidate(
             "responses_api:x:m", "responses_api", "x", "m", {"endpoint": "https://test"}
         )
     )
@@ -238,12 +240,12 @@ def test_native_projection_must_not_resurrect_a_deleted_or_edited_message():
 
 
 def test_chat_mixed_content_preserves_text_image_tool_order():
-    from TIYA.llm.config import Route
+    from llm_config_fixtures import candidate
     from TIYA.llm.provider import get_provider
     from TIYA.llm.model import ImagePrompt, ToolCall
 
     provider = get_provider(
-        Route(
+        candidate(
             "chat_completions:x:m",
             "chat_completions",
             "x",

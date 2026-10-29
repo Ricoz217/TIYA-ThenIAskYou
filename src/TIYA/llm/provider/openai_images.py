@@ -14,7 +14,9 @@ class Images(Provider):
     @property
     def uses_multipart(self):
         return (
-            self.route.settings.get("images", {}).get("edit_format", "multipart")
+            self.route.provider_options.get("images", {}).get(
+                "edit_format", "multipart"
+            )
             == "multipart"
         )
 
@@ -44,7 +46,7 @@ class Images(Provider):
         return values
 
     def encode_operation(self, request, images=None, mask=None):
-        params = copy.deepcopy(self.route.params)
+        params = copy.deepcopy(self.route.model_params)
         params.update(request.params)
         for field in fields(ImageGenerateRequest):
             if field.name == "params":
@@ -61,14 +63,16 @@ class Images(Provider):
             )
         if not images:
             raise ValueError("编辑请求需要至少一张目标图片")
-        url = self.route.settings.get("edit_endpoint")
+        url = self.route.provider_options.get("edit_endpoint")
         if not url:
-            base = self.route.settings.get("base_url")
+            base = self.route.provider_options.get("base_url")
             if not base:
                 raise ValueError("编辑需要显式 edit_endpoint 或 base_url")
             url = base.rstrip("/") + "/images/edits"
         if (
-            self.route.settings.get("images", {}).get("edit_format", "multipart")
+            self.route.provider_options.get("images", {}).get(
+                "edit_format", "multipart"
+            )
             == "json"
         ):
 

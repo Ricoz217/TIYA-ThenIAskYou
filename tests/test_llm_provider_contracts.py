@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from TIYA.llm.config import Route
+from llm_config_fixtures import candidate
 from TIYA.llm.model import (
     Context,
     SystemPrompt,
@@ -25,7 +25,7 @@ def function(value: str) -> str:
     "category", ["chat_completions", "responses_api", "anthropic_api"]
 )
 def test_provider_encodes_complete_tool_loop_and_preserves_native_parameters(category):
-    route = Route(
+    route = candidate(
         f"{category}:arbitrary:m",
         category,
         "arbitrary",
@@ -69,7 +69,7 @@ def test_image_file_id_shapes_are_explicit_and_not_inferred_from_names():
     context = Context(picture)
     media = {picture.id: [MediaRef("remote", "file-id", "image/png")]}
     ds = get_provider(
-        Route(
+        candidate(
             "chat_completions:random:m",
             "chat_completions",
             "random",
@@ -81,18 +81,21 @@ def test_image_file_id_shapes_are_explicit_and_not_inferred_from_names():
         {"type": "file", "file_id": "file-id"}
     ]
     oa = get_provider(
-        Route("chat_completions:deepseek:m", "chat_completions", "deepseek", "m", {})
+        candidate(
+            "chat_completions:deepseek:m", "chat_completions", "deepseek", "m", {}
+        )
     )
     with pytest.raises(ValueError):
         oa.encode(context, media)
     anthropic = get_provider(
-        Route(
+        candidate(
             "anthropic_api:random:m",
             "anthropic_api",
             "random",
             "m",
             {},
             files_settings={
+                "endpoint": "https://files.invalid/v1/files",
                 "dialect": "anthropic",
                 "anthropic_beta": "files-api-2025-04-14",
             },
@@ -108,7 +111,7 @@ def test_image_file_id_shapes_are_explicit_and_not_inferred_from_names():
 
 def test_chat_stream_reassembles_tool_arguments_and_usage_once():
     provider = get_provider(
-        Route("chat_completions:x:m", "chat_completions", "x", "m", {})
+        candidate("chat_completions:x:m", "chat_completions", "x", "m", {})
     )
     stream = provider.stream_decoder()
     stream.feed(
@@ -162,7 +165,9 @@ def test_chat_stream_reassembles_tool_arguments_and_usage_once():
 
 
 def test_responses_stream_preserves_opaque_items_and_duplicate_done_is_idempotent():
-    provider = get_provider(Route("responses_api:x:m", "responses_api", "x", "m", {}))
+    provider = get_provider(
+        candidate("responses_api:x:m", "responses_api", "x", "m", {})
+    )
     stream = provider.stream_decoder()
     call = {
         "type": "function_call",
@@ -198,7 +203,9 @@ def test_responses_stream_preserves_opaque_items_and_duplicate_done_is_idempoten
 
 
 def test_anthropic_stream_retains_thinking_signature_and_tool_arguments():
-    provider = get_provider(Route("anthropic_api:x:m", "anthropic_api", "x", "m", {}))
+    provider = get_provider(
+        candidate("anthropic_api:x:m", "anthropic_api", "x", "m", {})
+    )
     stream = provider.stream_decoder()
     stream.feed(
         {

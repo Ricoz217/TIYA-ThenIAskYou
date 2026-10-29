@@ -2,7 +2,44 @@
 
 旧调用继续从 `TIYA.LLM_connect` 导入 `Chat`、`Context`、Prompt、`ChatConfig`、`parse_llm_setting()`；这些入口重新导出内部的同一组类型。旧列表配置仍然可用，不会自动迁移 Memory 或生产预设。
 
-兼容范围是调用接口、返回契约和业务行为。新旧配置都使用同一条 Runtime → Provider → Gateway 请求链路，没有独立的旧 payload 构造器。`parse_llm_setting()` 在 `llm/settings.py` 适配配置；v2 直接解析 Preset，`get_llm()` 的旧字段视图仅供仍需读取这些字段的调用方使用。旧私有 `_payload_constructor()` 不再提供。
+兼容范围是调用接口、返回契约和业务行为。新旧配置都使用同一条 Runtime → Provider → Gateway 请求链路，没有独立的旧 payload 构造器。`get_llm()` 返回完整预设数据；`parse_llm_setting()` 通过该入口获取预设，再转换为供 Chat 使用的结构化配置。旧私有 `_payload_constructor()` 不再提供。
+
+## 预设数据和 ChatConfig
+
+`TIYA.config.get_llm(name)` 返回独立的 `ConfigMap` 预设快照，包含完整有序的 `providers`、预设级设置和开放扩展字段。候选中的连接引用已经绑定对应配置，关联 Files 数据在 `files_api_config` 中；这些派生字段不写回 YAML。顶层 `model/endpoint/max_context/extra_parameter` 等旧字段提供首选候选的兼容读取，不随某个会话的 fallback 改写。
+
+`parse_llm_setting(name)` 返回独立的 `ChatConfig`。类型定义及字段注释位于 `config_model.py`，由 `model.py` 和 `LLM_connect.py` 重新导出：
+
+- `ChatConfig.candidates`：有序的 `LLMConfig` 列表，第一项是首选。
+- `LLMConfig`：协议分类、连接名、完整 endpoint、凭证、模型、原生参数、HTTP 选项、窗口、历史策略及关联 `FilesConfig`。
+- `RequestPolicy`：生成尝试总预算、单候选重试上限和 fallback 冷却时间；取消、部分输出和远端执行不明的停止规则不能用这些设置绕过。
+- `provider_options`：开放连接节点中交给 Provider 解释的选项，内部只存 JSON 数据；YAML 不需要新增同名包装字段。
+
+`ChatConfig.model/endpoint/token/api_provider/max_context/model_params/client_params` 是首选候选的普通属性。`model_params` getter 返回该候选的实际字典，修改会生效；setter 只替换首选参数。Chat 接收配置时复制可变内容，logger 保持原引用。
+
+```python
+from TIYA.LLM_connect import Chat, ChatConfig, LLMConfig, parse_llm_setting
+
+settings = parse_llm_setting("MAIN")
+settings.model_params["stream"] = False  # 修改首选，备用仍使用自己的参数
+settings.keep_alive = True
+chat.setting(settings)
+
+# 显式局部更新，不替换候选列表；Agent 使用这个入口。
+chat.update_config(model_params={"stream": False}, keep_alive=False)
+
+# Memory 原有的局部构造仍可用，源码无需改动。
+chat.setting(ChatConfig(model_params={"stream": False}, keep_alive=False))
+
+# 直接构造完整单模型配置，使用显式候选类型。
+settings = ChatConfig([LLMConfig(
+    provider_type="chat_completions", connection_name="direct",
+    endpoint="https://example.invalid/v1/chat/completions", token="YOUR_KEY",
+    model="YOUR_MODEL_ID", model_params={"stream": False},
+)])
+```
+
+`candidates=None` 表示局部更新，非空列表替换整套候选配置，空列表报错。完整替换不会继承旧预设的 Files、价格、参数或策略；logger/keep_alive/log_off 等会话选项只在明确提供时更新。没有 `preset: Any` 或 `complete` 标记，也不再拼接第二个内部预设对象。旧 `Chat(...)` 单模型构造参数仍可用；完整 `ChatConfig(endpoint=..., model=...)` 构造改用上述候选列表形式，仓库业务没有这种旧式完整构造调用。
 
 ## 配置 v2
 
@@ -105,10 +142,12 @@ async with ImagesClient(settings) as images:
 
 `Ledger` 提供 begin_call/begin_request/observe_usage/finish_request、分页 query_requests/query_observations 和 summarize。旧 `LLM_usage` 的日志和统计入口通过适配器读取 SQLite。JSON 仅首次备份并导入历史聚合，不将历史聚合伪造成逐请求记录，也不重复累计 last_record。
 
-定价通过 `PriceCatalog.publish(identity, rules, source=...)` 维护，不写回连接 YAML。文本请求 identity 使用 `resolve_preset(LLM_CFG, name).routes[index]` 的 scope/model/category，加上 preset 名：
+定价通过 `PriceCatalog.publish(identity, rules, source=...)` 维护，不写回连接 YAML。文本请求 identity 使用已转换配置中的实际候选：
 
 ```python
-identity = {"preset": name, "scope": route.scope, "model": route.model, "operation": route.category}
+settings = parse_llm_setting(name)
+candidate = settings.candidates[index]
+identity = {"preset": name, "scope": candidate.scope, "model": candidate.model, "operation": candidate.provider_type}
 rules = {
     "currency": "CNY", "tier_mode": "whole", "threshold": "input",
     "units": {"input_uncached": 1000000, "cached": 1000000, "output": 1000000},

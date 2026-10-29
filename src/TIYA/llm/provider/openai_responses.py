@@ -100,15 +100,15 @@ class Responses(Provider):
                 ]
                 items.append({"role": prompt.role, "content": content})
         payload = {
-            **copy.deepcopy(self.route.params),
+            **copy.deepcopy(self.route.model_params),
             "model": self.route.model,
             "input": items,
         }
         if instructions is not None:
             payload["instructions"] = instructions
-        if self.supports_parent and self.route.settings.get("responses", {}).get(
-            "include_encrypted_reasoning", True
-        ):
+        if self.supports_parent and self.route.provider_options.get(
+            "responses", {}
+        ).get("include_encrypted_reasoning", True):
             includes = payload.setdefault("include", [])
             if "reasoning.encrypted_content" not in includes:
                 includes.append("reasoning.encrypted_content")

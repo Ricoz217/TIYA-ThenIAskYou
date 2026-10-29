@@ -19,7 +19,9 @@ from .common import image_url, tool_arguments
 class ChatCompletions(Provider):
     def accepts_image_files(self):
         return (
-            self.route.settings.get("chat_completions", {}).get("image_file_format")
+            self.route.provider_options.get("chat_completions", {}).get(
+                "image_file_format"
+            )
             == "deepseek"
         )
 
@@ -93,7 +95,7 @@ class ChatCompletions(Provider):
                 else:
                     messages.append({"role": prompt.role, "content": content})
         payload = {
-            **copy.deepcopy(self.route.params),
+            **copy.deepcopy(self.route.model_params),
             "model": self.route.model,
             "messages": messages,
         }

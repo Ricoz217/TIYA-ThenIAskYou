@@ -4,7 +4,6 @@ import copy
 from dataclasses import dataclass, field
 
 from ..model import Prompts
-from ..config import credential
 
 
 def merge_headers(*mappings):
@@ -117,23 +116,25 @@ class Provider:
     def supports_parent(self):
         # Explicit opt-in: compatibility endpoints may silently ignore store/parent.
         return (
-            self.route.settings.get("responses", {}).get(
+            self.route.provider_options.get("responses", {}).get(
                 "supports_previous_response_id", False
             )
             is True
-            and self.route.params.get("store", True) is not False
+            and self.route.model_params.get("store", True) is not False
         )
 
     def headers(self):
-        settings = self.route.settings
-        headers = {"Authorization": f"Bearer {credential(settings)}"}
+        headers = {"Authorization": f"Bearer {self.route.token}"}
         return merge_headers(
-            headers, settings.get("headers"), self.route.client_params.get("headers")
+            headers, self.route.headers, self.route.client_params.get("headers")
         )
 
     def failure(self, status, body, headers=None):
         return classify_error(
-            status, body, self.route.settings.get("error_dialect", "openai"), headers
+            status,
+            body,
+            self.route.provider_options.get("error_dialect", "openai"),
+            headers,
         )
 
     def check_body(self, body):

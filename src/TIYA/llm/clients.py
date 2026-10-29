@@ -14,7 +14,8 @@ from PIL import Image
 
 from TIYA.config import DATA_DIR
 from TIYA.utils import parse_proxies_to_httpx
-from .config import Route, fingerprint
+from .config import fingerprint
+from .settings import model_config_from_settings
 from .gateway import Gateway, Frame
 from .media import MediaService, MediaError, inspect_image
 from .model import ImageEditRequest, ImagesResponse, MediaRef
@@ -167,11 +168,19 @@ class ImagesClient(ServiceClient):
             raise ValueError("图片连接引用必须是 分类:连接名")
         self.provider_ref = provider_ref
 
-    def pricing_identity(self, model, *, operation="images_generate", preset=""):
+    def _candidate(self, model):
         category, connection = self.provider_ref.split(":")
-        route = Route(
-            self.provider_ref + ":" + model, category, connection, model, self.settings
+        candidate = model_config_from_settings(
+            self.settings,
+            provider_type=category,
+            connection_name=connection,
+            model=model,
         )
+        candidate.client_params = copy.deepcopy(self.client_params)
+        return candidate
+
+    def pricing_identity(self, model, *, operation="images_generate", preset=""):
+        route = self._candidate(model)
         return {
             "preset": preset,
             "scope": route.scope,
@@ -192,14 +201,7 @@ class ImagesClient(ServiceClient):
     async def _run(self, request, timeout, preset, on_preview):
         request = copy.deepcopy(request)
         await self._ensure_ledger()
-        route = Route(
-            self.provider_ref + ":" + request.model,
-            self.provider_ref.split(":")[0],
-            self.provider_ref.split(":")[1],
-            request.model,
-            self.settings,
-            copy.deepcopy(self.settings.get("llm_params") or {}),
-        )
+        route = self._candidate(request.model)
         provider = get_provider(route)
         gateway = await self.gateway()
         images, mask = None, None

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import TIYA.LLM_connect as llm_module
-from TIYA.LLM_connect import AskTask, Chat, ChatConfig, Prompts, TextPrompt
+from TIYA.LLM_connect import AskTask, Chat, ChatConfig, LLMConfig, Prompts, TextPrompt
 
 
 class FakeResponse:
@@ -38,12 +38,14 @@ class FakeAsyncClient:
         self.instances.append(self)
 
     async def post(self, *, url, json, timeout):
-        self.requests.append({
-            "url": url,
-            "json": json,
-            "timeout": timeout,
-            "headers": self.headers.copy(),
-        })
+        self.requests.append(
+            {
+                "url": url,
+                "json": json,
+                "timeout": timeout,
+                "headers": self.headers.copy(),
+            }
+        )
         return FakeResponse()
 
     async def aclose(self) -> None:
@@ -52,11 +54,16 @@ class FakeAsyncClient:
 
 def _config(endpoint: str, token: str, model: str) -> ChatConfig:
     return ChatConfig(
-        endpoint=endpoint,
-        token=token,
-        model=model,
-        api_provider="openai",
-        model_params={"stream": False},
+        [
+            LLMConfig(
+                "chat_completions",
+                "test",
+                endpoint,
+                token,
+                model,
+                model_params={"stream": False},
+            )
+        ],
         keep_alive=True,
         log_off=True,
     )
@@ -69,23 +76,28 @@ def test_keep_alive_client_is_rebuilt_after_switching_preset(monkeypatch) -> Non
     async def run() -> None:
         chat = Chat(config=_config("https://first.test", "first-key", "first"))
         try:
-            await chat.post(AskTask(
-                Prompts(TextPrompt(role="user", text="first")),
-                timeout=1,
-            ))
+            await chat.post(
+                AskTask(
+                    Prompts(TextPrompt(role="user", text="first")),
+                    timeout=1,
+                )
+            )
             first_client = FakeAsyncClient.instances[0]
 
             chat.setting(_config("https://second.test", "second-key", "second"))
-            await chat.post(AskTask(
-                Prompts(TextPrompt(role="user", text="second")),
-                timeout=1,
-            ))
+            await chat.post(
+                AskTask(
+                    Prompts(TextPrompt(role="user", text="second")),
+                    timeout=1,
+                )
+            )
 
             assert len(FakeAsyncClient.instances) == 2
             assert first_client.closed
-            assert FakeAsyncClient.instances[1].requests[0]["headers"][
-                "Authorization"
-            ] == "Bearer second-key"
+            assert (
+                FakeAsyncClient.instances[1].requests[0]["headers"]["Authorization"]
+                == "Bearer second-key"
+            )
             assert FakeAsyncClient.instances[1].requests[0]["url"] == (
                 "https://second.test"
             )
@@ -110,13 +122,15 @@ def test_creating_client_does_not_consume_proxy_configuration(monkeypatch) -> No
         config.client_params = client_params
         chat = Chat(config=config)
         try:
-            await chat.post(AskTask(
-                Prompts(TextPrompt(role="user", text="first")),
-                timeout=1,
-            ))
+            await chat.post(
+                AskTask(
+                    Prompts(TextPrompt(role="user", text="first")),
+                    timeout=1,
+                )
+            )
 
             assert client_params["proxies"] == {"https://": "proxy.test"}
-            assert chat._client_params["proxies"] == {
+            assert chat.config.client_params["proxies"] == {
                 "https://": "proxy.test",
             }
         finally:
@@ -132,22 +146,24 @@ def test_switching_only_model_keeps_existing_client_pool(monkeypatch) -> None:
     async def run() -> None:
         chat = Chat(config=_config("https://same.test", "same-key", "flash"))
         try:
-            await chat.post(AskTask(
-                Prompts(TextPrompt(role="user", text="first")),
-                timeout=1,
-            ))
+            await chat.post(
+                AskTask(
+                    Prompts(TextPrompt(role="user", text="first")),
+                    timeout=1,
+                )
+            )
 
             chat.setting(_config("https://same.test", "same-key", "pro"))
-            await chat.post(AskTask(
-                Prompts(TextPrompt(role="user", text="second")),
-                timeout=1,
-            ))
+            await chat.post(
+                AskTask(
+                    Prompts(TextPrompt(role="user", text="second")),
+                    timeout=1,
+                )
+            )
 
             assert len(FakeAsyncClient.instances) == 1
             assert len(FakeAsyncClient.instances[0].requests) == 2
-            assert FakeAsyncClient.instances[0].requests[1]["json"]["model"] == (
-                "pro"
-            )
+            assert FakeAsyncClient.instances[0].requests[1]["json"]["model"] == ("pro")
         finally:
             await chat.close()
 

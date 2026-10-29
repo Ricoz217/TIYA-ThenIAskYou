@@ -7,13 +7,15 @@ import time
 from enum import Enum
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, Awaitable, TYPE_CHECKING
+from typing import Any, Callable, Awaitable
 from uuid import uuid4
 from TIYA.time_id import next_time_id
-
-if TYPE_CHECKING:
-    from TIYA.logger import Logger, BlockHandle
-    from .usage_compat import ApiPrice
+from .config_model import (
+    ChatConfig as ChatConfig,
+    LLMConfig as LLMConfig,
+    FilesConfig as FilesConfig,
+    RequestPolicy as RequestPolicy,
+)
 
 
 class ContextOverflowError(Exception):
@@ -1094,25 +1096,6 @@ class AskTask:
     cancelled: bool = False
     committed: bool = False
     outcome: CallOutcome | None = None
-
-
-@dataclass(slots=True)
-class ChatConfig:
-    endpoint: str = None
-    token: str = None
-    model: str = None
-    max_context: int = None
-    auto_compress_rate: float = None
-    system_prompt: str = None
-    api_provider: str = None
-    price: ApiPrice = None
-    client_params: dict = None
-    model_params: dict = None
-    keep_alive: bool = None
-    logger: Logger | BlockHandle = None
-    log_off: bool | None = None
-    preset: Any = None
-    complete: bool = False
 
 
 @dataclass(frozen=True)

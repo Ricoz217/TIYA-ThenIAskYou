@@ -4,7 +4,7 @@ import sqlite3
 import httpx
 import pytest
 
-from TIYA.llm.config import Preset, Route
+from llm_config_fixtures import configuration, candidate
 from TIYA.llm.gateway import Gateway
 from TIYA.llm.model import Context, Prompts, TextPrompt, ContextOverflowError
 from TIYA.llm.runtime import Runtime
@@ -28,10 +28,10 @@ def test_accounting_failure_never_regenerates(tmp_path, monkeypatch, stage):
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
     async def run():
-        config = Preset(
+        config = configuration(
             "p",
             [
-                Route(
+                candidate(
                     "chat_completions:a:m",
                     "chat_completions",
                     "a",
@@ -64,14 +64,14 @@ def test_smaller_fallback_window_is_checked_without_mutating_context(tmp_path):
         return httpx.Response(429, json={"error": {"code": "insufficient_quota"}})
 
     async def run():
-        primary = Route(
+        primary = candidate(
             "chat_completions:a:m",
             "chat_completions",
             "a",
             "m",
             {"endpoint": "https://primary"},
         )
-        backup = Route(
+        backup = candidate(
             "chat_completions:b:m",
             "chat_completions",
             "b",
@@ -89,7 +89,7 @@ def test_smaller_fallback_window_is_checked_without_mutating_context(tmp_path):
                 await rt.execute(
                     context,
                     Prompts(TextPrompt("user", "hi")),
-                    Preset("p", [primary, backup]),
+                    configuration("p", [primary, backup]),
                     gateway,
                     5,
                 )
@@ -112,7 +112,7 @@ def test_unknown_gateway_does_not_send_parent_and_store_false_disables_it(tmp_pa
             bodies.append(json.loads(request.content))
             return httpx.Response(200, json={"id": "r", "output": []})
 
-        route = Route(
+        route = candidate(
             "responses_api:x:m", "responses_api", "x", "m", {"endpoint": "https://test"}
         )
         context = Context()
@@ -125,17 +125,19 @@ def test_unknown_gateway_does_not_send_parent_and_store_false_disables_it(tmp_pa
                 result = await rt.execute(
                     context,
                     Prompts(TextPrompt("user", "hi")),
-                    Preset("p", [route]),
+                    configuration("p", [route]),
                     gateway,
                     5,
                 )
                 rt.commit(context, result)
-            route.settings["responses"] = {"supports_previous_response_id": True}
-            route.params["store"] = False
+            route.provider_options["responses"] = {
+                "supports_previous_response_id": True
+            }
+            route.model_params["store"] = False
             await rt.execute(
                 context,
                 Prompts(TextPrompt("user", "hi")),
-                Preset("p", [route]),
+                configuration("p", [route]),
                 gateway,
                 5,
             )
@@ -150,7 +152,7 @@ def test_invalid_tool_json_still_records_non_stream_usage(tmp_path):
         rt = Runtime(
             StateStore(tmp_path / "runtime.sqlite3"), Ledger(tmp_path / "usage.sqlite3")
         )
-        route = Route(
+        route = candidate(
             "chat_completions:x:m",
             "chat_completions",
             "x",
@@ -182,7 +184,7 @@ def test_invalid_tool_json_still_records_non_stream_usage(tmp_path):
                 await rt.execute(
                     Context(),
                     Prompts(TextPrompt("user", "hi")),
-                    Preset("p", [route]),
+                    configuration("p", [route]),
                     gateway,
                     5,
                 )
@@ -201,7 +203,7 @@ def test_failed_attempt_is_mirrored_with_the_same_request_id(tmp_path):
         rt = Runtime(
             StateStore(tmp_path / "runtime.sqlite3"), primary, subscribers=[subscriber]
         )
-        route = Route(
+        route = candidate(
             "chat_completions:x:m",
             "chat_completions",
             "x",
@@ -223,7 +225,7 @@ def test_failed_attempt_is_mirrored_with_the_same_request_id(tmp_path):
                 await rt.execute(
                     Context(),
                     Prompts(TextPrompt("user", "hi")),
-                    Preset("p", [route]),
+                    configuration("p", [route]),
                     gateway,
                     5,
                 )

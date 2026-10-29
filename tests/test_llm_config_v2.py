@@ -42,17 +42,21 @@ def document():
 
 
 def test_resolver_preserves_candidates_and_native_parameters():
-    from TIYA.llm.config import resolve_preset, compatibility_view
+    from TIYA.llm.config import resolve_preset
 
     data = document()
     before = copy.deepcopy(data)
     result = resolve_preset(data, "MAIN")
-    assert result.routes[0].model == "namespace:model"
-    assert result.routes[0].params == {"temperature": 0, "stream": False, "custom": 4}
-    assert result.routes[1].endpoint == "https://backup/v1/chat/completions"
-    result.routes[0].params["custom"] = 8
+    assert result["providers"][0]["model"] == "namespace:model"
+    assert result["providers"][0]["llm_params"] == {
+        "temperature": 0,
+        "stream": False,
+        "custom": 4,
+    }
+    assert result["providers"][1]["endpoint"] == "https://backup/v1/chat/completions"
+    result["providers"][0]["llm_params"]["custom"] = 8
     assert data == before
-    view = compatibility_view(data, "MAIN")
+    view = resolve_preset(data, "MAIN")
     assert view["preset_name"] == "MAIN"
     assert view["max_context"] == 10000
     assert "token" not in data["LLM_List"]["MAIN"]

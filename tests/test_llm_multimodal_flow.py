@@ -6,7 +6,7 @@ from io import BytesIO
 import httpx
 from PIL import Image
 
-from TIYA.llm.config import Preset, Route
+from llm_config_fixtures import configuration, candidate
 from TIYA.llm.gateway import Gateway
 from TIYA.llm.model import Context, ImagePrompt, Prompts, TextPrompt
 from TIYA.llm.runtime import Runtime
@@ -59,7 +59,7 @@ def test_thirty_images_then_two_only_prepare_delta_and_full_replay_reuses_upload
         rt = Runtime(
             StateStore(tmp_path / "runtime.sqlite3"), Ledger(tmp_path / "usage.sqlite3")
         )
-        route = Route(
+        route = candidate(
             "responses_api:a:m",
             "responses_api",
             "a",
@@ -71,7 +71,7 @@ def test_thirty_images_then_two_only_prepare_delta_and_full_replay_reuses_upload
             files_ref="files_api:a",
             files_settings={"endpoint": "https://test/files", "key": "k"},
         )
-        config = Preset("p", [route])
+        config = configuration("p", [route])
         pictures = []
         for i in range(32):
             buffer = BytesIO()
@@ -102,7 +102,7 @@ def test_thirty_images_then_two_only_prepare_delta_and_full_replay_reuses_upload
             # Local originals may expire. A full stateless replay can still use known remote refs.
             for path in cache.values():
                 path.unlink()
-            route.history_mode = "full"
+            config.candidates[0].context_history_mode = "full"
             await rt.execute(
                 context, Prompts(TextPrompt("user", "again")), config, gateway, 20
             )
@@ -163,7 +163,7 @@ def test_only_explicitly_invalid_file_is_reuploaded(tmp_path, monkeypatch):
             buffer = BytesIO()
             Image.new("RGB", (16, 16), (i, i, i)).save(buffer, "PNG")
             pictures.append(ImagePrompt("user", buffer.getvalue()))
-        route = Route(
+        route = candidate(
             "responses_api:a:m",
             "responses_api",
             "a",
@@ -178,7 +178,7 @@ def test_only_explicitly_invalid_file_is_reuploaded(tmp_path, monkeypatch):
                 return Gateway(client)
 
             await rt.execute(
-                Context(), Prompts(pictures), Preset("p", [route]), gateway, 10
+                Context(), Prompts(pictures), configuration("p", [route]), gateway, 10
             )
         assert len(uploads) == 3
         assert calls[1]["input"][0]["content"][0]["file_id"] == "f3"
@@ -219,7 +219,7 @@ def test_split_image_reuploads_only_its_invalid_part(tmp_path, monkeypatch):
         )
         picture = ImagePrompt("user", paths["part0"])
         picture.image = ["part0", "part1"]
-        route = Route(
+        route = candidate(
             "responses_api:x:m",
             "responses_api",
             "x",
@@ -234,7 +234,7 @@ def test_split_image_reuploads_only_its_invalid_part(tmp_path, monkeypatch):
                 return Gateway(client)
 
             await rt.execute(
-                Context(), Prompts(picture), Preset("p", [route]), gateway, 5
+                Context(), Prompts(picture), configuration("p", [route]), gateway, 5
             )
         assert len(uploads) == 3
 
@@ -271,7 +271,7 @@ def test_file_preflight_failure_can_switch_to_declared_backup(tmp_path, monkeypa
             StateStore(tmp_path / "runtime.sqlite3"),
             Ledger(tmp_path / "ledger.sqlite3"),
         )
-        primary = Route(
+        primary = candidate(
             "responses_api:a:m",
             "responses_api",
             "a",
@@ -280,7 +280,7 @@ def test_file_preflight_failure_can_switch_to_declared_backup(tmp_path, monkeypa
             files_ref="files_api:a",
             files_settings={"endpoint": "https://badfiles"},
         )
-        backup = Route(
+        backup = candidate(
             "chat_completions:b:m",
             "chat_completions",
             "b",
@@ -295,7 +295,7 @@ def test_file_preflight_failure_can_switch_to_declared_backup(tmp_path, monkeypa
             pending = await rt.execute(
                 Context(),
                 Prompts(ImagePrompt("user", path)),
-                Preset("p", [primary, backup]),
+                configuration("p", [primary, backup]),
                 gateway,
                 5,
             )

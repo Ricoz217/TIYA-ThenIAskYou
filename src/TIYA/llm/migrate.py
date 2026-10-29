@@ -13,6 +13,7 @@ from ruamel.yaml import YAML
 
 from .config import migrate_legacy, resolve_preset
 from .pricing import PriceCatalog
+from .settings import resolve_chat_config
 
 
 def migrate_file(path, *, apply=False, pricing_path=None):
@@ -42,12 +43,12 @@ def migrate_file(path, *, apply=False, pricing_path=None):
         price = preset.pop("legacy_price", None)
         if price is None:
             continue
-        route = resolve_preset(migrated, name).routes[0]
+        route = resolve_chat_config(migrated, name).primary
         identity = {
             "preset": name,
             "scope": route.scope,
             "model": route.model,
-            "operation": route.category,
+            "operation": route.provider_type,
         }
         rules = {
             "currency": price.get("currency", "CNY"),

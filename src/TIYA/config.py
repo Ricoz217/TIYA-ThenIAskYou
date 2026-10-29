@@ -1792,22 +1792,12 @@ def get_proxy(proxy_name: str | Mapping[str, Any]) -> dict[str, Any]:
 
 
 def get_llm(preset_name: str) -> ConfigMap:
+    """返回完整预设数据快照；旧标量读取首选候选，不返回 ChatConfig。"""
     if not isinstance(preset_name, str):
         raise TypeError("LLM 预设名必须是字符串")
 
-    if LLM_CFG.get("schema_version") == 2:
-        from TIYA.llm.config import compatibility_view
-        return ConfigMap(compatibility_view(LLM_CFG, preset_name))
-
-    try:
-        for model in LLM_CFG.LLM_List:
-            if isinstance(model, ConfigMap) and model.get("preset_name") == preset_name:
-                return model
-
-    except AttributeError:
-        pass
-
-    raise KeyError("LLM 预设不存在")
+    from TIYA.llm.config import resolve_preset
+    return ConfigMap(resolve_preset(LLM_CFG, preset_name))
 
 
 def get_llm_list() -> list[str]:
