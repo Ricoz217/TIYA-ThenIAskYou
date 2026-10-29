@@ -4,7 +4,10 @@ import pytest
 @pytest.fixture(autouse=True)
 def isolate_llm_accounting(request, tmp_path, monkeypatch):
     """Communication tests must never write simulated charges to the user's ledger."""
-    if not request.node.path.name.startswith("test_llm_"):
+    if not (
+        request.node.path.name.startswith("test_llm_")
+        or request.node.path.name == "test_agent_tool_protocol_fallback.py"
+    ):
         return
     from TIYA.llm import chat, clients
     from TIYA.llm.usage_compat import LLMUsage

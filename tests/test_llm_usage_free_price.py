@@ -1,4 +1,5 @@
 from TIYA import LLM_connect
+from TIYA import config
 from TIYA.LLM_usage import ApiPrice, LLMUsage, UsageStorage
 from TIYA.utils import DecoratedDict
 
@@ -39,24 +40,23 @@ def test_usage_storage_keeps_missing_and_zero_price_separate(tmp_path):
         price=ApiPrice(input=0, output=0, cached=0, currency="CNY"),
     )
 
-    today = next(iter(next(iter(next(iter(usage._storage.values())).values())).values()))
+    today = next(
+        iter(next(iter(next(iter(usage._storage.values())).values())).values())
+    )
 
     assert len(today) == 2
     assert {item.price is None for item in today.values()} == {True, False}
 
 
 def test_parse_llm_setting_preserves_explicit_zero_price(monkeypatch):
+    preset = _llm_config(
+        {"currency": "CNY", "input_token": 0, "cache_hit": 0, "output_token": 0}
+    )
+    preset["preset_name"] = "FREE_VISION"
     monkeypatch.setattr(
-        LLM_connect,
-        "get_llm",
-        lambda _: _llm_config(
-            {
-                "currency": "CNY",
-                "input_token": 0,
-                "cache_hit": 0,
-                "output_token": 0,
-            }
-        ),
+        config,
+        "LLM_CFG",
+        config.ConfigMap({"LLM_List": [preset]}),
     )
 
     setting = LLM_connect.parse_llm_setting("FREE_VISION")
@@ -65,7 +65,9 @@ def test_parse_llm_setting_preserves_explicit_zero_price(monkeypatch):
 
 
 def test_parse_llm_setting_keeps_empty_price_unconfigured(monkeypatch):
-    monkeypatch.setattr(LLM_connect, "get_llm", lambda _: _llm_config({}))
+    preset = _llm_config({})
+    preset["preset_name"] = "NO_PRICE"
+    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap({"LLM_List": [preset]}))
 
     setting = LLM_connect.parse_llm_setting("NO_PRICE")
 

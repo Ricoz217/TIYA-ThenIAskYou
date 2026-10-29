@@ -3,7 +3,7 @@ import asyncio
 import copy
 import time
 import weakref
-from typing import Callable, Awaitable, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from uuid import uuid4
 from contextvars import ContextVar
 import httpx
@@ -30,7 +30,6 @@ from .runtime import Runtime, estimate
 from .state import StateStore
 from .pricing import PriceCatalog
 from .provider import get_provider
-from .provider.legacy import LegacyPayloadBuilder
 
 _log = get_logger()
 if TYPE_CHECKING:
@@ -46,7 +45,7 @@ def context_lock(context):
     return per_loop[loop]
 
 
-class Chat(LegacyPayloadBuilder):
+class Chat:
     def __init__(
         self,
         *,
@@ -102,7 +101,6 @@ class Chat(LegacyPayloadBuilder):
 
         # 数据容器
         self._context: Context = context
-        self._image_cache: dict[str, str] = {}  # 用于储存照片的完整base64缓存
         self._queue = asyncio.PriorityQueue()
         self._sequence = 0
         self._preset = None
@@ -111,12 +109,9 @@ class Chat(LegacyPayloadBuilder):
         self._last_outcome = CallOutcome()
         self._outcome_var = ContextVar(f"llm_outcome_{id(self)}", default=None)
         self._ask_tasks: dict[str, AskTask] = {}
-        self._tools_mapping: dict[str, Callable | Awaitable] = {}
         self._last_usage: TokenUsage = TokenUsage()
         self._usage_record: list[LLMUsage] = usage_record
         self._context_use: int = 0
-        self._payload_discard_prompt_ids: set[str] = set()
-        self._payload_append_prompts: list[BasePrompt] = []
 
         # 状态位和工具
         self._closed = False
@@ -130,7 +125,6 @@ class Chat(LegacyPayloadBuilder):
         self._logger = logger
         self.log_off = log_off
         self._worker_loop = asyncio.create_task(self.run())
-        self._first_SSE_retry = True
         if self._keep_alive:
             self._update_client()
 
@@ -627,6 +621,3 @@ class Chat(LegacyPayloadBuilder):
         self._worker_loop.cancel()
         await asyncio.gather(self._worker_loop, return_exceptions=True)
         await self._close_clients()
-
-    def __del__(self):
-        getattr(self, "_image_cache", {}).clear()

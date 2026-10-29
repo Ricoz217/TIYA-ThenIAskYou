@@ -2,6 +2,8 @@
 
 旧调用继续从 `TIYA.LLM_connect` 导入 `Chat`、`Context`、Prompt、`ChatConfig`、`parse_llm_setting()`；这些入口重新导出内部的同一组类型。旧列表配置仍然可用，不会自动迁移 Memory 或生产预设。
 
+兼容范围是调用接口、返回契约和业务行为。新旧配置都使用同一条 Runtime → Provider → Gateway 请求链路，没有独立的旧 payload 构造器。`parse_llm_setting()` 在 `llm/settings.py` 适配配置；v2 直接解析 Preset，`get_llm()` 的旧字段视图仅供仍需读取这些字段的调用方使用。旧私有 `_payload_constructor()` 不再提供。
+
 ## 配置 v2
 
 ```yaml

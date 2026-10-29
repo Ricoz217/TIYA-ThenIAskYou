@@ -220,7 +220,6 @@ def compatibility_view(data: Mapping, name: str) -> dict:
         "proxy_mode": preset.proxy_mode,
         "extra_parameter": plain(route.params),
         "price": {},
-        "_resolved_preset": preset,
     }
 
 

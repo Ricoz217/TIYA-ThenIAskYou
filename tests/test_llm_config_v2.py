@@ -108,47 +108,65 @@ def test_migration_is_idempotent_and_does_not_overwrite_duplicate_names():
 
 def test_switching_back_to_legacy_clears_v2_routes_proxy_and_parameters(monkeypatch):
     import asyncio
-    from TIYA import LLM_connect
+    import json
+    import httpx
+    from TIYA import LLM_connect, config
     from TIYA.config import ConfigMap
-    from TIYA.llm.config import resolve_preset
-    from TIYA.LLM_connect import Chat, ChatConfig
+    from TIYA.LLM_connect import Chat
 
-    monkeypatch.setattr(
-        LLM_connect,
-        "get_llm",
-        lambda _: ConfigMap(
+    v2 = document()
+    v2["Providers"]["responses_api"]["arbitrary"]["client_params"] = {"verify": False}
+    v2["LLM_List"]["MAIN"]["providers"][0]["llm_params"]["stale"] = True
+    monkeypatch.setattr(config, "LLM_CFG", ConfigMap(v2))
+    old = {
+        "LLM_List": [
             {
+                "preset_name": "old",
                 "model": "old",
-                "endpoint": "https://old",
+                "endpoint": "https://old/chat/completions",
                 "token": "dummy",
                 "api_type": "openai",
                 "proxy_mode": "",
                 "price": {},
-                "extra_parameter": {},
+                "extra_parameter": {"stream": False},
                 "max_context": 10000,
                 "auto_compress_rate": 0.7,
             }
-        ),
-    )
+        ]
+    }
+    requests, clients = [], []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        requests.append(request)
+        if request.url.host == "old":
+            return httpx.Response(401, json={"error": {"code": "invalid_api_key"}})
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "stale fallback"}}]}
+        )
+
+    def client(**params):
+        clients.append(params.copy())
+        params.update(
+            mounts={}, trust_env=False, transport=httpx.MockTransport(handler)
+        )
+        return real_client(**params)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
 
     async def run():
-        chat = Chat(
-            config=ChatConfig(
-                preset=resolve_preset(document(), "MAIN"),
-                complete=True,
-                model_params={"stale": True},
-                client_params={"verify": False},
-                log_off=True,
-            )
-        )
-        try:
+        async with Chat(
+            config=LLM_connect.parse_llm_setting("MAIN"), log_off=True
+        ) as chat:
+            monkeypatch.setattr(config, "LLM_CFG", ConfigMap(old))
             chat.setting(LLM_connect.parse_llm_setting("old"))
-            assert chat._preset is None
-            assert "stale" not in chat.model["parameter"]
-            assert chat._client_params == {}
-            chat.setting(ChatConfig(log_off=False))
+            assert await chat.ask("question", timeout=5) is None
+            assert len(requests) == 1  # The previous preset's backup must not be tried.
+            payload = json.loads(requests[0].content)
+            assert payload["model"] == "old"
+            assert "stale" not in payload and "input" not in payload
+            assert clients[0].get("verify", True) is True
+            assert not clients[0]["mounts"]
             assert chat.model["model"] == "old"
-        finally:
-            await chat.close()
 
     asyncio.run(run())
