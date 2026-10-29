@@ -1,0 +1,199 @@
+import asyncio
+import base64
+from io import BytesIO
+
+import httpx
+import pytest
+from PIL import Image
+
+from TIYA.llm.model import ImageGenerateRequest, ImageEditRequest, MediaRef
+
+
+def image():
+    data = BytesIO()
+    Image.new("RGBA", (16, 16)).save(data, "PNG")
+    return data.getvalue()
+
+
+def test_images_client_caches_results_and_preserves_alpha_mask(tmp_path, monkeypatch):
+    from TIYA.llm.clients import ImagesClient
+    from TIYA.llm.usage import Ledger
+    import TIYA.llm.media as media
+
+    saved = []
+    requests = []
+
+    async def cache(data, *args):
+        saved.append(data)
+        return "cached"
+
+    monkeypatch.setattr(media, "add_file_async", cache)
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "created": 1,
+                "data": [{"b64_json": base64.b64encode(image()).decode()}],
+                "usage": {"input_tokens": 20, "output_tokens": 30},
+            },
+        )
+
+    async def run():
+        ledger = Ledger(tmp_path / "usage.sqlite3")
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as transport:
+            client = ImagesClient(
+                {
+                    "endpoint": "https://test/gen",
+                    "edit_endpoint": "https://test/edit",
+                    "key": "k",
+                },
+                client=transport,
+                ledger=ledger,
+            )
+            response = await client.generate(
+                ImageGenerateRequest("image-2.5", "draw", background="transparent")
+            )
+            assert response.data[0].image.kind == "cache"
+            assert response.data[0].image.value == "cached"
+            await client.edit(
+                ImageEditRequest(
+                    "image-2.5",
+                    "change",
+                    images=[MediaRef("bytes", image())],
+                    mask=MediaRef("bytes", image()),
+                )
+            )
+            assert requests[1].url.path == "/edit"
+            assert b'name="mask"' in requests[1].content
+            assert len(saved) == 2
+            assert len(ledger.query_requests()) == 2
+
+    asyncio.run(run())
+
+
+def test_materialization_failure_does_not_regenerate(tmp_path, monkeypatch):
+    from TIYA.llm.clients import ImagesClient
+    from TIYA.llm.media import MediaError
+    from TIYA.llm.usage import Ledger
+
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(
+            200, json={"data": [{"b64_json": "bad"}], "usage": {"output_tokens": 30}}
+        )
+
+    async def run():
+        ledger = Ledger(tmp_path / "usage.sqlite3")
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as transport:
+            client = ImagesClient(
+                {"endpoint": "https://test/gen"}, client=transport, ledger=ledger
+            )
+            with pytest.raises(MediaError):
+                await client.generate(ImageGenerateRequest("image-2.5", "draw"))
+        assert len(calls) == 1
+        row = ledger.query_requests()[0]
+        assert row["reported"]["output"] == 30
+        assert row["status"] == "materialization_failed"
+
+    asyncio.run(run())
+
+
+def test_files_do_not_inherit_model_credentials_from_shared_transport(tmp_path):
+    from TIYA.llm.clients import FilesClient
+    from TIYA.llm.usage import Ledger
+
+    def handler(request):
+        assert "authorization" not in request.headers
+        assert request.headers["x-api-key"] == "files-key"
+        assert "x-model-secret" not in request.headers
+        return httpx.Response(200, json={"id": "f"})
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            headers={"Authorization": "Bearer model-key", "x-model-secret": "private"},
+        ) as transport:
+            client = FilesClient(
+                {
+                    "endpoint": "https://files.test/files",
+                    "key": "files-key",
+                    "dialect": "anthropic",
+                },
+                client=transport,
+                ledger=Ledger(tmp_path / "usage.sqlite3"),
+            )
+            assert (await client.upload(MediaRef("bytes", image()))).file_id == "f"
+
+    asyncio.run(run())
+
+
+def test_image_stream_caches_previews_and_deduplicates_final_events(
+    tmp_path, monkeypatch
+):
+    import json
+    from TIYA.llm.clients import ImagesClient
+    from TIYA.llm.usage import Ledger
+    import TIYA.llm.media as media
+
+    payload = base64.b64encode(image()).decode()
+    final = {
+        "type": "image_generation.completed",
+        "b64_json": payload,
+        "created_at": 10,
+        "output_format": "png",
+        "usage": {"input_tokens": 3, "output_tokens": 4},
+    }
+    events = [
+        {
+            "type": "image_generation.partial_image",
+            "b64_json": payload,
+            "partial_image_index": 0,
+        },
+        final,
+        final,
+    ]
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text="".join("data: " + json.dumps(e) + "\n\n" for e in events),
+        )
+
+    cached = []
+    previews = []
+
+    async def cache(data, *args):
+        cached.append(data)
+        return "cached"
+
+    monkeypatch.setattr(media, "add_file_async", cache)
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as transport:
+            client = ImagesClient(
+                {"endpoint": "https://test/gen"},
+                client=transport,
+                ledger=Ledger(tmp_path / "ledger.sqlite3"),
+            )
+            result = await client.generate(
+                ImageGenerateRequest("image-2.5", "draw", params={"stream": True}),
+                on_preview=previews.append,
+            )
+        assert len(result.data) == 1
+        assert result.created == 10
+        assert result.metadata["output_format"] == "png"
+        assert previews[0].image.kind == "cache"
+        assert len(cached) == 2
+
+    asyncio.run(run())

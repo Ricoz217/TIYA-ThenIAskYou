@@ -1322,6 +1322,19 @@ class Configer:
         materialize: bool,
         report_missing: bool = True,
     ) -> Any:
+        if path == (TITLE_LLM,) and isinstance(raw, Mapping) and "schema_version" in raw:
+            from TIYA.llm.config import resolve_preset, plain
+            if raw.get("schema_version") != 2:
+                errors.append(ConfigIssue(path + ("schema_version",), "unsupported_version", message="不支持的 LLM 配置版本"))
+                return plain(raw)
+            try:
+                if not isinstance(raw.get("LLM_List"), Mapping):
+                    raise ValueError("v2 LLM_List 必须是字典")
+                for preset_name in raw["LLM_List"]:
+                    resolve_preset(raw, preset_name)
+            except (ValueError, KeyError, TypeError) as exc:
+                errors.append(ConfigIssue(path, "invalid_llm_config", message=str(exc)))
+            return plain(raw)
         if not _matches_type(raw, default):
             errors.append(
                 ConfigIssue(
@@ -1782,6 +1795,10 @@ def get_llm(preset_name: str) -> ConfigMap:
     if not isinstance(preset_name, str):
         raise TypeError("LLM 预设名必须是字符串")
 
+    if LLM_CFG.get("schema_version") == 2:
+        from TIYA.llm.config import compatibility_view
+        return ConfigMap(compatibility_view(LLM_CFG, preset_name))
+
     try:
         for model in LLM_CFG.LLM_List:
             if isinstance(model, ConfigMap) and model.get("preset_name") == preset_name:
@@ -1794,6 +1811,8 @@ def get_llm(preset_name: str) -> ConfigMap:
 
 
 def get_llm_list() -> list[str]:
+    if LLM_CFG.get("schema_version") == 2:
+        return list(LLM_CFG.get("LLM_List", {}))
     try:
         return [
             str(model.preset_name)

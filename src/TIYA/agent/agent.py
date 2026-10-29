@@ -1153,6 +1153,11 @@ class BaseAgent:
     # 主入口
     # =========================================================
 
+    @staticmethod
+    def _can_retry_communication(client) -> bool:
+        outcome = getattr(client, "last_outcome", None)
+        return getattr(outcome, "retry_allowed", True) is not False
+
     async def run(self, prompts: Prompts | TextPrompt, from_user=True) -> Prompts | None:
         """Agent主请求入口，返回主控返回的原始内容，但已自带处理逻辑"""
         if not self._initiated:
@@ -1226,6 +1231,8 @@ class BaseAgent:
                 try:
                     _log.debug(str(prompts))
                     response = await self.control.ask(prompts, timeout=self.control_timeout)
+                    if response is None and not self._can_retry_communication(self.control):
+                        break
 
                 except ContextOverflowError:
                     prompts = await self.compress_context(prompts)
@@ -2397,6 +2404,8 @@ class BaseAgent:
             try:
                 response = await summary_chat.ask(input_prompt, timeout=SETTING_CFG.Agent.AgentCompressContextTimeout)  # 默认900
                 if response is None:
+                    if not self._can_retry_communication(summary_chat):
+                        break
                     continue
 
             except Exception as E:
@@ -2490,6 +2499,8 @@ class BaseAgent:
                 response = await summary_chat.ask(input_prompt,
                                                   timeout=SETTING_CFG.Agent.AgentCompressContextTimeout)  # 默认900
                 if response is None:
+                    if not self._can_retry_communication(summary_chat):
+                        break
                     continue
 
             except Exception as E:
