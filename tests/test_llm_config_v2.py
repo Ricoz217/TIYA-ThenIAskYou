@@ -42,11 +42,11 @@ def document():
 
 
 def test_resolver_preserves_candidates_and_native_parameters():
-    from TIYA.llm.config import resolve_preset
+    from TIYA.config import resolve_llm_preset
 
     data = document()
     before = copy.deepcopy(data)
-    result = resolve_preset(data, "MAIN")
+    result = resolve_llm_preset(data, "MAIN")
     assert result["providers"][0]["model"] == "namespace:model"
     assert result["providers"][0]["llm_params"] == {
         "temperature": 0,
@@ -56,7 +56,7 @@ def test_resolver_preserves_candidates_and_native_parameters():
     assert result["providers"][1]["endpoint"] == "https://backup/v1/chat/completions"
     result["providers"][0]["llm_params"]["custom"] = 8
     assert data == before
-    view = resolve_preset(data, "MAIN")
+    view = resolve_llm_preset(data, "MAIN")
     assert view["preset_name"] == "MAIN"
     assert view["max_context"] == 10000
     assert "token" not in data["LLM_List"]["MAIN"]
@@ -79,16 +79,16 @@ def test_loader_keeps_v2_without_legacy_template(tmp_path, monkeypatch):
 
 
 def test_missing_reference_has_precise_error():
-    from TIYA.llm.config import resolve_preset
+    from TIYA.config import resolve_llm_preset
 
     data = document()
     data["LLM_List"]["MAIN"]["providers"][0]["llm"] = "responses_api:missing:model"
     with pytest.raises(ValueError, match="responses_api:missing"):
-        resolve_preset(data, "MAIN")
+        resolve_llm_preset(data, "MAIN")
 
 
 def test_migration_is_idempotent_and_does_not_overwrite_duplicate_names():
-    from TIYA.llm.config import migrate_legacy
+    from TIYA.config import migrate_llm_config
 
     legacy = {
         "LLM_List": [
@@ -102,12 +102,12 @@ def test_migration_is_idempotent_and_does_not_overwrite_duplicate_names():
             }
         ]
     }
-    migrated = migrate_legacy(legacy)
-    assert migrate_legacy(migrated) == migrated
+    migrated = migrate_llm_config(legacy)
+    assert migrate_llm_config(migrated) == migrated
     assert list(migrated["LLM_List"]) == ["old"]
     legacy["LLM_List"] *= 2
     with pytest.raises(ValueError, match="old"):
-        migrate_legacy(legacy)
+        migrate_llm_config(legacy)
 
 
 def test_switching_back_to_legacy_clears_v2_routes_proxy_and_parameters(monkeypatch):

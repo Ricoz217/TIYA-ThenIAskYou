@@ -171,13 +171,13 @@ def test_candidate_validation_and_session_options_have_explicit_semantics(monkey
 
 
 def test_config_migration_preserves_legacy_default_request_parameters():
-    from TIYA.llm.config import migrate_legacy
+    from TIYA.config import migrate_llm_config
     from TIYA.llm.settings import resolve_chat_config
 
     legacy = document(1)
     legacy["LLM_List"][0]["extra_parameter"] = {}
     old = resolve_chat_config(legacy, "MAIN")
-    new = resolve_chat_config(migrate_legacy(legacy), "MAIN")
+    new = resolve_chat_config(migrate_llm_config(legacy), "MAIN")
     assert (
         old.model_params
         == new.model_params

@@ -7,7 +7,8 @@ import time
 from dataclasses import dataclass
 from urllib.parse import quote
 
-from ..config import endpoint, fingerprint, credential
+from TIYA.config import get_llm_endpoint, get_llm_credential
+from ..config import fingerprint
 from ..gateway import WireRequest
 from .base import ProviderFailure, classify_error, merge_headers
 
@@ -31,13 +32,13 @@ class FilesProvider:
         self.dialect = settings.get("dialect", "openai")
         if self.dialect not in ("openai", "deepseek", "anthropic"):
             raise ValueError(f"未知 Files dialect: {self.dialect}")
-        self.endpoint = endpoint(settings, "files_api")
+        self.endpoint = get_llm_endpoint(settings, "files_api")
         self.scope = fingerprint(settings)
 
     def headers(self):
         if self.dialect == "anthropic":
             headers = {
-                "x-api-key": credential(self.settings),
+                "x-api-key": get_llm_credential(self.settings),
                 "anthropic-version": self.settings.get(
                     "anthropic_version", "2023-06-01"
                 ),
@@ -45,7 +46,7 @@ class FilesProvider:
             if self.settings.get("anthropic_beta"):
                 headers["anthropic-beta"] = self.settings["anthropic_beta"]
         else:
-            headers = {"Authorization": f"Bearer {credential(self.settings)}"}
+            headers = {"Authorization": f"Bearer {get_llm_credential(self.settings)}"}
         return merge_headers(headers, self.settings.get("headers"))
 
     def upload_request(self, content, filename, mime):

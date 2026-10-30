@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from ruamel.yaml import YAML
 
-from .config import migrate_legacy, resolve_preset
+from TIYA.config import migrate_llm_config, resolve_llm_preset
 from .pricing import PriceCatalog
 from .settings import resolve_chat_config
 
@@ -27,11 +27,11 @@ def migrate_file(path, *, apply=False, pricing_path=None):
         raise ValueError("配置缺少 LLM模型配置 字典")
     if document[title].get("schema_version") == 2:
         for name in document[title].get("LLM_List", {}):
-            resolve_preset(document[title], name)
+            resolve_llm_preset(document[title], name)
         return document
-    migrated = migrate_legacy(document[title])
+    migrated = migrate_llm_config(document[title])
     for name in migrated["LLM_List"]:
-        resolve_preset(migrated, name)
+        resolve_llm_preset(migrated, name)
     result = copy.deepcopy(document)
     result[title] = migrated
     if not apply:

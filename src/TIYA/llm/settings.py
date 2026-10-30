@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .config import credential, endpoint, plain, resolve_preset
+from TIYA.config import get_llm_credential, get_llm_endpoint, resolve_llm_preset
+from .config import plain
 from .config_model import ChatConfig, FilesConfig, LLMConfig, RequestPolicy
 
 
@@ -25,8 +26,8 @@ def files_config_from_settings(
     return FilesConfig(
         data.get("provider_type", provider_type),
         data.get("connection_name", connection_name),
-        endpoint(data, data.get("provider_type", provider_type)),
-        credential(data),
+        get_llm_endpoint(data, data.get("provider_type", provider_type)),
+        get_llm_credential(data),
         headers=plain(data.get("headers") or {}),
         client_params=plain(data.get("client_params") or {}),
         upload_params=plain(data.get("upload_params") or {}),
@@ -96,8 +97,8 @@ def model_config_from_settings(
     return LLMConfig(
         provider_type,
         connection_name,
-        endpoint(data, provider_type),
-        credential(data),
+        get_llm_endpoint(data, provider_type),
+        get_llm_credential(data),
         model,
         model_params=params,
         headers=plain(data.get("headers") or {}),
@@ -149,7 +150,7 @@ def chat_config_from_preset(preset: Mapping) -> ChatConfig:
 
 def resolve_chat_config(data: Mapping, preset_name: str) -> ChatConfig:
     """Pure conversion useful for validation and explicit migration tools."""
-    return chat_config_from_preset(resolve_preset(data, preset_name))
+    return chat_config_from_preset(resolve_llm_preset(data, preset_name))
 
 
 def parse_llm_setting(preset_name: str) -> ChatConfig:

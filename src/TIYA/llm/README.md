@@ -8,6 +8,8 @@
 
 `TIYA.config.get_llm(name)` 返回独立的 `ConfigMap` 预设快照，包含完整有序的 `providers`、预设级设置和开放扩展字段。候选中的连接引用已经绑定对应配置，关联 Files 数据在 `files_api_config` 中；这些派生字段不写回 YAML。顶层 `model/endpoint/max_context/extra_parameter` 等旧字段提供首选候选的兼容读取，不随某个会话的 fallback 改写。
 
+预设格式解析、连接引用查找、默认地址和旧格式迁移函数直接属于根 `TIYA/config.py`；根配置的加载校验和 `get_llm()` 都调用本模块内的实现，不导入 `TIYA.llm`。`llm/settings.py` 在下游将这些配置数据转换为 ChatConfig；`llm/config.py` 仅提供通信身份指纹及其数据复制工具。
+
 `parse_llm_setting(name)` 返回独立的 `ChatConfig`。类型定义及字段注释位于 `config_model.py`，由 `model.py` 和 `LLM_connect.py` 重新导出：
 
 - `ChatConfig.candidates`：有序的 `LLMConfig` 列表，第一项是首选。
