@@ -130,39 +130,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "PixivLoginTLSKey": "",
         },
     },
-    TITLE_LLM: {
-        "LLM_List": [
-            {
-                "preset_name": "这是一个LLM模板",
-                "model": "LLMTemplate",
-                "endpoint": "https://api.siliconflow.cn/v1/chat/completions",
-                "token": "你的SK",
-                "api_type": "openai",
-                "proxy_mode": "GlobalProxy",
-                "max_context": 128_000,
-                "auto_compress_rate": 0.7,
-                "price": {
-                    "currency": "CNY",
-                    "input_token": 2,
-                    "cache_hit": 0.2,
-                    "output_token": 3,
-                },
-                "extra_parameter": {"max_token": 8192, "temperature": 0.7},
-            },
-            {
-                "preset_name": "本地模型",
-                "model": "localmodel",
-                "endpoint": "http://127.0.0.1:8080",
-                "token": "sk-no-key-required",
-                "api_type": "openai",
-                "proxy_mode": "GlobalProxy",
-                "max_context": 128_000,
-                "auto_compress_rate": 0.7,
-                "price": {},
-                "extra_parameter": {"max_token": 8192, "temperature": 0.7},
-            },
-        ]
-    },
+    TITLE_LLM: {"schema_version": 2, "Providers": {}, "LLM_List": {}},
     TITLE_PRIVATE: {
         "Default": {
             "enable": True,
@@ -580,38 +548,11 @@ COMMENT: dict[str, Any] = {
         },
     },
     TITLE_LLM: {
-        "LLM_List": [
-            {
-                "extra_parameter": {
-                    "_comment": {
-                        "max_token": "此项尽量填写，根据你使用的模型的最大值填写即可。默认8192。type: int",
-                        "temperature": "默认0.7。type: float",
-                    }
-                },
-                "price": {
-                    "_comment": {
-                        "currency": "货币单位",
-                        "input_token": "输入单价/百万token。 type: float",
-                        "cache_hit": "命中缓存单价/百万token。 type: float",
-                        "output_token": "输出单价/百万token。 type: float",
-                    }
-                },
-                "_comment": {
-                    "preset_name": "用于区分LLM的别名，想写什么就写什么，但不要重复。type: str",
-                    "model": "你使用的LLM用于请求用的模型名，不是你自己随便写一个名字。type: str",
-                    "endpoint": "LLMAPI终结点的URL，示例是哈基流动的。type: str",
-                    "token": "认证密钥(secret key、token)。type: str",
-                    "api_type": "API类型，目前仅支持Openai Chat Completion API和Anthropic API，Response API暂不支持。type: str, Literal: ['openai', 'anthropic']",
-                    "proxy_mode": "代理选项，默认是全局代理预设（即不启用代理），可填入一个字典强制覆盖代理。type: str | dict",
-                    "max_context": "模型最大上下文长度，必须填，很重要。 type: int",
-                    "auto_compress_rate": "触发自动压缩context的百分比，默认为0.7，取值[0.3, 0.9]。过大会造成LLM幻觉和输入费用大，过小则影响长期任务性能或无法充足利用kv cache导致费用大。type: float",
-                    "price": "花费统计功能，若为空则不统计。 type: dict",
-                    "extra_parameter": "请求额外参数，根据你的服务商提供的参数填写。",
-                },
-            },
-            {"_comment": {"endpoint": "改为你自己本地模型的接口"}},
-            ["LLM模型预设模板，请根据此项自行添加", "\n本地模型预留预设，请勿删除"],
-        ]
+        "_comment": {
+            "schema_version": "LLM 配置格式版本，仅支持 2；旧配置须人工填写新版，不自动迁移。",
+            "Providers": "开放的连接配置字典，具体字段由使用该连接的模块解释。",
+            "LLM_List": "字典键为预设名，每个预设的 providers 列表按顺序配置候选。",
+        }
     },
     TITLE_PRIVATE: {
         "Default": {
@@ -1031,207 +972,121 @@ def _plain(value: Any) -> Any:
     return copy.deepcopy(value)
 
 
-# LLM 配置格式解析：只处理配置数据，不依赖通信层。
-_LLM_ENDPOINT_PATHS = {
-    "chat_completions": "chat/completions",
-    "responses_api": "responses",
-    "anthropic_api": "messages",
-    "files_api": "files",
-    "image_generation": "images/generations",
-}
+@dataclass(slots=True)
+class LLMPresetConfig(Mapping[str, object]):
+    """完整原始 LLM 配置快照及选中的预设名，不解释任何连接或协议字段。
 
-
-def get_llm_credential(settings: Mapping) -> str:
-    value = settings.get("key") if "key" in settings else settings.get("token")
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        raise ValueError("Provider key/token 必须是字符串")
-    return value
-
-
-def get_llm_endpoint(settings: Mapping, category: str) -> str:
-    if settings.get("endpoint"):
-        return str(settings["endpoint"])
-    if settings.get("base_url"):
-        return str(settings["base_url"]).rstrip("/") + "/" + _LLM_ENDPOINT_PATHS[category]
-    raise ValueError(f"Providers.{category}: 需要 endpoint 或 base_url")
-
-
-def resolve_llm_connection(tree: Mapping, ref: str) -> tuple[str, str, str, dict]:
-    parts = ref.split(":", 2)
-    if len(parts) < 2 or not all(parts[:2]):
-        raise ValueError(f"Provider 引用格式错误: {ref}")
-    category, name = parts[:2]
-    try:
-        settings = tree[category][name]
-    except (KeyError, TypeError):
-        raise ValueError(f"Provider 引用不存在: {category}:{name}") from None
-    if not isinstance(settings, Mapping):
-        raise ValueError(f"Provider 连接必须是字典: {category}:{name}")
-    return category, name, parts[2] if len(parts) == 3 else "", _plain(settings)
-
-
-def resolve_llm_preset(data: Mapping, name: str) -> dict:
-    """Read a complete preset snapshot, including bound connection data.
-
-    This returns configuration data, never ChatConfig or live services. Original
-    provider references and open fields remain visible. Derived scalar fields at
-    the preset root provide compatibility reads of its first candidate.
+    data/provider_definitions 保留配置原貌；旧字典入口只投影首个候选中
+    直接存在的值。没有 Provider 默认值继承、引用展开或凭据处理。
     """
-    if not isinstance(name, str):
-        raise TypeError("LLM 预设名必须是字符串")
-    version = data.get("schema_version")
-    if version in (None, 1):
-        entries = data.get("LLM_List", [])
-        if not isinstance(entries, list):
-            raise ValueError(
-                "旧版 LLM_List 必须是列表；字典配置需声明 schema_version: 2"
-            )
-        old = next(
-            (
-                _plain(e)
-                for e in entries
-                if isinstance(e, Mapping) and e.get("preset_name") == name
-            ),
-            None,
-        )
-        if old is None:
+
+    preset_name: str
+    configuration: ConfigMap
+
+    def __post_init__(self):
+        if not isinstance(self.preset_name, str):
+            raise TypeError("LLM 预设名必须是字符串")
+        issues = _llm_format_issues(self.configuration, (TITLE_LLM,))
+        if issues:
+            raise ValueError(issues[0].message)
+        self.configuration = ConfigMap(_plain(self.configuration))
+        if self.preset_name not in self.configuration["LLM_List"]:
             raise KeyError("LLM 预设不存在")
-        category = {"openai": "chat_completions", "anthropic": "anthropic_api"}.get(
-            old.get("api_type", "openai")
+
+    @property
+    def data(self) -> ConfigMap:
+        return self.configuration["LLM_List"][self.preset_name]
+
+    @property
+    def provider_definitions(self) -> ConfigMap:
+        return self.configuration["Providers"]
+
+    @property
+    def providers(self) -> ConfigList:
+        return self.data["providers"]
+
+    @property
+    def max_context(self) -> int | None:
+        # 只读取首项原始值，缺失就保持 None，绝不去连接配置中猜测。
+        return self.providers[0].get("max_context")
+
+    @property
+    def extra_parameter(self) -> ConfigMap | None:
+        return self.providers[0].get("llm_params")
+
+    @property
+    def auto_compress_rate(self) -> float | None:
+        return self.data.get("auto_compress_rate")
+
+    @property
+    def proxy_mode(self) -> str | ConfigMap | None:
+        return self.data.get("proxy_mode")
+
+    def __getitem__(self, key: str) -> object:
+        if key == "preset_name":
+            return self.preset_name
+        if key == "max_context":
+            return self.max_context
+        if key == "extra_parameter":
+            return self.extra_parameter
+        return self.data[key]
+
+    def __iter__(self):
+        return iter(
+            dict.fromkeys((*self.data, "preset_name", "max_context", "extra_parameter"))
         )
-        if category is None:
-            raise ValueError(f"不支持的 api_type: {old.get('api_type')}")
-        params = old.get("extra_parameter") or {
-            "max_tokens": 8192,
-            "temperature": 0.7,
-            "stream": True,
-        }
-        candidate = dict(
-            old,
-            llm=f"{category}:legacy:{old.get('model', '')}",
-            provider_type=category,
-            connection_name="legacy",
-            llm_params=params,
-            context_history_mode="full",
-            files_api_config=None,
-        )
-        return dict(old, providers=[candidate], preset_name=name)
-    if version != 2:
-        raise ValueError("不支持的 LLM 配置版本")
-    presets, tree = data.get("LLM_List"), data.get("Providers")
-    if not isinstance(presets, Mapping) or not isinstance(tree, Mapping):
-        raise ValueError("v2 的 LLM_List 和 Providers 必须是字典")
-    if name not in presets:
-        raise KeyError(f"LLM 预设不存在: {name}")
-    spec = _plain(presets[name])
-    if (
-        not isinstance(spec, dict)
-        or not isinstance(spec.get("providers"), list)
-        or not spec["providers"]
-    ):
-        raise ValueError(f"LLM_List.{name}.providers 必须是非空列表")
-    candidates = []
-    for index, candidate in enumerate(spec["providers"]):
-        if not isinstance(candidate, dict) or not isinstance(candidate.get("llm"), str):
-            raise ValueError(f"LLM_List.{name}.providers[{index}].llm 无效")
-        category, conn, model, settings = resolve_llm_connection(tree, candidate["llm"])
-        if not model:
-            raise ValueError(f"模型 ID 缺失: {candidate['llm']}")
-        params = _plain(settings.get("llm_params", {}))
-        overrides = candidate.get("llm_params", {})
-        params = {} if params is None else params
-        overrides = {} if overrides is None else overrides
-        if not isinstance(params, dict) or not isinstance(overrides, dict):
-            raise ValueError(f"{name}.providers[{index}].llm_params 必须是字典")
-        params.update(overrides)
-        settings.update({k: v for k, v in candidate.items() if k != "llm_params"})
-        history = settings.get("context_history_mode", "auto")
-        if history not in ("auto", "full", "previous_response_id"):
-            raise ValueError(f"{name}.providers[{index}].context_history_mode 无效")
-        files = None
-        if candidate.get("files_api"):
-            file_category, file_name, file_model, files = resolve_llm_connection(
-                tree, candidate["files_api"]
-            )
-            if file_model:
-                raise ValueError(
-                    f"Files 引用必须是 分类:连接名: {candidate['files_api']}"
-                )
-            files.update(candidate.get("files_api_params") or {})
-            files.update(
-                provider_type=file_category,
-                connection_name=file_name,
-                endpoint=get_llm_endpoint(files, file_category),
-            )
-        settings.update(
-            provider_type=category,
-            connection_name=conn,
-            model=model,
-            endpoint=get_llm_endpoint(settings, category),
-            token=get_llm_credential(settings),
-            llm_params=params,
-            context_history_mode=history,
-            files_api_config=files,
-        )
-        candidates.append(settings)
-    primary = candidates[0]
-    spec.update(
-        preset_name=name,
-        providers=candidates,
-        model=primary["model"],
-        endpoint=primary["endpoint"],
-        token=primary["token"],
-        api_type=primary["provider_type"],
-        max_context=primary.get("max_context"),
-        extra_parameter=_plain(primary["llm_params"]),
-        price={},
-    )
-    return spec
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
 
 
-def migrate_llm_config(data: Mapping) -> dict:
-    """Return a new document. Writing/backups are the caller's explicit operation."""
-    if data.get("schema_version") == 2:
-        return _plain(data)
-    if data.get("schema_version") not in (None, 1):
-        raise ValueError("不支持的 LLM 配置版本")
-    result = {k: _plain(v) for k, v in data.items() if k != "LLM_List"}
-    result.update(schema_version=2, Providers={}, LLM_List={})
-    for index, old in enumerate(data.get("LLM_List", [])):
-        name = old["preset_name"]
-        if name in result["LLM_List"]:
-            raise ValueError(f"重复预设名: {name}")
-        category = {"openai": "chat_completions", "anthropic": "anthropic_api"}.get(
-            old.get("api_type", "openai")
-        )
-        if category is None:
-            raise ValueError(f"不支持迁移的 api_type: {old.get('api_type')}")
-        conn = f"legacy_{index}"
-        result["Providers"].setdefault(category, {})[conn] = {
-            "endpoint": old.get("endpoint", ""),
-            "key": old.get("token", ""),
-        }
-        result["LLM_List"][name] = {
-            "auto_compress_rate": old.get("auto_compress_rate"),
-            "proxy_mode": old.get("proxy_mode"),
-            "providers": [
-                {
-                    "llm": f"{category}:{conn}:{old['model']}",
-                    "llm_params": _plain(
-                        old.get("extra_parameter")
-                        or {"max_tokens": 8192, "temperature": 0.7, "stream": True}
-                    ),
-                    "max_context": old.get("max_context"),
-                    "context_history_mode": "full",
-                }
-            ],
-        }
-        # Kept only for the explicit price import, never sent as model parameters.
-        if old.get("price"):
-            result["LLM_List"][name]["legacy_price"] = _plain(old["price"])
-    return result
+def _llm_format_issues(raw: object, path: ConfigPath) -> list[ConfigIssue]:
+    """只检查文件结构和字段类型；连接是否存在/协议含义由 llm 层检查。"""
+
+    def issue(at, message):
+        return ConfigIssue(at, "invalid_llm_format", message=message)
+
+    if not isinstance(raw, Mapping):
+        return [issue(path, "LLM模型配置必须是字典")]
+    if isinstance(raw.get("schema_version"), bool) or raw.get("schema_version") != 2:
+        return [
+            issue(
+                path + ("schema_version",),
+                "仅支持新版 LLM 配置（schema_version: 2），请人工填写新配置；不自动转换旧版",
+            )
+        ]
+    errors = []
+    for key in ("Providers", "LLM_List"):
+        if not isinstance(raw.get(key), Mapping):
+            errors.append(issue(path + (key,), f"{key} 必须是字典"))
+    if errors:
+        return errors
+    for name, spec in raw["LLM_List"].items():
+        location = path + ("LLM_List", str(name))
+        if not isinstance(spec, Mapping):
+            errors.append(issue(location, "LLM 预设必须是字典"))
+            continue
+        candidates = spec.get("providers")
+        if not isinstance(candidates, list) or not candidates:
+            errors.append(issue(location + ("providers",), "providers 必须是非空列表"))
+            continue
+        for index, candidate in enumerate(candidates):
+            item = location + ("providers", index)
+            if not isinstance(candidate, Mapping):
+                errors.append(issue(item, "候选配置必须是字典"))
+                continue
+            if not isinstance(candidate.get("llm"), str):
+                errors.append(issue(item + ("llm",), "llm 必须是字符串"))
+            if candidate.get("max_context") is not None and (
+                isinstance(candidate["max_context"], bool)
+                or not isinstance(candidate["max_context"], int)
+            ):
+                errors.append(issue(item + ("max_context",), "max_context 必须是整数"))
+            if candidate.get("llm_params") is not None and not isinstance(
+                candidate["llm_params"], Mapping
+            ):
+                errors.append(issue(item + ("llm_params",), "llm_params 必须是字典"))
+    return errors
 
 
 def _merge_mapping(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
@@ -1525,18 +1380,9 @@ class Configer:
         materialize: bool,
         report_missing: bool = True,
     ) -> Any:
-        if path == (TITLE_LLM,) and isinstance(raw, Mapping) and "schema_version" in raw:
-            if raw.get("schema_version") != 2:
-                errors.append(ConfigIssue(path + ("schema_version",), "unsupported_version", message="不支持的 LLM 配置版本"))
-                return _plain(raw)
-            try:
-                if not isinstance(raw.get("LLM_List"), Mapping):
-                    raise ValueError("v2 LLM_List 必须是字典")
-                for preset_name in raw["LLM_List"]:
-                    resolve_llm_preset(raw, preset_name)
-            except (ValueError, KeyError, TypeError) as exc:
-                errors.append(ConfigIssue(path, "invalid_llm_config", message=str(exc)))
-            return _plain(raw)
+        if path == (TITLE_LLM,):
+            errors.extend(_llm_format_issues(raw, path))
+            return _plain(raw) if isinstance(raw, Mapping) else _plain(default)
         if not _matches_type(raw, default):
             errors.append(
                 ConfigIssue(
@@ -1573,12 +1419,7 @@ class Configer:
                         )
                     continue
 
-                if path == (TITLE_LLM,) and key == "LLM_List":
-                    result[key] = self._resolve_llm_list(
-                        raw[key], default_value, child_path, errors
-                    )
-
-                elif path == (TITLE_GROUPS,) and key == "Groups":
+                if path == (TITLE_GROUPS,) and key == "Groups":
                     result[key] = self._resolve_groups(
                         raw[key], default_value, child_path, errors
                     )
@@ -1623,49 +1464,6 @@ class Configer:
             return list_result
 
         return copy.deepcopy(raw)
-
-    def _resolve_llm_list(
-        self,
-        raw: Any,
-        defaults: list[Any],
-        path: ConfigPath,
-        errors: list[ConfigIssue],
-    ) -> list[Any]:
-        if not isinstance(raw, list):
-            errors.append(
-                ConfigIssue(path, "type_error", "list", type(raw).__name__, _plain(raw), True)
-            )
-            return copy.deepcopy(defaults)
-
-        if not defaults:
-            return copy.deepcopy(raw)
-
-        repairs: list[ConfigIssue] = []
-        result: list[Any] = []
-        for index, item in enumerate(raw):
-            template = defaults[0]
-            if isinstance(item, Mapping):
-                for candidate in defaults:
-                    if not isinstance(candidate, Mapping):
-                        continue
-
-                    same_model = item.get("model") == candidate.get("model")
-                    same_preset = item.get("preset_name") == candidate.get("preset_name")
-                    if same_model or same_preset:
-                        template = candidate
-                        break
-
-            result.append(self._resolve_value(
-                item,
-                template,
-                path + (index,),
-                errors,
-                repairs,
-                materialize=False,
-                report_missing=True,
-            ))
-
-        return result
 
     def _resolve_groups(
         self,
@@ -1993,26 +1791,16 @@ def get_proxy(proxy_name: str | Mapping[str, Any]) -> dict[str, Any]:
     return {"http": None, "https": None}
 
 
-def get_llm(preset_name: str) -> ConfigMap:
-    """返回完整预设数据快照；旧标量读取首选候选，不返回 ChatConfig。"""
-    if not isinstance(preset_name, str):
-        raise TypeError("LLM 预设名必须是字符串")
-
-    return ConfigMap(resolve_llm_preset(LLM_CFG, preset_name))
+def get_llm(preset_name: str) -> LLMPresetConfig:
+    """读取完整原始预设快照；兼容属性仅映射首项，不解释通信配置。"""
+    return LLMPresetConfig(preset_name, LLM_CFG)
 
 
 def get_llm_list() -> list[str]:
-    if LLM_CFG.get("schema_version") == 2:
-        return list(LLM_CFG.get("LLM_List", {}))
-    try:
-        return [
-            str(model.preset_name)
-            for model in LLM_CFG.LLM_List
-            if isinstance(model, ConfigMap) and model.get("preset_name") != "这是一个LLM模板"
-        ]
-
-    except AttributeError:
-        return []
+    issues = _llm_format_issues(LLM_CFG, (TITLE_LLM,))
+    if issues:
+        raise ValueError(issues[0].message)
+    return list(LLM_CFG["LLM_List"])
 
 
 def get_private_user_config(user_id: str) -> ConfigMap:

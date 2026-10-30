@@ -2,7 +2,7 @@
 
 import copy
 
-from TIYA.config import get_llm_endpoint
+from TIYA.llm.config import endpoint
 from TIYA.llm.config_model import ChatConfig, LLMConfig, RequestPolicy
 from TIYA.llm.settings import files_config_from_settings
 
@@ -30,7 +30,7 @@ def candidate(
     return LLMConfig(
         category,
         connection,
-        get_llm_endpoint(settings, category)
+        endpoint(settings, category)
         if settings.get("endpoint") or settings.get("base_url")
         else "",
         settings.get("key", settings.get("token", "")) or "",

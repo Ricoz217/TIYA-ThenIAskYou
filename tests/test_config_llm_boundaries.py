@@ -78,12 +78,21 @@ if sys.argv[3] == "True":
     config.LLM_CFG = manager.get_llm_config()
 else:
     config.LLM_CFG = config.ConfigMap(data[config.TITLE_LLM])
-preset = config.get_llm("MAIN")
-assert isinstance(preset, config.ConfigMap)
-assert config.get_llm_list() == ["MAIN"]
-assert preset.max_context == 10000
-assert len(preset.providers) == 1
-assert preset.model in ("model", "namespace:model")
+if isinstance(config.LLM_CFG.get("LLM_List"), list):
+    try:
+        config.get_llm("MAIN")
+    except ValueError as exc:
+        assert "人工" in str(exc)
+    else:
+        raise AssertionError("Old configuration must be rejected")
+else:
+    preset = config.get_llm("MAIN")
+    assert isinstance(preset, config.LLMPresetConfig)
+    assert config.get_llm_list() == ["MAIN"]
+    assert preset.max_context == 10000
+    assert len(preset.providers) == 1
+    assert preset.providers[0].llm == "responses_api:primary:namespace:model"
+    assert "model" not in preset.providers[0]
 assert not any(name == "TIYA.llm" or name.startswith("TIYA.llm.") for name in sys.modules)
 print("root configuration stayed independent")
 """

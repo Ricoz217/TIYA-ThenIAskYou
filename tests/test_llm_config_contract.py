@@ -11,24 +11,24 @@ from test_llm_preset_calls import document, mock_model
 
 
 def test_get_llm_returns_complete_preset_data_not_chat_config(monkeypatch):
-    data = document(2)
+    data = document()
     data["LLM_List"]["MAIN"]["custom"] = {"kept": True}
     monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(copy.deepcopy(data)))
     preset = config.get_llm("MAIN")
-    assert isinstance(preset, config.ConfigMap)
+    assert isinstance(preset, config.LLMPresetConfig)
     assert not isinstance(preset, ChatConfig)
     assert [entry.llm for entry in preset.providers] == [
         "chat_completions:primary:model",
         "chat_completions:backup:other-model",
     ]
-    assert preset.custom.kept is True
+    assert preset.data.custom.kept is True
     assert preset.max_context == 10000
     preset.providers[0].llm_params["temperature"] = 1
     assert config.get_llm("MAIN").providers[0].llm_params["temperature"] == 0
 
 
 def test_chat_config_primary_properties_have_one_source_of_truth(monkeypatch):
-    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document(2)))
+    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document()))
     setting = parse_llm_setting("MAIN")
     assert len(setting.candidates) == 2
     assert setting.model == setting.candidates[0].model == "model"
@@ -44,7 +44,7 @@ def test_chat_config_primary_properties_have_one_source_of_truth(monkeypatch):
 
 
 def test_parse_uses_get_llm_and_preserves_provider_options(monkeypatch):
-    data = document(2)
+    data = document()
     data["Providers"]["chat_completions"]["primary"]["custom_protocol"] = {
         "enabled": True
     }
@@ -73,7 +73,7 @@ def test_memory_existing_config_read_and_partial_constructor_still_work(
     from TIYA.memory.config import _resolve_effective_max_context_window
     from TIYA.memory.llm_pipeline import LLMPipelineV3
 
-    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document(2)))
+    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document()))
     assert _resolve_effective_max_context_window("MAIN") == 10000
     sent = []
 
@@ -103,7 +103,7 @@ def test_memory_existing_config_read_and_partial_constructor_still_work(
 
 
 def test_partial_update_keeps_backup_and_snapshot_isolation(monkeypatch):
-    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document(2)))
+    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document()))
     requests = []
 
     def handler(request):
@@ -131,7 +131,7 @@ def test_partial_update_keeps_backup_and_snapshot_isolation(monkeypatch):
 
 @pytest.mark.parametrize("name, error", [(None, TypeError), ("missing", KeyError)])
 def test_parser_keeps_missing_preset_and_type_errors(monkeypatch, name, error):
-    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document(2)))
+    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document()))
     with pytest.raises(error):
         parse_llm_setting(name)
 
@@ -168,21 +168,6 @@ def test_candidate_validation_and_session_options_have_explicit_semantics(monkey
             assert chat.config.primary.client_params == {"verify": False}
 
     asyncio.run(run())
-
-
-def test_config_migration_preserves_legacy_default_request_parameters():
-    from TIYA.config import migrate_llm_config
-    from TIYA.llm.settings import resolve_chat_config
-
-    legacy = document(1)
-    legacy["LLM_List"][0]["extra_parameter"] = {}
-    old = resolve_chat_config(legacy, "MAIN")
-    new = resolve_chat_config(migrate_llm_config(legacy), "MAIN")
-    assert (
-        old.model_params
-        == new.model_params
-        == {"max_tokens": 8192, "temperature": 0.7, "stream": True}
-    )
 
 
 def test_concurrent_first_use_of_separate_sqlite_stores(tmp_path):
@@ -233,7 +218,7 @@ def test_files_binding_preserves_existing_upload_cache_scope(monkeypatch):
 
 @pytest.mark.parametrize("bad", [False, 0, [], "invalid"])
 def test_invalid_native_parameter_container_is_rejected_before_http(monkeypatch, bad):
-    data = document(2)
+    data = document()
     data["LLM_List"]["MAIN"]["providers"][0]["llm_params"] = bad
     monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(data))
     with pytest.raises((TypeError, ValueError), match="llm_params"):

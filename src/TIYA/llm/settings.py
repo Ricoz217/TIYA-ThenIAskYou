@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from TIYA.config import get_llm_credential, get_llm_endpoint, resolve_llm_preset
-from .config import plain
+from TIYA.config import ConfigMap, LLMPresetConfig
+from .config import credential, endpoint, plain, resolve_preset
 from .config_model import ChatConfig, FilesConfig, LLMConfig, RequestPolicy
 
 
@@ -26,8 +26,8 @@ def files_config_from_settings(
     return FilesConfig(
         data.get("provider_type", provider_type),
         data.get("connection_name", connection_name),
-        get_llm_endpoint(data, data.get("provider_type", provider_type)),
-        get_llm_credential(data),
+        endpoint(data, data.get("provider_type", provider_type)),
+        credential(data),
         headers=plain(data.get("headers") or {}),
         client_params=plain(data.get("client_params") or {}),
         upload_params=plain(data.get("upload_params") or {}),
@@ -57,19 +57,6 @@ def model_config_from_settings(
     ):
         raise ValueError("retries 必须是非负整数")
     files = data.get("files_api_config")
-    price = data.get("price")
-    legacy_price = None
-    if price:
-        if not isinstance(price, dict):
-            raise TypeError("price 必须是字典")
-        from .usage_compat import ApiPrice
-
-        legacy_price = ApiPrice(
-            currency=price.get("currency", "CNY"),
-            input=float(price.get("input_token", 0)),
-            output=float(price.get("output_token", 0)),
-            cached=float(price.get("cache_hit", 0)),
-        )
     known = {
         "llm",
         "provider_type",
@@ -87,18 +74,15 @@ def model_config_from_settings(
         "files_api_params",
         "files_api_config",
         "retries",
-        "price",
         "preset_name",
-        "api_type",
-        "extra_parameter",
         "auto_compress_rate",
         "proxy_mode",
     }
     return LLMConfig(
         provider_type,
         connection_name,
-        get_llm_endpoint(data, provider_type),
-        get_llm_credential(data),
+        endpoint(data, provider_type),
+        credential(data),
         model,
         model_params=params,
         headers=plain(data.get("headers") or {}),
@@ -108,12 +92,12 @@ def model_config_from_settings(
         files=files_config_from_settings(files) if files else None,
         provider_options={k: v for k, v in data.items() if k not in known},
         max_retries=retries,
-        legacy_price=legacy_price,
     )
 
 
-def chat_config_from_preset(preset: Mapping) -> ChatConfig:
+def chat_config_from_preset(preset: LLMPresetConfig) -> ChatConfig:
     """Consume a get_llm() snapshot, retaining every candidate and its order."""
+    preset = resolve_preset(preset)
     candidates = [
         model_config_from_settings(
             entry,
@@ -149,8 +133,8 @@ def chat_config_from_preset(preset: Mapping) -> ChatConfig:
 
 
 def resolve_chat_config(data: Mapping, preset_name: str) -> ChatConfig:
-    """Pure conversion useful for validation and explicit migration tools."""
-    return chat_config_from_preset(resolve_llm_preset(data, preset_name))
+    """Convert an explicit raw snapshot without reading configuration globals."""
+    return chat_config_from_preset(LLMPresetConfig(preset_name, ConfigMap(plain(data))))
 
 
 def parse_llm_setting(preset_name: str) -> ChatConfig:

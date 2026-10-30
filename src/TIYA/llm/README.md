@@ -1,14 +1,16 @@
 # LLM 通信接口
 
-旧调用继续从 `TIYA.LLM_connect` 导入 `Chat`、`Context`、Prompt、`ChatConfig`、`parse_llm_setting()`；这些入口重新导出内部的同一组类型。旧列表配置仍然可用，不会自动迁移 Memory 或生产预设。
+业务继续从 `TIYA.LLM_connect` 导入 `Chat`、`Context`、Prompt、`ChatConfig`、`parse_llm_setting()`；这些入口重新导出内部的同一组类型。配置文件仅支持下文的 v2 字典结构，旧列表配置会提示人工填写新版，需与代码一起部署。
 
-兼容范围是调用接口、返回契约和业务行为。新旧配置都使用同一条 Runtime → Provider → Gateway 请求链路，没有独立的旧 payload 构造器。`get_llm()` 返回完整预设数据；`parse_llm_setting()` 通过该入口获取预设，再转换为供 Chat 使用的结构化配置。旧私有 `_payload_constructor()` 不再提供。
+兼容范围是调用接口、返回契约和业务行为。请求使用 Runtime → Provider → Gateway 链路。`get_llm()` 返回原始配置快照；`parse_llm_setting()` 通过该入口获取预设，再解释为供 Chat 使用的结构化配置。旧私有 `_payload_constructor()` 不再提供。
 
 ## 预设数据和 ChatConfig
 
-`TIYA.config.get_llm(name)` 返回独立的 `ConfigMap` 预设快照，包含完整有序的 `providers`、预设级设置和开放扩展字段。候选中的连接引用已经绑定对应配置，关联 Files 数据在 `files_api_config` 中；这些派生字段不写回 YAML。顶层 `model/endpoint/max_context/extra_parameter` 等旧字段提供首选候选的兼容读取，不随某个会话的 fallback 改写。
+`TIYA.config.get_llm(name)` 返回简单的数据对象 `LLMPresetConfig`：`configuration` 保存完整原始 LLM 配置快照，`data` 指向选中的预设，`provider_definitions` 是原始 Providers 字典，`providers` 是原始有序候选列表。开放字段完整保留，修改快照不会影响全局配置。
 
-预设格式解析、连接引用查找、默认地址和旧格式迁移函数直接属于根 `TIYA/config.py`；根配置的加载校验和 `get_llm()` 都调用本模块内的实现，不导入 `TIYA.llm`。`llm/settings.py` 在下游将这些配置数据转换为 ChatConfig；`llm/config.py` 仅提供通信身份指纹及其数据复制工具。
+它支持字典读取；`max_context` 和 `extra_parameter` 属性分别读取首个候选的原始 `max_context` 和 `llm_params`，缺失返回 None，不继承连接默认值。`preset_name`、`auto_compress_rate`、`proxy_mode` 也可直接读取。不在这里合成 model、endpoint、凭证等需要业务解释的字段，也不随会话 fallback 改写全局配置。
+
+根 `TIYA/config.py` 负责文件读写、注释、结构校验和上述简单读取，不解析 Provider 引用、不导入 `TIYA.llm`。下游 `llm/config.py` 负责连接查找、协议地址、凭证和参数覆盖；`llm/settings.py` 再转换为 ChatConfig。不存在 LLM 配置迁移函数或命令，旧配置必须人工重新填写。
 
 `parse_llm_setting(name)` 返回独立的 `ChatConfig`。类型定义及字段注释位于 `config_model.py`，由 `model.py` 和 `LLM_connect.py` 重新导出：
 
@@ -162,15 +164,6 @@ catalog.publish(identity, rules, source="经核对的价格来源")
 ```
 
 以上数字只是示例。whole 按完整输入所处区间选择整次请求价格；progressive 按同一个计量项逐段计费。输入/输出总量与子项不能重复定价。可使用 images、input_image、output_image 等计量项；没有匹配价格时费用未知，仍然记账。每次请求冻结价格版本，后续调价不改旧请求。异步调用方应将这些同步维护/查询方法放到 `asyncio.to_thread` 执行。
-
-## 显式配置迁移
-
-```text
-python -m TIYA.llm.migrate config/config.yaml
-python -m TIYA.llm.migrate config/config.yaml --apply --pricing data/llm/pricing.sqlite3
-```
-
-第一条只检查和预览，不打印密钥。应用时创建备份并原子替换，保留预设名称，旧价格导入目录；重复应用 v2 不重新写入。重复名称/重复 YAML key 会失败。
 
 ## 已修正的旧行为
 

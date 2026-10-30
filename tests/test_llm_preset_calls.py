@@ -5,7 +5,6 @@ import copy
 import json
 
 import httpx
-import pytest
 
 from TIYA import config
 from TIYA.LLM_connect import Chat, ToolCall, ToolInput, parse_llm_setting
@@ -23,24 +22,7 @@ def mock_model(monkeypatch, handler):
     monkeypatch.setattr(httpx, "AsyncClient", client)
 
 
-def document(version):
-    if version == 1:
-        return {
-            "LLM_List": [
-                {
-                    "preset_name": "MAIN",
-                    "endpoint": "https://primary.invalid/chat/completions",
-                    "token": "dummy",
-                    "model": "model",
-                    "api_type": "openai",
-                    "proxy_mode": "",
-                    "max_context": 10000,
-                    "auto_compress_rate": 0.7,
-                    "price": {},
-                    "extra_parameter": {"stream": False, "temperature": 0},
-                }
-            ]
-        }
+def document():
     return {
         "schema_version": 2,
         "Providers": {
@@ -75,9 +57,8 @@ def document(version):
     }
 
 
-@pytest.mark.parametrize("version", [1, 2])
-def test_old_entry_points_send_tools_and_return_the_same_contract(monkeypatch, version):
-    original = document(version)
+def test_old_entry_points_send_tools_and_return_the_same_contract(monkeypatch):
+    original = document()
     monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(copy.deepcopy(original)))
     sent = []
 
@@ -139,7 +120,7 @@ def test_old_entry_points_send_tools_and_return_the_same_contract(monkeypatch, v
 
 
 def test_v2_fallback_works_through_the_existing_setting_entry(monkeypatch):
-    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document(2)))
+    monkeypatch.setattr(config, "LLM_CFG", config.ConfigMap(document()))
     hosts, models = [], []
 
     def handler(request):

@@ -25,20 +25,28 @@ def _defaults() -> tuple[dict, dict]:
             "OptionalList": [],
         },
         TITLE_LLM: {
-            "LLM_List": [
-                {
-                    "preset_name": "template",
-                    "model": "default-model",
-                    "max_context": 128_000,
-                    "extra_parameter": {"temperature": 0.7},
+            "schema_version": 2,
+            "Providers": {},
+            "LLM_List": {
+                "template": {
+                    "providers": [
+                        {
+                            "llm": "chat_completions:example:default-model",
+                            "max_context": 128_000,
+                            "llm_params": {"temperature": 0.7},
+                        }
+                    ]
                 },
-                {
-                    "preset_name": "local",
-                    "model": "local-model",
-                    "max_context": 128_000,
-                    "extra_parameter": {"temperature": 0.7},
+                "local": {
+                    "providers": [
+                        {
+                            "llm": "chat_completions:example:local-model",
+                            "max_context": 128_000,
+                            "llm_params": {"temperature": 0.7},
+                        }
+                    ]
                 },
-            ]
+            },
         },
         TITLE_GROUPS: {
             "Groups": {
@@ -120,7 +128,9 @@ def test_missing_runtime_attribute_uses_public_config_name(tmp_path: Path) -> No
     )
 
 
-def test_setting_missing_values_are_materialized_once(tmp_path: Path, monkeypatch) -> None:
+def test_setting_missing_values_are_materialized_once(
+    tmp_path: Path, monkeypatch
+) -> None:
     path = tmp_path / "config.yaml"
     document = _complete_document()
     document[TITLE_SETTING] = {"Common": {"EnableConfigCheck": True}}
@@ -147,7 +157,9 @@ def test_setting_missing_values_are_materialized_once(tmp_path: Path, monkeypatc
     assert {issue.code for issue in first.report.repairs} == {"missing_key"}
 
 
-def test_non_setting_missing_value_uses_default_but_is_not_written(tmp_path: Path) -> None:
+def test_non_setting_missing_value_uses_default_but_is_not_written(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "config.yaml"
     document = _complete_document()
     del document[TITLE_BASE]["BotInfo"]["name"]
@@ -188,23 +200,26 @@ def test_wrong_type_falls_back_without_overwriting_raw_value(tmp_path: Path) -> 
     path = tmp_path / "config.yaml"
     document = _complete_document()
     document[TITLE_SETTING]["Common"]["Timeout"] = "fifteen"
-    document[TITLE_LLM]["LLM_List"][0]["max_context"] = "128k"
+    document[TITLE_LLM]["LLM_List"]["template"]["providers"][0]["max_context"] = "128k"
     _dump(path, document)
     manager = _manager(path)
 
     result = manager.load_config()
     assert manager.get_setting_config().Common.Timeout == 15
-    assert manager.get_llm_config().LLM_List[0].max_context == 128_000
+    assert manager.get_llm_config().LLM_List.template.providers[0].max_context == "128k"
     assert {issue.path_text for issue in result.report.errors} >= {
         "其他参数配置，请勿随意更改.Common.Timeout",
-        "LLM模型配置.LLM_List[0].max_context",
+        "LLM模型配置.LLM_List.template.providers[0].max_context",
     }
     assert "值 'fifteen'" in result.report.render("list")
 
     assert manager.commit_and_write_config().ok
     saved = _load(path)
     assert saved[TITLE_SETTING]["Common"]["Timeout"] == "fifteen"
-    assert saved[TITLE_LLM]["LLM_List"][0]["max_context"] == "128k"
+    assert (
+        saved[TITLE_LLM]["LLM_List"]["template"]["providers"][0]["max_context"]
+        == "128k"
+    )
 
 
 def test_lists_have_no_comment_sentinel_and_round_trip_comments(tmp_path: Path) -> None:
@@ -219,7 +234,9 @@ BOT基本配置:
     - [inner]
   OptionalList: []
 LLM模型配置:
-  LLM_List: []
+  schema_version: 2
+  Providers: {}
+  LLM_List: {}
 群聊设置:
   Groups:
     Group_Default_Setting: {name: '', chat: true, ban_topic: []}
@@ -235,7 +252,7 @@ LLM模型配置:
     assert manager.get_base_config().AdminList == ["10001"]
     assert manager.get_base_config().NestedList == [["inner"]]
     assert manager.get_base_config().OptionalList == []
-    assert manager.get_llm_config().LLM_List == []
+    assert manager.get_llm_config().LLM_List == {}
 
     assert manager.commit_and_write_config().ok
     text = path.read_text(encoding="utf-8")
@@ -244,20 +261,22 @@ LLM模型配置:
     assert "# first admin" in text
 
 
-def test_llm_items_and_dynamic_groups_use_templates(tmp_path: Path) -> None:
+def test_llm_presets_are_not_filled_from_templates_and_dynamic_groups_keep_defaults(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "config.yaml"
     document = _complete_document()
-    document[TITLE_LLM]["LLM_List"] = [{"preset_name": "custom"}]
+    document[TITLE_LLM]["LLM_List"] = {"custom": {}}
     document[TITLE_GROUPS]["Groups"]["20001"] = {"name": "真实群"}
     _dump(path, document)
     manager = _manager(path)
 
     result = manager.load_config()
 
-    assert manager.get_llm_config().LLM_List[0].model == "default-model"
+    assert manager.get_llm_config().LLM_List.custom == {}
     assert manager.get_group_config().Groups["20001"].chat is True
     assert {issue.path_text for issue in result.report.errors} >= {
-        "LLM模型配置.LLM_List[0].model",
+        "LLM模型配置.LLM_List.custom.providers",
         "群聊设置.Groups.20001.chat",
     }
 
@@ -379,7 +398,9 @@ def test_atomic_write_failure_keeps_original_file(tmp_path: Path, monkeypatch) -
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_missing_unknown_attribute_is_strict_and_does_not_mutate(tmp_path: Path) -> None:
+def test_missing_unknown_attribute_is_strict_and_does_not_mutate(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "config.yaml"
     _dump(path, _complete_document())
     manager = _manager(path)
@@ -456,26 +477,34 @@ def test_load_failures_return_results_and_keep_last_report(tmp_path: Path) -> No
     assert "为空" in empty.error
 
 
-def test_public_helpers_use_normal_lists_and_write_results(tmp_path: Path, monkeypatch) -> None:
+def test_public_helpers_use_normal_lists_and_write_results(
+    tmp_path: Path, monkeypatch
+) -> None:
     path = tmp_path / "config.yaml"
     document = _complete_document()
     document[TITLE_BASE]["Proxies"] = {
         "GlobalProxy": {"http": "http://proxy", "https": None}
     }
-    document[TITLE_LLM]["LLM_List"] = [
-        {
-            "preset_name": "template",
-            "model": "default-model",
-            "max_context": 128_000,
-            "extra_parameter": {"temperature": 0.7},
+    document[TITLE_LLM]["LLM_List"] = {
+        "template": {
+            "providers": [
+                {
+                    "llm": "chat_completions:example:default-model",
+                    "max_context": 128_000,
+                    "llm_params": {"temperature": 0.7},
+                }
+            ]
         },
-        {
-            "preset_name": "business-last",
-            "model": "last-model",
-            "max_context": 64_000,
-            "extra_parameter": {"temperature": 0.5},
+        "business-last": {
+            "providers": [
+                {
+                    "llm": "chat_completions:example:last-model",
+                    "max_context": 64_000,
+                    "llm_params": {"temperature": 0.5},
+                }
+            ]
         },
-    ]
+    }
     _dump(path, document)
     manager = _manager(path)
     assert manager.load_config().ok
@@ -484,8 +513,13 @@ def test_public_helpers_use_normal_lists_and_write_results(tmp_path: Path, monke
     assert config.get_proxy("GlobalProxy")["http"] == "http://proxy"
     assert config.get_proxy("missing") == {"http": None, "https": None}
     assert config.get_proxy({"http": None}) == {"http": None}
-    assert config.get_llm("business-last").model == "last-model"
-    assert config.get_llm("missing") == {}
+    assert config.get_llm("business-last").max_context == 64_000
+    assert (
+        config.get_llm("business-last").providers[0].llm
+        == "chat_completions:example:last-model"
+    )
+    with pytest.raises(KeyError):
+        config.get_llm("missing")
     assert config.get_llm_list() == ["template", "business-last"]
 
     config.BASE_CFG.BotInfo.name = "helper-write"
@@ -530,7 +564,9 @@ def test_reload_rebinds_groups_before_notifying(tmp_path: Path, monkeypatch) -> 
     assert group.group_config.name == "second"
 
 
-def test_default_document_generation_and_character_helpers(tmp_path: Path, monkeypatch) -> None:
+def test_default_document_generation_and_character_helpers(
+    tmp_path: Path, monkeypatch
+) -> None:
     path = tmp_path / "generated.yaml"
     manager = _manager(path)
     _activate(monkeypatch, manager)
@@ -583,7 +619,9 @@ def test_save_normalizes_old_root_headings_and_preserves_other_comments(
     for title in (TITLE_BASE, TITLE_LLM, TITLE_GROUPS, TITLE_SETTING):
         heading = f"# {f' {title} ':=^100}"
         text = text.replace(f"{title}:\n", f"{heading}\n\n{heading}\n{title}:\n", 1)
-    text = text.replace(f"{TITLE_PRIVATE}:\n", f"# keep private note\n{TITLE_PRIVATE}:\n", 1)
+    text = text.replace(
+        f"{TITLE_PRIVATE}:\n", f"# keep private note\n{TITLE_PRIVATE}:\n", 1
+    )
     path.write_text(text, encoding="utf-8")
     manager = config.Configer(
         path,
@@ -614,7 +652,9 @@ def test_save_normalizes_old_root_headings_and_preserves_other_comments(
     assert _load(path)["FutureRoot"]["enabled"] is True
 
 
-def test_complete_module_defaults_validate_cleanly_and_include_comments(tmp_path: Path) -> None:
+def test_complete_module_defaults_validate_cleanly_and_include_comments(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "full-default.yaml"
     manager = config.Configer(path)
     document = manager.build_default_document()
@@ -624,11 +664,12 @@ def test_complete_module_defaults_validate_cleanly_and_include_comments(tmp_path
 
     assert result.ok
     assert result.report.errors == ()
-    assert manager.get_llm_config().LLM_List[-1].model == "localmodel"
+    assert manager.get_llm_config().LLM_List == {}
+    assert manager.get_llm_config().schema_version == 2
     assert manager.get_setting_config().Relative.TFIDFVectorDimension == 262_144
     text = path.read_text(encoding="utf-8")
     assert "# BOT管理员列表" in text
-    assert "LLM模型预设模板" in text
+    assert "不自动迁移" in text
 
 
 def test_list_comments_follow_existing_items_after_insert_remove_and_reorder(
@@ -644,7 +685,9 @@ def test_list_comments_follow_existing_items_after_insert_remove_and_reorder(
   NestedList: [[inner]]
   OptionalList: []
 LLM模型配置:
-  LLM_List: []
+  schema_version: 2
+  Providers: {}
+  LLM_List: {}
 群聊设置:
   Groups:
     Group_Default_Setting: {name: '', chat: true, ban_topic: []}

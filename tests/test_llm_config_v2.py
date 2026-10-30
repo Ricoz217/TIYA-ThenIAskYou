@@ -42,11 +42,12 @@ def document():
 
 
 def test_resolver_preserves_candidates_and_native_parameters():
-    from TIYA.config import resolve_llm_preset
+    from TIYA.config import ConfigMap, LLMPresetConfig
+    from TIYA.llm.config import resolve_preset
 
     data = document()
     before = copy.deepcopy(data)
-    result = resolve_llm_preset(data, "MAIN")
+    result = resolve_preset(LLMPresetConfig("MAIN", ConfigMap(data)))
     assert result["providers"][0]["model"] == "namespace:model"
     assert result["providers"][0]["llm_params"] == {
         "temperature": 0,
@@ -56,9 +57,9 @@ def test_resolver_preserves_candidates_and_native_parameters():
     assert result["providers"][1]["endpoint"] == "https://backup/v1/chat/completions"
     result["providers"][0]["llm_params"]["custom"] = 8
     assert data == before
-    view = resolve_llm_preset(data, "MAIN")
+    view = resolve_preset(LLMPresetConfig("MAIN", ConfigMap(data)))
     assert view["preset_name"] == "MAIN"
-    assert view["max_context"] == 10000
+    assert view["providers"][0]["max_context"] == 10000
     assert "token" not in data["LLM_List"]["MAIN"]
 
 
@@ -73,44 +74,25 @@ def test_loader_keeps_v2_without_legacy_template(tmp_path, monkeypatch):
     manager.load_config()
     monkeypatch.setattr(config, "LLM_CFG", manager.get_llm_config())
     assert config.get_llm_list() == ["MAIN"]
-    assert config.get_llm("MAIN").model == "namespace:model"
+    assert (
+        config.get_llm("MAIN").providers[0].llm
+        == "responses_api:arbitrary:namespace:model"
+    )
     assert isinstance(manager.get_llm_config().LLM_List, dict)
     assert "token" not in manager.get_llm_config().LLM_List.MAIN
 
 
 def test_missing_reference_has_precise_error():
-    from TIYA.config import resolve_llm_preset
+    from TIYA.config import ConfigMap, LLMPresetConfig
+    from TIYA.llm.config import resolve_preset
 
     data = document()
     data["LLM_List"]["MAIN"]["providers"][0]["llm"] = "responses_api:missing:model"
     with pytest.raises(ValueError, match="responses_api:missing"):
-        resolve_llm_preset(data, "MAIN")
+        resolve_preset(LLMPresetConfig("MAIN", ConfigMap(data)))
 
 
-def test_migration_is_idempotent_and_does_not_overwrite_duplicate_names():
-    from TIYA.config import migrate_llm_config
-
-    legacy = {
-        "LLM_List": [
-            {
-                "preset_name": "old",
-                "endpoint": "https://test/chat",
-                "token": "key",
-                "model": "same",
-                "api_type": "openai",
-                "extra_parameter": {"stream": False},
-            }
-        ]
-    }
-    migrated = migrate_llm_config(legacy)
-    assert migrate_llm_config(migrated) == migrated
-    assert list(migrated["LLM_List"]) == ["old"]
-    legacy["LLM_List"] *= 2
-    with pytest.raises(ValueError, match="old"):
-        migrate_llm_config(legacy)
-
-
-def test_switching_back_to_legacy_clears_v2_routes_proxy_and_parameters(monkeypatch):
+def test_switching_presets_clears_previous_routes_proxy_and_parameters(monkeypatch):
     import asyncio
     import json
     import httpx
@@ -123,20 +105,24 @@ def test_switching_back_to_legacy_clears_v2_routes_proxy_and_parameters(monkeypa
     v2["LLM_List"]["MAIN"]["providers"][0]["llm_params"]["stale"] = True
     monkeypatch.setattr(config, "LLM_CFG", ConfigMap(v2))
     old = {
-        "LLM_List": [
-            {
-                "preset_name": "old",
-                "model": "old",
-                "endpoint": "https://old/chat/completions",
-                "token": "dummy",
-                "api_type": "openai",
-                "proxy_mode": "",
-                "price": {},
-                "extra_parameter": {"stream": False},
-                "max_context": 10000,
-                "auto_compress_rate": 0.7,
+        "schema_version": 2,
+        "Providers": {
+            "chat_completions": {
+                "plain": {"endpoint": "https://old/chat/completions", "key": "dummy"}
             }
-        ]
+        },
+        "LLM_List": {
+            "old": {
+                "proxy_mode": "",
+                "providers": [
+                    {
+                        "llm": "chat_completions:plain:old",
+                        "max_context": 10000,
+                        "llm_params": {"stream": False},
+                    }
+                ],
+            }
+        },
     }
     requests, clients = [], []
     real_client = httpx.AsyncClient
