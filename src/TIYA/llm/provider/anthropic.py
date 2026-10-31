@@ -3,21 +3,25 @@ from __future__ import annotations
 import copy
 import json
 
+from ..config_model import Params
 from ..model import (
+    Context,
+    ImagePrompt,
+    MediaRef,
     SystemPrompt,
     TextPrompt,
-    ImagePrompt,
-    ToolInput,
     ToolCall,
+    ToolInput,
     ToolResponse,
 )
 from ..tool_schema import build_tool_payloads
 from .base import Provider, Result, merge_headers
-from .common import tool_arguments, attach_native, native_items
+from .common import attach_native, native_items, tool_arguments
 
 
 class Messages(Provider):
-    def accepts_image_files(self):
+    def accepts_image_files(self) -> bool:
+        """声明图片 file_id 的协议能力；通用 Files 存在不等于支持图片引用。"""
         return True
 
     def headers(self):
@@ -34,7 +38,8 @@ class Messages(Provider):
             )
         return merge_headers(headers, self.route.client_params.get("headers"))
 
-    def encode(self, context, media):
+    def encode(self, context: Context, media: dict[str, list[MediaRef]]) -> Params:
+        """编码 Anthropic Messages 原生请求，保持历史和图片顺序；不上传或发送。"""
         messages, tools, system, covered = [], [], "", set()
         for prompt in context:
             if prompt.id in covered:
@@ -106,7 +111,8 @@ class Messages(Provider):
             payload["tools"] = tools
         return payload
 
-    def decode(self, body):
+    def decode(self, body: Params) -> Result:
+        """解析 Anthropic Messages 文本、工具和原生记录；返回图片交给通信层落盘。"""
         self.check_body(body)
         if not isinstance(body.get("content"), list):
             raise ValueError("Messages 响应缺少 content")
@@ -142,10 +148,12 @@ class Messages(Provider):
         attach_native(result, "anthropic_api", self.route.scope)
         return result
 
-    def stream_decoder(self):
+    def stream_decoder(self) -> MessagesStream:
+        """为单次请求创建独立流式解码器，不复用上一轮的输出或 usage。"""
         return MessagesStream(self)
 
-    def usage_result(self, raw):
+    def usage_result(self, raw: Params) -> Result:
+        """将供应商真实用量转换为统一字段，缺失值保持缺失。"""
         return self.decode({"content": [], "usage": raw})
 
 
@@ -157,7 +165,8 @@ class MessagesStream:
         self.identifier = ""
         self.model = ""
 
-    def feed(self, event):
+    def feed(self, event: Params) -> None:
+        """接收一个原生事件；输出出现后设置 partial，损坏流仍保留已知 usage。"""
         self.provider.check_body(event)
         kind = event.get("type")
         if kind == "message_start":
@@ -191,7 +200,8 @@ class MessagesStream:
             self.complete = True
             self.partial = True
 
-    def finish(self):
+    def finish(self) -> Result:
+        """聚合本次流式结果，保留 complete 状态；不补造缺失的结束事件。"""
         if hasattr(self, "final"):
             return self.provider.decode(self.final)
         for index, arguments in self.arguments.items():

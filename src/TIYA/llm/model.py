@@ -15,6 +15,7 @@ from .config_model import (
     LLMConfig as LLMConfig,
     FilesConfig as FilesConfig,
     RequestPolicy as RequestPolicy,
+    Params,
 )
 
 
@@ -1034,6 +1035,14 @@ class Context:
         return self._system_prompt.copy()
 
     @property
+    def message(self) -> Prompts:
+        """
+        返回消息列表
+        :return:
+        """
+        return Prompts(self._messages)
+
+    @property
     def has_content(self) -> bool:
         if self._system_prompt is not None:
             return len(self._messages) > 1
@@ -1100,8 +1109,14 @@ class AskTask:
 
 @dataclass(frozen=True)
 class MediaRef:
+    """统一资源引用：输入可为原件、缓存或远端 ID，返回图片使用 cache。
+
+    kind 指明 value 的解释方式；scope 绑定远端账户，expires_at 为 Unix 秒。
+    width/height 记录已知尺寸，不触发读取或下载。
+    """
+
     kind: str  # cache/path/url/bytes/base64/remote
-    value: Any
+    value: str | Path | bytes
     mime_type: str | None = None
     scope: str | None = None
     width: int | None = None
@@ -1111,6 +1126,8 @@ class MediaRef:
 
 @dataclass
 class ImageGenerateRequest:
+    """独立 Images API 生成请求；model 原样发送，params 放原生扩展参数。"""
+
     model: str
     prompt: str
     n: int | None = None
@@ -1121,26 +1138,32 @@ class ImageGenerateRequest:
     output_compression: int | None = None
     stream: bool | None = None
     partial_images: int | None = None
-    params: dict = field(default_factory=dict)
+    params: Params = field(default_factory=dict)
 
 
 @dataclass
 class ImageEditRequest(ImageGenerateRequest):
+    """编辑请求：images 首张为目标，其余为参考；mask 是首张目标的 PNG alpha 遮罩。"""
+
     images: list[MediaRef] = field(default_factory=list)
     mask: MediaRef | None = None
 
 
 @dataclass
 class ImageResponseItem:
+    """已落盘的单张输出/预览；image 为 file_cache ID，不向业务返回临时 URL。"""
+
     image: MediaRef
     revised_prompt: str | None = None
-    metadata: dict = field(default_factory=dict)
+    metadata: Params = field(default_factory=dict)
 
 
 @dataclass
 class ImagesResponse:
+    """已缓存的最终图片集合；request_id 为本地账本 ID，usage 保留真实返回值。"""
+
     created: int | None = None
     data: list[ImageResponseItem] = field(default_factory=list)
-    usage: dict = field(default_factory=dict)
+    usage: Params = field(default_factory=dict)
     request_id: str = ""
-    metadata: dict = field(default_factory=dict)
+    metadata: Params = field(default_factory=dict)

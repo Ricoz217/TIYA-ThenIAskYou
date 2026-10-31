@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
-from .storage import Database
+from .config_model import JsonValue, Params
 from .pricing import PriceCatalog
+from .storage import Database
 
 
 class Ledger:
-    def __init__(self, path, callback=None):
+    def __init__(
+        self, path: str | Path, callback: Callable[[], None] | None = None
+    ) -> None:
+        """同步 SQLite 账本；callback 在写入后通知订阅者，其异常不影响已提交账目。"""
         self.callback = callback
         self.db = Database(
             path,
@@ -38,7 +44,8 @@ class Ledger:
         """,
         )
 
-    def begin_call(self, preset: str = "", **metadata) -> str:
+    def begin_call(self, preset: str = "", **metadata: JsonValue) -> str:
+        """创建逻辑调用并返回 call_id；metadata 保留调用兼容性，目前不持久化。"""
         call_id = uuid4().hex
         with self.db.transaction() as db:
             db.execute(
@@ -47,19 +54,24 @@ class Ledger:
             )
         return call_id
 
-    def finish_call(self, call_id, status):
+    def finish_call(self, call_id: str, status: str) -> None:
+        """同步设置逻辑调用终态，不删除任何已发送尝试。"""
         with self.db.transaction() as db:
             db.execute("UPDATE calls SET status=? WHERE id=?", (status, call_id))
 
     def begin_request(
         self,
         call_id: str,
-        identity: dict,
-        estimated: dict,
+        identity: Params,
+        estimated: Params,
         *,
-        price_snapshot=None,
-        request_id=None,
+        price_snapshot: Params | None = None,
+        request_id: str | None = None,
     ) -> str:
+        """发送前同步创建尝试，返回全局唯一 request_id，并保存初始估算证据。
+        identity 标识实际预设、连接、模型和操作；estimated 是本地假设值；
+        price_snapshot 冻结当时的定价。Files/控制操作也单独建账。
+        """
         request_id = request_id or uuid4().hex
         estimate = {"algorithm": "local-v1", "completeness": "lower_bound", **estimated}
         with self.db.transaction() as db:
@@ -90,8 +102,18 @@ class Ledger:
         return request_id
 
     def observe_usage(
-        self, request_id, source, values, observation_key, *, raw=None
+        self,
+        request_id: str,
+        source: str,
+        values: Params,
+        observation_key: str,
+        *,
+        raw: JsonValue = None,
     ) -> str:
+        """追加独立用量证据并返回观察 ID；source 仅为 reported 或 estimated。
+        同一 request_id/source/observation_key 幂等；raw 保留原始供应商数据。
+        缺失真实值不填成零，effective 按字段优先取 reported，再取 estimated。
+        """
         if source not in ("reported", "estimated"):
             raise ValueError("usage source 必须为 reported 或 estimated")
         if any(isinstance(v, (int, float)) and v < 0 for v in values.values()):
@@ -151,8 +173,14 @@ class Ledger:
         return observation_id
 
     def finish_request(
-        self, request_id, status, *, remote_state="unknown", **diagnostic
-    ):
+        self,
+        request_id: str,
+        status: str,
+        *,
+        remote_state: str = "unknown",
+        **diagnostic: JsonValue,
+    ) -> None:
+        """同步结束一次尝试；remote_state 区分确认拒绝、完成与未知，diagnostic 保存诊断。"""
         with self.db.transaction() as db:
             db.execute(
                 "UPDATE requests SET status=?,remote_state=?,diagnostic=? WHERE id=?",
@@ -195,7 +223,8 @@ class Ledger:
         result["effective"] = cls._effective(result["reported"], result["estimated"])
         return result
 
-    def get_request(self, request_id):
+    def get_request(self, request_id: str) -> Params:
+        """同步读取完整尝试，含 estimated/reported/effective；不存在抛 KeyError。"""
         with self.db.transaction() as db:
             row = db.execute(
                 "SELECT * FROM requests WHERE id=?", (request_id,)
@@ -204,8 +233,8 @@ class Ledger:
             raise KeyError(request_id)
         return self._decode(row)
 
-    def mirror_request(self, row):
-        """Copy an attempt to a subscriber ledger without assigning a second identity."""
+    def mirror_request(self, row: Params) -> None:
+        """同步镜像已有尝试，不重新分配 call_id/request_id，不增加第二份生成费用。"""
         with self.db.transaction() as db:
             db.execute(
                 "INSERT OR IGNORE INTO calls VALUES(?,?,?,?)",
@@ -253,17 +282,20 @@ class Ledger:
     def query_requests(
         self,
         *,
-        limit=100,
-        offset=0,
-        call_id=None,
-        start=0,
-        end=None,
-        preset=None,
-        model=None,
-        operation=None,
-        scope=None,
-        status=None,
-    ):
+        limit: int = 100,
+        offset: int = 0,
+        call_id: str | None = None,
+        start: float = 0,
+        end: float | None = None,
+        preset: str | None = None,
+        model: str | None = None,
+        operation: str | None = None,
+        scope: str | None = None,
+        status: str | None = None,
+    ) -> list[Params]:
+        """同步分页查询，按 created/id 升序；时间范围为 Unix 秒，limit 为 1..1000。
+        可按逻辑调用、预设、模型、操作、账户作用域及终态过滤，None 不限制该项。
+        """
         if not 1 <= limit <= 1000 or offset < 0:
             raise ValueError("无效分页")
         sql = "SELECT * FROM requests WHERE created>=? AND created<=?"
@@ -289,7 +321,10 @@ class Ledger:
             ).fetchall()
         return [self._decode(row) for row in rows]
 
-    def query_observations(self, request_id, *, limit=100, offset=0):
+    def query_observations(
+        self, request_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Params]:
+        """同步分页读取该次尝试的原始证据，分别保留真实值和估算值。"""
         if not 1 <= limit <= 1000 or offset < 0:
             raise ValueError("无效分页")
         with self.db.transaction() as db:
@@ -305,15 +340,17 @@ class Ledger:
             result.append(item)
         return result
 
-    def import_aggregate(self, data, source):
+    def import_aggregate(self, data: Params, source: str) -> None:
         # Historical aggregates are not invented request records. last_record is deliberately ignored.
+        """幂等导入旧累计统计，不虚构逐请求记录，也不重复计入 last_record。"""
         with self.db.transaction() as db:
             db.execute(
                 "INSERT OR IGNORE INTO aggregates VALUES(?,?)",
                 (source, json.dumps(data.get("storage", {}))),
             )
 
-    def summarize(self, start=0, end=None):
+    def summarize(self, start: float = 0, end: float | None = None) -> Params:
+        """同步汇总 Unix 时间范围内用量，区分真实/估算、币种费用和未知费用请求。"""
         result = {
             k: {"verified": 0, "estimate": 0} for k in ("input", "output", "cached")
         }

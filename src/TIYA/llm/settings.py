@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from TIYA.config import ConfigMap, LLMPresetConfig
+from TIYA.config import ConfigMap, LLMPresetConfig, get_llm, get_proxy
 from .config import credential, endpoint, plain, resolve_preset
 from .config_model import ChatConfig, FilesConfig, LLMConfig, RequestPolicy
 
@@ -43,19 +43,23 @@ def model_config_from_settings(
     params = data.get("llm_params") or {}
     if not isinstance(params, dict):
         raise TypeError("llm_params 必须是字典")
+
     for key in ("headers", "client_params"):
         if data.get(key) is not None and not isinstance(data[key], dict):
             raise TypeError(f"{key} 必须是字典")
+
     limit = data.get("max_context")
     if limit is not None and (
         isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
     ):
         raise ValueError("max_context 必须是正整数")
+
     retries = data.get("retries")
     if retries is not None and (
         isinstance(retries, bool) or not isinstance(retries, int) or retries < 0
     ):
         raise ValueError("retries 必须是非负整数")
+
     files = data.get("files_api_config")
     known = {
         "llm",
@@ -88,7 +92,7 @@ def model_config_from_settings(
         headers=plain(data.get("headers") or {}),
         client_params=plain(data.get("client_params") or {}),
         max_context=limit,
-        context_history_mode=data.get("context_history_mode", "auto"),
+        context_history_mode=data.get("context_history_mode", "auto"),  # type: ignore
         files=files_config_from_settings(files) if files else None,
         provider_options={k: v for k, v in data.items() if k not in known},
         max_retries=retries,
@@ -139,15 +143,15 @@ def resolve_chat_config(data: Mapping, preset_name: str) -> ChatConfig:
 
 def parse_llm_setting(preset_name: str) -> ChatConfig:
     """Historical entry point: preset lookup, conversion, then proxy-name resolution."""
-    from TIYA import config
-
-    preset = config.get_llm(preset_name)
+    preset = get_llm(preset_name)
     setting = chat_config_from_preset(preset)
     mode = preset.get("proxy_mode")
     if mode == "":
         for candidate in setting.candidates:
             candidate.client_params.pop("proxies", None)
-    elif mode is not None:
+
+    elif isinstance(mode, Mapping):
         for candidate in setting.candidates:
-            candidate.client_params["proxies"] = config.get_proxy(mode)
+            candidate.client_params["proxies"] = get_proxy(mode)
+
     return setting

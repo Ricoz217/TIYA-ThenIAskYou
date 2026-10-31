@@ -1,48 +1,56 @@
 from __future__ import annotations
+
 import asyncio
 import copy
 import time
 import weakref
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 from uuid import uuid4
-from contextvars import ContextVar
+
 import httpx
+
 from TIYA.config import DATA_DIR, SETTING_CFG
 from TIYA.logger import get_logger
 from TIYA.utils import parse_proxies_to_httpx
-from .usage_compat import ApiPrice, LLMUsage, _GLOBAL_USAGE
-from .model import (
-    Context,
-    SystemPrompt,
-    BasePrompt,
-    Prompts,
-    TextPrompt,
-    ToolInput,
-    TokenUsage,
-    AskTask,
-    ChatConfig,
-    CallOutcome,
-    ContextOverflowError,
-)
+
 from .config import fingerprint
-from .config_model import LLMConfig, RequestPolicy, Params
+from .config_model import LLMConfig, Params, RequestPolicy
 from .gateway import Gateway
-from .runtime import Runtime, estimate
-from .state import StateStore
+from .model import (
+    AskTask,
+    BasePrompt,
+    CallOutcome,
+    ChatConfig,
+    Context,
+    ContextOverflowError,
+    Prompts,
+    SystemPrompt,
+    TextPrompt,
+    TokenUsage,
+    ToolInput,
+)
 from .pricing import PriceCatalog
 from .provider import get_provider
+from .runtime import Runtime, estimate
+from .state import StateStore
+from .usage_compat import _GLOBAL_USAGE, ApiPrice, LLMUsage
+from .workers import run_sync
 
 _log = get_logger()
 if TYPE_CHECKING:
-    from TIYA.logger import Logger, BlockHandle
+    from TIYA.logger import BlockHandle, Logger
+
 _CONTEXT_LOCKS = weakref.WeakKeyDictionary()
 
 
-def context_lock(context):
+def context_lock(context: Context) -> asyncio.Lock:
+    """同一事件循环内，共享 Context 的 Chat 共用一把提交锁。"""
     per_loop = _CONTEXT_LOCKS.setdefault(context, weakref.WeakKeyDictionary())
     loop = asyncio.get_running_loop()
     if loop not in per_loop:
         per_loop[loop] = asyncio.Lock()
+
     return per_loop[loop]
 
 
@@ -53,20 +61,26 @@ class Chat:
         endpoint: str = "",
         token: str = "",
         model: str = "",
-        max_context: int = None,
-        auto_compress_rate: float = None,
+        max_context: int | None = None,
+        auto_compress_rate: float | None = None,
         system_prompt: str = "",
         api_provider: str = "openai",  # "openai" | "anthropic"
-        price: ApiPrice = None,  # 模型单价, price / 1M token
-        client_params: dict = None,
-        model_params: dict = None,
-        context: Context = None,
+        price: ApiPrice | None = None,  # 模型单价, price / 1M token
+        client_params: dict[str, object] | None = None,
+        model_params: Params | None = None,
+        context: Context | None = None,
         keep_alive: bool = False,
-        logger: Logger | BlockHandle = None,
+        logger: Logger | BlockHandle | None = None,
         log_off: bool = False,
-        usage_record: list[LLMUsage] = None,
-        config: ChatConfig = None,
-    ):
+        usage_record: list[LLMUsage] | None = None,
+        config: ChatConfig | None = None,
+    ) -> None:
+        """创建对话会话，需在运行中的事件循环内调用。
+
+        config 提供有序候选和策略；endpoint/token/model 等参数保留直接单模型入口。
+        context 若传入则直接共享，不复制；usage_record 是可选的附加账本订阅者。
+        keep_alive 控制请求后是否保留 HTTP 连接，close 不销毁进程共享线程池。
+        """
         if context is None:
             context = Context()
             if system_prompt:
@@ -82,8 +96,10 @@ class Chat:
             api_provider.lower(), api_provider.lower()
         )
         base_params = {"stream": True}
-        if category in ("chat_completions", "anthropic_api"):
-            base_params.update(max_tokens=8192, temperature=0.7)
+        # 没有这个默认值
+        # if category in ("chat_completions", "anthropic_api"):
+        #     base_params.update(max_tokens=8192, temperature=0.7)
+
         base_params.update(model_params or {})
 
         if usage_record is None:
@@ -143,7 +159,7 @@ class Chat:
         if isinstance(config, ChatConfig):
             self.setting(config)
 
-    def setting(self, new_config: ChatConfig):
+    def setting(self, new_config: ChatConfig) -> None:
         """Replace candidate configuration, or consume a documented partial update."""
         if not isinstance(new_config, ChatConfig):
             return
@@ -188,8 +204,8 @@ class Chat:
         system_prompt: str | None = None,
         logger: Logger | BlockHandle | None = None,
         log_off: bool | None = None,
-    ):
-        """Explicit update entry point; preserves the configured fallback candidates."""
+    ) -> None:
+        """局部更新明确给出的字段，保留候选列表；model_params 只替换首选参数。"""
         self.setting(
             ChatConfig(
                 model_params=model_params,
@@ -249,13 +265,15 @@ class Chat:
         if self._client is None:
             self._update_client()
 
-        return self._client
+        return self._client  # type: ignore
 
     def add_tools(self, tools: Prompts | list[ToolInput] | ToolInput) -> Prompts:
+        """向当前 Context 添加可调用工具定义，返回合并后的工具列表，不执行工具。"""
         self._context.append(tools)
         return self._context.tools
 
     def add_context(self, new_context: Context | Prompts | BasePrompt) -> Context:
+        """直接补充业务上下文，返回当前 Context；不进行网络收发。"""
         self._context.append(new_context)
         return self._context.copy()
 
@@ -287,12 +305,12 @@ class Chat:
 
         return self._context_use / self._config.max_context
 
-    def replace_context(self, new_context: Context):
-        """使用外部的Context，让Chat自动管理"""
+    def replace_context(self, new_context: Context) -> None:
+        """替换业务 Context；在途结果若仍绑定旧对象，提交时会被拒绝。"""
         self._context = new_context
 
     async def get_context(self) -> Context:
-        """注意，此函数返回的是Context对象本身，不是shadow"""
+        """直接读取当前业务 Context；不等待在途请求，也不返回独立副本。"""
         return self._context
 
     def back_to_last_round(self) -> Prompts:
@@ -311,7 +329,8 @@ class Chat:
     def _header_constructor(self):
         return get_provider(self._config.primary).headers()
 
-    def _service(self):
+    def _service(self) -> Runtime:
+        """懒初始化共享账本和本 Chat 的通信 Runtime；包含同步 SQLite IO。"""
         if self._runtime is None:
             self._runtime = Runtime(
                 StateStore(DATA_DIR / "llm" / "runtime.sqlite3"),
@@ -320,9 +339,11 @@ class Chat:
                 self._config.logger,
                 self._usage_record,
             )
+
         return self._runtime
 
-    async def _gateway(self, route):
+    async def _gateway(self, route: LLMConfig) -> Gateway:
+        """按账户和连接选项复用 HTTP 客户端，由本 Chat 负责关闭。"""
         if self._client_identity(route) == self._client_identity(self._config.primary):
             return Gateway(
                 await self._ensure_client(), download_options=route.client_params
@@ -341,15 +362,18 @@ class Chat:
             )
         return Gateway(self._route_clients[key], download_options=route.client_params)
 
-    async def _tiktoken_prompts(self, prompts):
-        return (await asyncio.to_thread(estimate, Context(prompts)))["input"]
+    async def _tiktoken_prompts(self, prompts: Prompts) -> int:
+        """在线程池估算输入下界，不把估算当作供应商真实 usage。"""
+        return (await run_sync(estimate, Context(prompts)))["input"]
 
-    async def _estimate_context_windows(self, new_prompts):
+    async def _estimate_context_windows(self, new_prompts: Prompts) -> int:
+        """对补充本轮输入后的快照估算窗口，不修改业务 Context。"""
         snapshot = copy.deepcopy(self._context)
         snapshot.append(new_prompts)
-        return (await asyncio.to_thread(estimate, snapshot))["input"]
+        return (await run_sync(estimate, snapshot))["input"]
 
-    async def run(self):
+    async def run(self) -> None:
+        """队列消费协程，串行处理任务并通知等待者；由 close 取消收尾。"""
         while True:
             _, _, task = await self._queue.get()
             try:
@@ -378,13 +402,14 @@ class Chat:
                 self._queue.task_done()
                 task = None
 
-    async def post(self, task):
+    async def post(self, task: AskTask) -> Prompts | None:
+        """执行请求并把待提交结果挂到 task；此步骤不修改业务 Context。"""
         if task.cancelled or task.event.is_set():
             return None
         preset = self._snapshot_config()
         self._running_task_id = task.id
         try:
-            service = await asyncio.to_thread(self._service)
+            service = await run_sync(self._service)
             pending = await service.execute(
                 self._context, task.prompts, preset, self._gateway, task.timeout
             )
@@ -414,7 +439,8 @@ class Chat:
             self._config.logger.error(f"LLM 请求停止: {type(exc).__name__}")
             return None
 
-    async def _execute_task(self, task):
+    async def _execute_task(self, task: AskTask) -> Prompts | None:
+        """持有共享 Context 锁执行请求，检查取消/替换后提交；排队和 no_wait 共用。"""
         context = self._context
         async with context_lock(context):
             if self._closed or task.cancelled or task.event.is_set():
@@ -442,7 +468,8 @@ class Chat:
                 self._running_task_id = ""
                 self._running.set()
 
-    async def post_nowait(self, task):
+    async def post_nowait(self, task: AskTask) -> Prompts | None:
+        """兼容立即调度入口，仍遵守共享 Context 锁和统一提交规则。"""
         try:
             task.handle = asyncio.create_task(self._execute_task(task))
             return await task.handle
@@ -452,8 +479,20 @@ class Chat:
             return None
 
     async def ask(
-        self, new_ask, *, task_id=None, queue=True, no_wait=False, timeout=None
-    ):
+        self,
+        new_ask: str | Prompts | BasePrompt | list[BasePrompt],
+        *,
+        task_id: str | None = None,
+        queue: bool = True,
+        no_wait: bool = False,
+        timeout: float | None = None,
+    ) -> Prompts | None:
+        """请求一轮对话，成功返回已提交的 Prompts；普通失败/超时返回 None。
+        new_ask 是本轮输入；task_id 可用于人工中止；queue=False 且繁忙时直接返回；
+        no_wait 提高排队优先级，仍遵守同 Context 串行提交；timeout 为总等待秒数。
+        窗口不足抛 ContextOverflowError，外部取消传播 CancelledError。失败详情从
+        last_outcome 读取；retry_allowed=False 时，上层不得盲目再发生成请求。
+        """
         if self._closed or not new_ask:
             return None
         timeout = (
@@ -528,10 +567,12 @@ class Chat:
         self._outcome_var.set(outcome)
 
     @property
-    def last_outcome(self):
+    def last_outcome(self) -> CallOutcome | None:
+        """读取当前调用协程可见的终态，含远端状态、提交状态及账本 ID。"""
         return self._outcome_var.get() or self._last_outcome
 
-    def copy(self, new_context=True):
+    def copy(self, new_context: bool = True) -> Chat:
+        """复制配置创建 Chat；new_context=False 共享原 Context，并共用提交锁。"""
         config = self._config.copy()
         config.system_prompt = (
             None  # Copy the current Context system, not an old setting command.
@@ -546,11 +587,13 @@ class Chat:
             usage_record=self._usage_record.copy(),
         )
 
-    async def clear(self, system=False, tools=False):
+    async def clear(self, system: bool = False, tools: bool = False) -> None:
+        """持有 Context 锁清除历史；system/tools 指定是否连同系统提示和工具一起清除。"""
         async with context_lock(self._context):
             self._context.clear(system, tools)
 
-    async def stop_from_id(self, task_id):
+    async def stop_from_id(self, task_id: str) -> None:
+        """取消指定未提交任务并等待本地收尾；普通断连不保证服务器停止推理。"""
         task = self._ask_tasks.get(task_id)
         if task is None:
             return
@@ -563,11 +606,13 @@ class Chat:
         task.response = None
         task.event.set()
 
-    async def stop_one(self):
+    async def stop_one(self) -> None:
+        """取消当前正在执行的任务，不取消其他排队任务。"""
         if self._running_task_id:
             await self.stop_from_id(self._running_task_id)
 
-    async def stop_all(self):
+    async def stop_all(self) -> None:
+        """取消全部未提交任务并等待在途协程收尾。"""
         handles = []
         for task in list(self._ask_tasks.values()):
             if task.committed:
@@ -589,7 +634,8 @@ class Chat:
         for client in clients:
             await client.aclose()
 
-    async def close(self):
+    async def close(self) -> None:
+        """停止队列与未提交任务，关闭自有连接；不关闭进程共享 LLM 线程池。"""
         self._closed = True
         await self.stop_all()
         self._worker_loop.cancel()

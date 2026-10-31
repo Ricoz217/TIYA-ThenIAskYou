@@ -6,30 +6,37 @@ import asyncio
 import base64
 import hashlib
 import io
-import time
 import sqlite3
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
-from PIL import Image
 import httpx
+from PIL import Image
 
 from TIYA.file_cache import add_file_async, get_file_path_async
+
 from .config import fingerprint
-from .model import MediaRef, ImageResponseItem
+from .config_model import Params
+from .gateway import Gateway, HTTPFailure, WireRequest
+from .model import ImagePrompt, ImageResponseItem, MediaRef
+from .provider.base import ConversationProvider, ProviderFailure, classify_error
 from .provider.files import get_files_provider
-from .gateway import HTTPFailure
-from .provider.base import ProviderFailure, classify_error
+from .state import StateStore
+from .workers import run_sync
 
 
 class MediaError(Exception):
-    def __init__(self, stage, message, *, request_id=""):
+    def __init__(self, stage: str, message: str, *, request_id: str = "") -> None:
+        """标记 input/upload/download_decode/validate_cache 等失败阶段及账本请求 ID。"""
         super().__init__(f"{stage}: {message}")
         self.stage, self.request_id = stage, request_id
 
 
-def inspect_image(content):
+def inspect_image(content: bytes) -> tuple[str, int, int]:
+    """同步验证图片完整性，返回 MIME、宽和高；无效内容抛异常。"""
     with Image.open(io.BytesIO(content)) as image:
         mime = Image.MIME.get(image.format)
         size = image.size
@@ -40,7 +47,14 @@ def inspect_image(content):
 
 
 class MediaService:
-    def __init__(self, state, *, lease_seconds=120, on_warning=None):
+    def __init__(
+        self,
+        state: StateStore,
+        *,
+        lease_seconds: float = 120,
+        on_warning: Callable[[str], None] | None = None,
+    ) -> None:
+        """借用通信状态库做上传去重；lease_seconds 为租约秒数，不改变原件 TTL。"""
         self.state = state
         self.lease_seconds = lease_seconds
         self.degraded = False
@@ -48,7 +62,7 @@ class MediaService:
 
     async def _meta(self, operation, *args):
         try:
-            return await asyncio.to_thread(getattr(self.state, operation), *args)
+            return await run_sync(getattr(self.state, operation), *args)
         except (sqlite3.Error, OSError) as exc:
             if not self.degraded and self.on_warning:
                 self.on_warning(
@@ -57,21 +71,25 @@ class MediaService:
             self.degraded = True
             return None
 
-    async def content(self, ref, gateway=None):
+    async def content(self, ref: MediaRef, gateway: Gateway | None = None) -> bytes:
+        """读取 bytes/path/cache/base64，URL 需 gateway；远端 file_id 不能在此读取。"""
         if ref.kind == "bytes":
             return ref.value
         if ref.kind == "path":
-            return await asyncio.to_thread(Path(ref.value).read_bytes)
+            return await run_sync(Path(ref.value).read_bytes)
         if ref.kind == "cache":
             path = await get_file_path_async(ref.value)
-            return await asyncio.to_thread(path.read_bytes)
+            return await run_sync(path.read_bytes)
         if ref.kind == "base64":
             return base64.b64decode(ref.value, validate=True)
         if ref.kind == "url" and gateway is not None:
             return await gateway.download(ref.value)
         raise MediaError("input", f"无法读取 {ref.kind} 图片")
 
-    async def materialize(self, item, gateway):
+    async def materialize(self, item: Params, gateway: Gateway) -> ImageResponseItem:
+        """立即下载或解码响应图片，验证并写入现有 file_cache 后返回缓存引用。
+        不向业务泄露短期 URL；下载/解码和验证/落盘失败由 MediaError.stage 区分。
+        """
         try:
             if item.get("b64_json"):
                 content = base64.b64decode(item["b64_json"], validate=True)
@@ -87,7 +105,7 @@ class MediaService:
         except Exception as exc:
             raise MediaError("download_decode", str(exc)) from exc
         try:
-            mime, width, height = await asyncio.to_thread(inspect_image, content)
+            mime, width, height = await run_sync(inspect_image, content)
             cache_id = await add_file_async(content, "IMAGE")
         except Exception as exc:
             raise MediaError("validate_cache", str(exc)) from exc
@@ -102,8 +120,18 @@ class MediaService:
         )
 
     async def upload(
-        self, ref, settings, send, *, force=False, timeout=300, category="files_api"
-    ):
+        self,
+        ref: MediaRef,
+        settings: Params,
+        send: Callable[[WireRequest], Awaitable[Params]],
+        *,
+        force: bool = False,
+        timeout: float = 300,
+        category: str = "files_api",
+    ) -> MediaRef:
+        """按文件账户和内容指纹复用上传，返回 remote 引用；send 负责网络和记账。
+        force 忽略旧上传映射；timeout 限制等待并发上传的秒数，租约心跳防止重复上传。
+        """
         provider = get_files_provider(settings, category)
         content = await self.content(ref)
         digest = hashlib.sha256(content).hexdigest()
@@ -124,9 +152,7 @@ class MediaService:
                     provider.scope,
                     expires_at=cached.get("expires_at"),
                 )
-            if await asyncio.to_thread(
-                self.state.claim, key, owner, self.lease_seconds
-            ):
+            if await run_sync(self.state.claim, key, owner, self.lease_seconds):
                 break
             if time.monotonic() - started > timeout:
                 raise MediaError("upload", "等待并发上传超时")
@@ -135,7 +161,7 @@ class MediaService:
         async def heartbeat():
             while True:
                 await asyncio.sleep(min(30, self.lease_seconds / 3))
-                if not await asyncio.to_thread(
+                if not await run_sync(
                     self.state.renew_lease, key, owner, self.lease_seconds
                 ):
                     raise MediaError("upload", "上传租约已被其他调用接管")
@@ -180,11 +206,22 @@ class MediaService:
         finally:
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
-            await asyncio.to_thread(self.state.release, key, owner)
+            await run_sync(self.state.release, key, owner)
 
     async def prepare_prompt(
-        self, prompt, provider, send, *, inline=False, force=False, _rebuilt=False
-    ):
+        self,
+        prompt: ImagePrompt,
+        provider: ConversationProvider,
+        send: Callable[[WireRequest], Awaitable[Params]],
+        *,
+        inline: bool = False,
+        force: bool = False,
+        _rebuilt: bool = False,
+    ) -> list[MediaRef]:
+        """准备一条图片输入并返回有序引用，优先复用远端 file_id，按能力降级内联。
+        inline 强制内联；force 重建失效上传；_rebuilt 限制本地缓存重建次数。
+        会更新当前请求副本的准备信息，不更改原件保留策略或业务历史顺序。
+        """
         route = provider.route
         files_settings = route.files.as_provider_settings() if route.files else {}
         descriptor = (
@@ -238,7 +275,7 @@ class MediaService:
                     else MediaRef("base64", raw)
                 )
                 data = await self.content(source)
-                mime, width, height = await asyncio.to_thread(inspect_image, data)
+                mime, width, height = await run_sync(inspect_image, data)
                 cache_id = await add_file_async(data, "IMAGE")
                 sources = [
                     MediaRef("cache", cache_id, mime, width=width, height=height)
@@ -287,7 +324,7 @@ class MediaService:
             data = None
             if not ref.mime_type:
                 data = await self.content(ref)
-                mime, width, height = await asyncio.to_thread(inspect_image, data)
+                mime, width, height = await run_sync(inspect_image, data)
                 ref = MediaRef(ref.kind, ref.value, mime, width=width, height=height)
             if allow_files:
                 try:

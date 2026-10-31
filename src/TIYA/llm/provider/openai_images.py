@@ -3,11 +3,11 @@ from __future__ import annotations
 import copy
 from dataclasses import fields
 
-from ..model import ImageEditRequest, ImageGenerateRequest
+from ..config import fingerprint
 from ..gateway import WireRequest
+from ..model import ImageEditRequest, ImageGenerateRequest, MediaRef
 from .base import Provider
 from .common import image_url
-from ..config import fingerprint
 
 
 class Images(Provider):
@@ -45,7 +45,13 @@ class Images(Provider):
                     values[direction + "_" + target] = value
         return values
 
-    def encode_operation(self, request, images=None, mask=None):
+    def encode_operation(
+        self,
+        request: ImageGenerateRequest,
+        images: list[MediaRef] | None = None,
+        mask: MediaRef | None = None,
+    ) -> WireRequest:
+        """编码独立生成/编辑请求；images 顺序不变，mask 只对应首张目标图。"""
         params = copy.deepcopy(self.route.model_params)
         params.update(request.params)
         for field in fields(ImageGenerateRequest):

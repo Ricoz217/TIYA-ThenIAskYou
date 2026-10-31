@@ -3,23 +3,29 @@ from __future__ import annotations
 import copy
 import json
 from urllib.parse import quote
-from ..gateway import WireRequest
 
+from ..config_model import Params
+from ..gateway import WireRequest
 from ..model import (
+    Context,
+    ImagePrompt,
+    MediaRef,
     SystemPrompt,
     TextPrompt,
-    ImagePrompt,
     ToolCall,
     ToolInput,
     ToolResponse,
 )
 from ..tool_schema import build_tool_payloads
 from .base import Provider, ProviderFailure, Result
-from .common import image_url, tool_arguments, native_items, attach_native
+from .common import attach_native, image_url, native_items, tool_arguments
 
 
 class Responses(Provider):
-    def background_operation(self, response_id, cancel=False):
+    def background_operation(
+        self, response_id: str, cancel: bool = False
+    ) -> WireRequest:
+        """编码 retrieve/cancel 控制请求；仅适用于已有任务 ID 的后台 Responses。"""
         url = self.route.endpoint.rstrip("/") + "/" + quote(response_id, safe="")
         if cancel:
             url += "/cancel"
@@ -30,10 +36,12 @@ class Responses(Provider):
             json={} if cancel else None,
         )
 
-    def accepts_image_files(self):
+    def accepts_image_files(self) -> bool:
+        """声明图片 file_id 的协议能力；通用 Files 存在不等于支持图片引用。"""
         return True
 
-    def encode(self, context, media):
+    def encode(self, context: Context, media: dict[str, list[MediaRef]]) -> Params:
+        """编码 Responses 原生请求，保持历史和图片顺序；不上传或发送。"""
         items, tools, covered, instructions = [], [], set(), None
         for prompt in context:
             if prompt.id in covered:
@@ -119,7 +127,8 @@ class Responses(Provider):
             payload["tools"] = tools
         return payload
 
-    def decode(self, body):
+    def decode(self, body: Params) -> Result:
+        """解析 Responses 文本、工具和原生记录；返回图片交给通信层落盘。"""
         self.check_body(body)
         if not isinstance(body.get("output"), list):
             raise ValueError("Responses 响应缺少 output")
@@ -169,10 +178,12 @@ class Responses(Provider):
         attach_native(result, "responses_api", self.route.scope)
         return result
 
-    def stream_decoder(self):
+    def stream_decoder(self) -> ResponsesStream:
+        """为单次请求创建独立流式解码器，不复用上一轮的输出或 usage。"""
         return ResponsesStream(self)
 
-    def usage_result(self, raw):
+    def usage_result(self, raw: Params) -> Result:
+        """将供应商真实用量转换为统一字段，缺失值保持缺失。"""
         return self.decode({"output": [], "usage": raw})
 
 
@@ -184,7 +195,8 @@ class ResponsesStream:
         self.items = {}
         self.usage = {}
 
-    def feed(self, event):
+    def feed(self, event: Params) -> None:
+        """接收一个原生事件；输出出现后设置 partial，损坏流仍保留已知 usage。"""
         self.provider.check_body(event)
         kind = event.get("type", "")
         if kind in ("response.failed", "error"):
@@ -209,7 +221,8 @@ class ResponsesStream:
                 self.usage.update(event.get("usage") or {})
             self.complete = True
 
-    def finish(self):
+    def finish(self) -> Result:
+        """聚合本次流式结果，保留 complete 状态；不补造缺失的结束事件。"""
         if not self.body.get("output"):
             self.body["output"] = [self.items[k] for k in sorted(self.items)]
         self.body["usage"] = self.usage

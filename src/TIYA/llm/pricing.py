@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 import time
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
 from .config import fingerprint, plain
+from .config_model import Params
 from .storage import Database
 
 
 class PriceCatalog:
-    def __init__(self, path):
+    def __init__(self, path: str | Path) -> None:
+        """绑定独立定价库，所有维护和查询方法都执行同步 SQLite IO。"""
         self.db = Database(
             path,
             """
@@ -25,12 +28,16 @@ class PriceCatalog:
 
     def publish(
         self,
-        identity: dict,
-        rules: dict,
+        identity: dict[str, str],
+        rules: Params,
         *,
         source: str,
         effective: float | None = None,
     ) -> str:
+        """发布价格版本并返回版本 ID。identity 含 preset/scope/model/operation；
+        rules 定义币种、计量单位及阶梯，source 记录核对来源，effective 为生效 Unix 秒。
+        不覆盖旧版本，不写回 YAML，也不修改已冻结的请求价格。
+        """
         if (
             not all(k in identity for k in ("preset", "scope", "model", "operation"))
             or not identity.get("scope")
@@ -86,7 +93,10 @@ class PriceCatalog:
         if any(Decimal(str(v)) <= 0 for v in rules.get("units", {}).values()):
             raise ValueError("计价单位必须为正")
 
-    def snapshot(self, identity: dict, at: float | None = None) -> dict | None:
+    def snapshot(
+        self, identity: dict[str, str], at: float | None = None
+    ) -> Params | None:
+        """同步读取 at 时刻生效的版本及规则；无匹配价格返回 None。"""
         with self.db.transaction() as db:
             row = db.execute(
                 "SELECT * FROM plans WHERE binding=? AND effective<=? ORDER BY effective DESC LIMIT 1",
@@ -104,7 +114,8 @@ class PriceCatalog:
         }
 
     @staticmethod
-    def calculate(snapshot: dict | None, usage: dict) -> dict:
+    def calculate(snapshot: Params | None, usage: Params) -> Params:
+        """纯计算冻结价格对应的费用；缺失价格保留未知，支持整次/逐段阶梯。"""
         unknown = {"amount": None, "currency": None, "version": None}
         if snapshot is None:
             return unknown

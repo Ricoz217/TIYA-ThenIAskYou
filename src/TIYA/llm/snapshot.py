@@ -11,27 +11,32 @@ from .model import (
     ToolCall,
     ToolResponse,
     ToolInput,
+    Context
 )
 from .tool_schema import build_tool_payloads
 
 
-def stable(value):
+def stable(value: object) -> dict | list | object:
+    """将可变对象拆开，返回稳定快照"""
     if isinstance(value, bytes):
         return {"sha256": hashlib.sha256(value).hexdigest()}
+
     if isinstance(value, dict):
         return {k: stable(v) for k, v in value.items()}
+
     if isinstance(value, (list, tuple)):
         return [stable(v) for v in value]
-    if callable(value):
-        from .tool_schema import build_tool_payloads
 
+    if callable(value):
         return build_tool_payloads(value)
+
     if hasattr(value, "__dict__"):
         return stable(vars(value))
+
     return value
 
 
-def prefix(context):
+def prefix(context: Context):
     return [fingerprint(stable(vars(p))) for p in context._messages]
 
 

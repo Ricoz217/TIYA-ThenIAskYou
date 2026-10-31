@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import json
-import sqlite3
 import mimetypes
+import sqlite3
+from collections.abc import Awaitable, Callable
 from io import BytesIO
 
 import httpx
@@ -14,30 +16,44 @@ from PIL import Image
 
 from TIYA.config import DATA_DIR
 from TIYA.utils import parse_proxies_to_httpx
+
 from .config import fingerprint
-from .settings import model_config_from_settings
-from .gateway import Gateway, Frame
-from .media import MediaService, MediaError, inspect_image
-from .model import ImageEditRequest, ImagesResponse, MediaRef
+from .config_model import LLMConfig, Params
+from .gateway import Frame, Gateway
+from .media import MediaError, MediaService, inspect_image
+from .model import (
+    ImageEditRequest,
+    ImageGenerateRequest,
+    ImageResponseItem,
+    ImagesResponse,
+    MediaRef,
+)
 from .pricing import PriceCatalog
-from .provider.base import ProviderFailure, classify_error
-from .provider.files import FilesProvider
 from .provider import get_provider
-import inspect
+from .provider.base import ProviderFailure, classify_error
+from .provider.files import FileMetadata, FilesProvider
+from .settings import model_config_from_settings
 from .state import StateStore
+from .usage import Ledger
+from .workers import run_sync
+
+type PreviewCallback = Callable[[ImageResponseItem], Awaitable[None] | None]
 
 
 class ServiceClient:
     def __init__(
         self,
-        settings,
+        settings: Params,
         *,
-        client=None,
-        client_params=None,
-        ledger=None,
-        state=None,
-        prices=None,
-    ):
+        client: httpx.AsyncClient | None = None,
+        client_params: dict[str, object] | None = None,
+        ledger: Ledger | None = None,
+        state: StateStore | None = None,
+        prices: PriceCatalog | None = None,
+    ) -> None:
+        """复制单个连接节点；可借用 HTTP 客户端和账本，省略时延迟使用默认设施。
+        只关闭自行创建的 HTTP 客户端；不关闭共享账本、状态库或 LLM 线程池。
+        """
         self.settings = copy.deepcopy(settings)
         self._client, self._own_client = client, client is None
         self.client_params = copy.deepcopy(client_params or {})
@@ -50,9 +66,10 @@ class ServiceClient:
         if self.ledger is None:
             from .usage_compat import _GLOBAL_USAGE
 
-            self.ledger = await asyncio.to_thread(lambda: _GLOBAL_USAGE.ledger)
+            self.ledger = await run_sync(lambda: _GLOBAL_USAGE.ledger)
 
-    async def gateway(self):
+    async def gateway(self) -> Gateway:
+        """获取此服务的传输入口，HTTP 连接按需创建，不借用模型连接的认证头。"""
         if self._client is None:
             params = copy.deepcopy(self.client_params)
             proxies = params.pop("proxies", {})
@@ -61,7 +78,8 @@ class ServiceClient:
             )
         return Gateway(self._client, download_options=self.client_params)
 
-    async def close(self):
+    async def close(self) -> None:
+        """仅关闭本客户端拥有的 HTTP 连接；借用的客户端由调用方管理。"""
         if self._client is not None and self._own_client:
             await self._client.aclose()
             self._client = None
@@ -76,8 +94,8 @@ class ServiceClient:
 class FilesClient(ServiceClient):
     async def _operation(self, operation, wire, timeout):
         await self._ensure_ledger()
-        call_id = await asyncio.to_thread(self.ledger.begin_call, "")
-        request_id = await asyncio.to_thread(
+        call_id = await run_sync(self.ledger.begin_call, "")
+        request_id = await run_sync(
             self.ledger.begin_request,
             call_id,
             {
@@ -102,7 +120,7 @@ class FilesClient(ServiceClient):
                         200, body, self.settings.get("error_dialect", "openai")
                     )
                 )
-            await asyncio.to_thread(
+            await run_sync(
                 self.ledger.finish_request,
                 request_id,
                 "completed",
@@ -110,19 +128,22 @@ class FilesClient(ServiceClient):
             )
             return body
         except BaseException:
-            await asyncio.to_thread(self.ledger.finish_request, request_id, "unknown")
+            await run_sync(self.ledger.finish_request, request_id, "unknown")
             raise
         finally:
-            await asyncio.to_thread(self.ledger.finish_call, call_id, "finished")
+            await run_sync(self.ledger.finish_call, call_id, "finished")
 
-    async def upload(self, image: MediaRef, *, filename="image", timeout=60):
+    async def upload(
+        self, image: MediaRef, *, filename: str = "image", timeout: float = 60
+    ) -> FileMetadata:
+        """上传文件并返回远端 ID/到期信息；timeout 为网络操作秒数，失败独立记账。"""
         provider = FilesProvider(self.settings)
         gateway = await self.gateway()
         data = await self.media.content(image, gateway)
         mime = image.mime_type
         if mime is None:
             try:
-                mime = (await asyncio.to_thread(inspect_image, data))[0]
+                mime = (await run_sync(inspect_image, data))[0]
             except (ValueError, OSError):
                 mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         return provider.decode(
@@ -131,7 +152,8 @@ class FilesClient(ServiceClient):
             )
         )
 
-    async def retrieve(self, file_id, *, timeout=60):
+    async def retrieve(self, file_id: str, *, timeout: float = 60) -> FileMetadata:
+        """查询远端文件元数据，不下载文件内容。"""
         provider = FilesProvider(self.settings)
         return provider.decode(
             await self._operation(
@@ -139,19 +161,24 @@ class FilesClient(ServiceClient):
             )
         )
 
-    async def list(self, *, params=None, timeout=60):
+    async def list(
+        self, *, params: Params | None = None, timeout: float = 60
+    ) -> Params:
+        """返回原生分页对象；params 按目标 Files API 填写，不自动遍历所有页。"""
         provider = FilesProvider(self.settings)
         return await self._operation(
             "list", provider.operation("list", params=params), timeout
         )
 
-    async def delete(self, file_id, *, timeout=60):
+    async def delete(self, file_id: str, *, timeout: float = 60) -> Params:
+        """删除远端文件并返回原生响应，不删除本地 file_cache 原件。"""
         provider = FilesProvider(self.settings)
         return await self._operation(
             "delete", provider.operation("delete", file_id), timeout
         )
 
-    async def download(self, file_id, *, timeout=60):
+    async def download(self, file_id: str, *, timeout: float = 60) -> bytes:
+        """下载远端文件原始字节；是否可下载取决于服务和具体文件用途。"""
         provider = FilesProvider(self.settings)
         return await self._operation(
             "download", provider.operation("download", file_id), timeout
@@ -161,14 +188,33 @@ class FilesClient(ServiceClient):
 class ImagesClient(ServiceClient):
     """Direct generation/edits with eager output caching and no generation retries."""
 
-    def __init__(self, settings, *, provider_ref="image_generation:direct", **kwargs):
-        super().__init__(settings, **kwargs)
+    def __init__(
+        self,
+        settings: Params,
+        *,
+        provider_ref: str = "image_generation:direct",
+        client: httpx.AsyncClient | None = None,
+        client_params: dict[str, object] | None = None,
+        ledger: Ledger | None = None,
+        state: StateStore | None = None,
+        prices: PriceCatalog | None = None,
+    ) -> None:
+        """settings 为显式连接节点；provider_ref 为分类:连接名，用于选实现及定价身份。"""
+        super().__init__(
+            settings,
+            client=client,
+            client_params=client_params,
+            ledger=ledger,
+            state=state,
+            prices=prices,
+        )
         parts = provider_ref.split(":")
         if len(parts) != 2 or not all(parts):
             raise ValueError("图片连接引用必须是 分类:连接名")
         self.provider_ref = provider_ref
 
-    def _candidate(self, model):
+    def _candidate(self, model: str) -> LLMConfig:
+        """构造本次图片操作的独立连接快照，不读取全局预设。"""
         category, connection = self.provider_ref.split(":")
         candidate = model_config_from_settings(
             self.settings,
@@ -179,7 +225,10 @@ class ImagesClient(ServiceClient):
         candidate.client_params = copy.deepcopy(self.client_params)
         return candidate
 
-    def pricing_identity(self, model, *, operation="images_generate", preset=""):
+    def pricing_identity(
+        self, model: str, *, operation: str = "images_generate", preset: str = ""
+    ) -> dict[str, str]:
+        """取得定价目录所需绑定；生成/编辑分别使用 images_generate/images_edit。"""
         route = self._candidate(model)
         return {
             "preset": preset,
@@ -188,12 +237,32 @@ class ImagesClient(ServiceClient):
             "operation": operation,
         }
 
-    async def generate(self, request, *, timeout=300, preset="", on_preview=None):
+    async def generate(
+        self,
+        request: ImageGenerateRequest,
+        *,
+        timeout: float = 300,
+        preset: str = "",
+        on_preview: PreviewCallback | None = None,
+    ) -> ImagesResponse:
+        """执行一次独立生图，最终图片全部进入 file_cache 后返回；不自动重发生图。
+        timeout 单位秒，preset 仅标识记账来源；on_preview 可同步或异步接收已缓存预览。
+        """
         if isinstance(request, ImageEditRequest):
             raise TypeError("编辑请求请调用 edit")
         return await self._run(request, timeout, preset, on_preview)
 
-    async def edit(self, request, *, timeout=300, preset="", on_preview=None):
+    async def edit(
+        self,
+        request: ImageEditRequest,
+        *,
+        timeout: float = 300,
+        preset: str = "",
+        on_preview: PreviewCallback | None = None,
+    ) -> ImagesResponse:
+        """执行一次独立编辑；images 首张为目标、其余为参考，mask 对应首张。
+        参数语义同 generate，编辑失败不会降级为文字生图或自动再次生成。
+        """
         if not isinstance(request, ImageEditRequest):
             raise TypeError("需要 ImageEditRequest")
         return await self._run(request, timeout, preset, on_preview)
@@ -217,7 +286,7 @@ class ImagesClient(ServiceClient):
                     dimensions.append(None)
                     continue
                 content = await self.media.content(ref, gateway)
-                mime, width, height = await asyncio.to_thread(inspect_image, content)
+                mime, width, height = await run_sync(inspect_image, content)
                 dimensions.append((width, height))
                 images.append(
                     MediaRef("bytes", content, mime, width=width, height=height)
@@ -268,12 +337,12 @@ class ImagesClient(ServiceClient):
             "model": request.model,
             "operation": operation,
         }
-        call_id = await asyncio.to_thread(self.ledger.begin_call, preset)
+        call_id = await run_sync(self.ledger.begin_call, preset)
         try:
-            snapshot = await asyncio.to_thread(self.prices.snapshot, identity)
+            snapshot = await run_sync(self.prices.snapshot, identity)
         except (sqlite3.Error, OSError, ValueError):
             snapshot = None
-        request_id = await asyncio.to_thread(
+        request_id = await run_sync(
             self.ledger.begin_request,
             call_id,
             identity,
@@ -317,7 +386,7 @@ class ImagesClient(ServiceClient):
                     )
                     remote_complete = True
                 await self._usage(request_id, body.get("usage") or {}, provider)
-                await asyncio.to_thread(
+                await run_sync(
                     self.ledger.observe_usage,
                     request_id,
                     "reported",
@@ -325,7 +394,7 @@ class ImagesClient(ServiceClient):
                     "final_images",
                 )
                 result = await self._materialize(body, request_id, gateway)
-                await asyncio.to_thread(
+                await run_sync(
                     self.ledger.finish_request,
                     request_id,
                     "completed",
@@ -335,7 +404,7 @@ class ImagesClient(ServiceClient):
         except BaseException as exc:
             if body and body.get("usage"):
                 await self._usage(request_id, body["usage"], provider)
-            await asyncio.to_thread(
+            await run_sync(
                 self.ledger.finish_request,
                 request_id,
                 "materialization_failed"
@@ -350,11 +419,11 @@ class ImagesClient(ServiceClient):
                 exc.pending_response = body
             raise
         finally:
-            await asyncio.to_thread(self.ledger.finish_call, call_id, "finished")
+            await run_sync(self.ledger.finish_call, call_id, "finished")
 
     async def _usage(self, request_id, raw, provider):
         values = provider.usage_values(raw)
-        await asyncio.to_thread(
+        await run_sync(
             self.ledger.observe_usage,
             request_id,
             "reported",
@@ -375,8 +444,8 @@ class ImagesClient(ServiceClient):
             {k: v for k, v in body.items() if k not in ("data", "usage")},
         )
 
-    async def recover_images(self, error):
-        """Retry download/cache only. Never calls an Images generation endpoint."""
+    async def recover_images(self, error: MediaError) -> ImagesResponse:
+        """使用异常保留的响应，仅重试下载/落盘，不再次调用生成接口或重新计生成费用。"""
         if not isinstance(error, MediaError) or not getattr(
             error, "pending_response", None
         ):
@@ -384,7 +453,7 @@ class ImagesClient(ServiceClient):
         result = await self._materialize(
             error.pending_response, error.request_id, await self.gateway()
         )
-        await asyncio.to_thread(
+        await run_sync(
             self.ledger.finish_request,
             error.request_id,
             "completed",

@@ -4,10 +4,10 @@ import json
 
 import httpx
 import pytest
+from test_llm_preset_calls import document, mock_model
 
 from TIYA import config
 from TIYA.LLM_connect import Chat, ChatConfig, parse_llm_setting
-from test_llm_preset_calls import document, mock_model
 
 
 def test_get_llm_returns_complete_preset_data_not_chat_config(monkeypatch):
@@ -56,7 +56,8 @@ def test_parse_uses_get_llm_and_preserves_provider_options(monkeypatch):
         calls.append(name)
         return real_get_llm(name)
 
-    monkeypatch.setattr(config, "get_llm", get_llm)
+    # settings binds the root reader at import time; patch its actual lookup site.
+    monkeypatch.setattr("TIYA.llm.settings.get_llm", get_llm)
     setting = parse_llm_setting("MAIN")
     assert calls == ["MAIN"]
     assert setting.candidates[0].provider_options["custom_protocol"] == {
@@ -173,6 +174,7 @@ def test_candidate_validation_and_session_options_have_explicit_semantics(monkey
 def test_concurrent_first_use_of_separate_sqlite_stores(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
+
     from TIYA.llm.state import StateStore
 
     barrier = Barrier(8)
@@ -191,6 +193,7 @@ def test_concurrent_first_use_of_separate_sqlite_stores(tmp_path):
 
 def test_files_binding_preserves_existing_upload_cache_scope(monkeypatch):
     from test_llm_config_v2 import document as file_document
+
     from TIYA.llm.config import fingerprint
     from TIYA.llm.provider.files import FilesProvider
 

@@ -42,10 +42,13 @@ class FilesConfig:
         result.update(endpoint=self.endpoint, key=self.token)
         if self.headers:
             result["headers"] = copy.deepcopy(self.headers)
+
         if self.client_params:
             result["client_params"] = copy.deepcopy(self.client_params)
+
         if self.upload_params:
             result["upload_params"] = copy.deepcopy(self.upload_params)
+
         return result
 
 
@@ -121,11 +124,16 @@ class LLMConfig:
 
 @dataclass(slots=True)
 class RequestPolicy:
-    """Bounds for model generation attempts; Files/control requests do not consume them."""
+    """
+    没有什么复杂的，就三件事
+    1. 总重试次数限制
+    2. 每个预设重试限制
+    3. fallback 回归主预设的 CD
+    """
 
     max_attempts: int = 6
-    max_retries_per_candidate: int = 1
-    fallback_cooldown_seconds: float = 3600
+    max_retries_per_candidate: int = 2
+    fallback_cooldown_seconds: float = 900
 
     def __post_init__(self):
         if (
@@ -134,12 +142,14 @@ class RequestPolicy:
             or self.max_attempts < 1
         ):
             raise ValueError("max_attempts 必须是正整数")
+
         if (
             isinstance(self.max_retries_per_candidate, bool)
             or not isinstance(self.max_retries_per_candidate, int)
             or self.max_retries_per_candidate < 0
         ):
             raise ValueError("max_retries_per_candidate 必须是非负整数")
+
         if (
             isinstance(self.fallback_cooldown_seconds, bool)
             or not isinstance(self.fallback_cooldown_seconds, (int, float))

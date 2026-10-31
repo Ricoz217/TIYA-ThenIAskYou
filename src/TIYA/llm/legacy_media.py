@@ -1,13 +1,16 @@
 from __future__ import annotations
+
 import asyncio
 import base64
 from pathlib import Path
+
 from TIYA.auto_mapping import AutoMapping
 from TIYA.config import DATA_DIR
-from TIYA.logger import get_logger
 from TIYA.file_cache import add_file_async, get_file_path_async
+from TIYA.logger import get_logger
 from TIYA.utils import resize_image_to_base64
-from TIYA.executor import GLOBAL_EXECUTOR
+
+from .workers import run_sync
 
 _log = get_logger()
 _MAPPING_FILE = DATA_DIR / "llm_connect" / "image_name_mapping.json"
@@ -39,11 +42,8 @@ async def handle_unload_image(image: str | Path | bytes, cache: dict) -> list[st
         image = base64.b64decode(image)
 
     # 压缩图片
-    loop = asyncio.get_running_loop()
     try:
-        compressed_image = await loop.run_in_executor(
-            GLOBAL_EXECUTOR, resize_image_to_base64, image
-        )
+        compressed_image = await run_sync(resize_image_to_base64, image)
 
     except Exception as E:
         _log.error(E)

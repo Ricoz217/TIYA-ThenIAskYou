@@ -8,6 +8,7 @@ from TIYA.setu.setu import (
     AsyncPixivApi,
     Illustration,
     IllustType,
+    PixivStorageChunk,
 )
 
 
@@ -118,3 +119,45 @@ def test_empty_search_data_returns_empty_mapping() -> None:
     result = asyncio.run(api._tags_searching(["target"], {}))
 
     assert result == {}
+
+
+def test_loaded_chunk_search_range_keeps_complete_illust_ids() -> None:
+    api = _api()
+    api._chunks = {
+        1: PixivStorageChunk(
+            index=1,
+            data={
+                "123456": _illustration(123456, tags=["target"], bookmark=10_000),
+                "789012": _illustration(789012, tags=["target"], bookmark=10_000),
+            },
+        )
+    }
+
+    assert api._get_search_range() == {1: {"123456", "789012"}}
+
+
+def test_local_search_keeps_group_results_when_supplemental_range_is_disjoint() -> None:
+    api = _api()
+    group_illustration = _illustration(101, tags=["target"], bookmark=10_000)
+    supplemental_illustration = _illustration(202, tags=["target"], bookmark=10_000)
+    group_chunk = PixivStorageChunk(index=1)
+    supplemental_chunk = PixivStorageChunk(index=2)
+    _, group_illust = group_chunk.to_obj(group_illustration)
+    _, supplemental_illust = supplemental_chunk.to_obj(supplemental_illustration)
+
+    api._get_search_range = lambda available=None: (
+        {1: {"101"}} if available is not None else {2: {"202"}}
+    )
+    api._get_search_illustrations = lambda search_range: (
+        ({"101": group_illustration}, {"101": group_illust})
+        if 1 in search_range
+        else ({"202": supplemental_illustration}, {"202": supplemental_illust})
+    )
+
+    results = asyncio.run(
+        api.pixiv_search_local(
+            ["target"], expect_count=3, group_available={"101": group_illust}
+        )
+    )
+
+    assert {result["iid"] for result in results} == {"101", "202"}

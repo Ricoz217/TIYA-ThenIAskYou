@@ -22,6 +22,8 @@ def register(category, factory):
 def get_provider(route):
     try:
         factory = REGISTRY[route.provider_type]
+
     except KeyError:
         raise ValueError(f"未注册的模型 Provider 分类: {route.provider_type}") from None
+
     return factory(route)

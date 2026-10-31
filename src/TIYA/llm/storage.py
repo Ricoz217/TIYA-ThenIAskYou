@@ -46,17 +46,21 @@ class Database:
                         raise RuntimeError(
                             "SQLite schema 版本高于当前通信模块，拒绝降级写入"
                         )
+
                     connection.execute("PRAGMA journal_mode=WAL")
                     connection.execute("PRAGMA synchronous=FULL")
                     connection.executescript(self.schema)
                     connection.execute("PRAGMA user_version=1")
                     connection.commit()
                     self._ready = True
+
             connection.execute("BEGIN IMMEDIATE")
             yield connection
             connection.commit()
+
         except BaseException:
             connection.rollback()
             raise
+
         finally:
             connection.close()

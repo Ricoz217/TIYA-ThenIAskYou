@@ -1,5 +1,4 @@
 """Stable public entry points for the LLM communication services."""
-
 from __future__ import annotations
 import httpx  # Historical monkeypatch/integration seam; the transport uses this same module.
 from TIYA.utils import parse_proxies_to_httpx
@@ -40,7 +39,7 @@ from .llm.legacy_media import (
     handle_unload_image,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "Chat",
     "ChatConfig",

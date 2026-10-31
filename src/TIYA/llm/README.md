@@ -163,7 +163,30 @@ rules = {
 catalog.publish(identity, rules, source="经核对的价格来源")
 ```
 
-以上数字只是示例。whole 按完整输入所处区间选择整次请求价格；progressive 按同一个计量项逐段计费。输入/输出总量与子项不能重复定价。可使用 images、input_image、output_image 等计量项；没有匹配价格时费用未知，仍然记账。每次请求冻结价格版本，后续调价不改旧请求。异步调用方应将这些同步维护/查询方法放到 `asyncio.to_thread` 执行。
+以上数字只是示例。whole 按完整输入所处区间选择整次请求价格；progressive 按同一个计量项逐段计费。输入/输出总量与子项不能重复定价。可使用 images、input_image、output_image 等计量项；没有匹配价格时费用未知，仍然记账。每次请求冻结价格版本，后续调价不改旧请求。异步调用方通过 `llm.workers.run_sync()` 执行同步维护/查询，避免阻塞事件循环。
+
+## 线程资源与 Runtime 阅读入口
+
+LLM 中原先通过 `to_thread` / `run_in_executor` 卸载的同步 SQLite、token 估算和图片处理，现统一走 `llm/workers.py` 的 `run_sync()`，使用 `TIYA/executor.py` 中的进程级 `LLM_EXECUTOR`，默认最多 4 个工作线程，线程名前缀为 `llm`。线程数在现有全局线程池管理文件中集中调整，无需修改连接配置。所有 Chat、FilesClient 和 ImagesClient 共用这个池；HTTP 仍为异步收发，file_cache 使用它已有的独立线程池。
+
+`run_sync()` 保留调用协程的 contextvars、结果和异常。取消等待可取消尚未开始的工作，但不能杀掉已运行的同步函数。单个 Chat/Client 关闭只负责自己的任务和 HTTP 连接；项目现有 `executor.shutdown_all()` 在业务停止后同步等待 LLM 池收尾，包括已开始的账本写入。
+
+```python
+from TIYA.llm.workers import run_sync
+
+rows = await run_sync(ledger.query_requests, preset="MAIN", limit=100)
+```
+
+Runtime 的 `execute()` 是主调度入口，只制作 Context 快照并按有序候选执行。参数和提交边界直接写在函数文档中，主要步骤如下：
+
+- `_prepare_candidate()`：窗口检查、连接获取、选择匹配的历史检查点。
+- `_execute_candidate()`：单候选的有界尝试，准备将实际发送的媒体。
+- `_begin_attempt()` / `_send_attempt()`：冻结价格并先落估算，再执行一次生成收发。
+- `_complete_attempt()`：保留真实用量、缓存返回图片，构造 `Pending`。
+- `_record_failure()` / `_cancel_background()` / `_recover()`：保留失败证据；仅确认未执行才恢复，取消/部分输出/远端未知直接停止。
+- `commit_async()`：由业务持有者校验原 Context 未变化后消费结果，随后保存检查点和非滑动冷却。
+
+`Pending`、逻辑调用、单候选和单次发送状态分别有明确的结构定义，内部执行状态通过这些结构传递。Provider 的 `ConversationProvider` / `StreamDecoder` 契约位于 `provider/base.py`；Runtime 不依赖某家解码器的具体实现类。主调用、网络、媒体、账本和定价接口均有参数类型及必要的副作用说明。
 
 ## 已修正的旧行为
 

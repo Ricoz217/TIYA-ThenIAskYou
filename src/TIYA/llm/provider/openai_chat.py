@@ -3,10 +3,13 @@ from __future__ import annotations
 import copy
 import json
 
+from ..config_model import Params
 from ..model import (
+    Context,
+    ImagePrompt,
+    MediaRef,
     SystemPrompt,
     TextPrompt,
-    ImagePrompt,
     ToolCall,
     ToolInput,
     ToolResponse,
@@ -17,7 +20,8 @@ from .common import image_url, tool_arguments
 
 
 class ChatCompletions(Provider):
-    def accepts_image_files(self):
+    def accepts_image_files(self) -> bool:
+        """声明图片 file_id 的协议能力；通用 Files 存在不等于支持图片引用。"""
         return (
             self.route.provider_options.get("chat_completions", {}).get(
                 "image_file_format"
@@ -25,7 +29,8 @@ class ChatCompletions(Provider):
             == "deepseek"
         )
 
-    def encode(self, context, media):
+    def encode(self, context: Context, media: dict[str, list[MediaRef]]) -> Params:
+        """编码 Chat Completions 原生请求，保持历史和图片顺序；不上传或发送。"""
         messages, tools = [], []
         for prompt in context:
             if isinstance(prompt, ToolInput):
@@ -105,7 +110,8 @@ class ChatCompletions(Provider):
             payload.setdefault("stream_options", {})["include_usage"] = True
         return payload
 
-    def decode(self, body):
+    def decode(self, body: Params) -> Result:
+        """解析 Chat Completions 文本、工具和原生记录；返回图片交给通信层落盘。"""
         self.check_body(body)
         if not isinstance(body.get("choices"), list) or not body["choices"]:
             raise ValueError("Chat Completions 响应缺少 choices")
@@ -181,10 +187,12 @@ class ChatCompletions(Provider):
         result.response_id = body.get("id", "")
         return result
 
-    def stream_decoder(self):
+    def stream_decoder(self) -> ChatStream:
+        """为单次请求创建独立流式解码器，不复用上一轮的输出或 usage。"""
         return ChatStream(self)
 
-    def usage_result(self, raw):
+    def usage_result(self, raw: Params) -> Result:
+        """将供应商真实用量转换为统一字段，缺失值保持缺失。"""
         return self.decode({"choices": [{"message": {}}], "usage": raw})
 
 
@@ -196,7 +204,8 @@ class ChatStream:
         self.usage, self.partial, self.complete = {}, False, False
         self.model, self.identifier = "", ""
 
-    def feed(self, body):
+    def feed(self, body: Params) -> None:
+        """接收一个原生事件；输出出现后设置 partial，损坏流仍保留已知 usage。"""
         self.provider.check_body(body)
         self.model = body.get("model") or self.model
         self.identifier = body.get("id") or self.identifier
@@ -235,7 +244,8 @@ class ChatStream:
             if choice.get("finish_reason"):
                 self.complete = True
 
-    def finish(self):
+    def finish(self) -> Result:
+        """聚合本次流式结果，保留 complete 状态；不补造缺失的结束事件。"""
         if hasattr(self, "final"):
             return self.provider.decode(self.final)
         self.message["tool_calls"] = [self.calls[k] for k in sorted(self.calls)]

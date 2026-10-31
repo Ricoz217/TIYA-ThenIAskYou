@@ -2268,7 +2268,7 @@ class AsyncPixivApi:
 
         else:
             for index, chunk in self._chunks.items():
-                search_range[index].update(*chunk.keys())
+                search_range[index].update(chunk.keys())
 
         return search_range
 
@@ -2517,6 +2517,7 @@ class AsyncPixivApi:
             _page_limit = SETTING_CFG.SETU.RelatedSearchCrawlPages  # 默认 10 页
             _next_request_params = {"illust_id": _base_illustration.id}
             while len(search_score) < expect_count and _page_now < _page_limit:
+                _next_request_params.pop("viewed", None)
                 if not _next_request_params:
                     return
 
@@ -3221,7 +3222,8 @@ class AsyncPixivApi:
             search_range = self._get_search_range()
 
             # 收集数据
-            search_data, illusts = self._get_search_illustrations(search_range)
+            search_data, supplemental_illusts = self._get_search_illustrations(search_range)
+            illusts.update(supplemental_illusts)
 
             # 运行搜索
             supplemental_illustrations = await self._tags_searching(

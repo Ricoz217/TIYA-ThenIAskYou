@@ -28,6 +28,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from TIYA.global_vars import QQ_GROUPS
 from TIYA.logger import get_logger
+from TIYA.utils import plain as _plain
 
 if TYPE_CHECKING:
     from TIYA.mybot import MyBot
@@ -962,16 +963,6 @@ class ConfigList(list[Any]):
         self._changed()
 
 
-def _plain(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {key: _plain(item) for key, item in value.items()}
-
-    if isinstance(value, list):
-        return [_plain(item) for item in value]
-
-    return copy.deepcopy(value)
-
-
 @dataclass(slots=True)
 class LLMPresetConfig(Mapping[str, object]):
     """完整原始 LLM 配置快照及选中的预设名，不解释任何连接或协议字段。
@@ -986,9 +977,11 @@ class LLMPresetConfig(Mapping[str, object]):
     def __post_init__(self):
         if not isinstance(self.preset_name, str):
             raise TypeError("LLM 预设名必须是字符串")
+
         issues = _llm_format_issues(self.configuration, (TITLE_LLM,))
         if issues:
             raise ValueError(issues[0].message)
+
         self.configuration = ConfigMap(_plain(self.configuration))
         if self.preset_name not in self.configuration["LLM_List"]:
             raise KeyError("LLM 预设不存在")
@@ -1025,10 +1018,13 @@ class LLMPresetConfig(Mapping[str, object]):
     def __getitem__(self, key: str) -> object:
         if key == "preset_name":
             return self.preset_name
+
         if key == "max_context":
             return self.max_context
+
         if key == "extra_parameter":
             return self.extra_parameter
+
         return self.data[key]
 
     def __iter__(self):
@@ -1800,6 +1796,7 @@ def get_llm_list() -> list[str]:
     issues = _llm_format_issues(LLM_CFG, (TITLE_LLM,))
     if issues:
         raise ValueError(issues[0].message)
+
     return list(LLM_CFG["LLM_List"])
 
 
