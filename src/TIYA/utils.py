@@ -10,6 +10,7 @@ import copy
 import os
 import math
 import json
+import hashlib
 import shutil
 import asyncio
 import re
@@ -1718,3 +1719,12 @@ def plain(value: object) -> dict | list | object:
         return [plain(v) for v in value]
 
     return copy.deepcopy(value)
+
+
+def fingerprint(value: object) -> str:
+    """展开 Mapping 和序列，以固定 JSON 排序生成 SHA256；不修改输入数据。"""
+    return hashlib.sha256(
+        json.dumps(
+            plain(value), sort_keys=True, ensure_ascii=False, default=str
+        ).encode()
+    ).hexdigest()

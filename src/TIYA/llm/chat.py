@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
-import weakref
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -12,16 +11,14 @@ import httpx
 
 from TIYA.config import DATA_DIR, SETTING_CFG
 from TIYA.logger import get_logger
-from TIYA.utils import parse_proxies_to_httpx
+from TIYA.utils import fingerprint, parse_proxies_to_httpx
 
-from .config import fingerprint
-from .config_model import LLMConfig, Params, RequestPolicy
+from .config_model import ChatConfig, LLMConfig, Params, RequestPolicy
 from .gateway import Gateway
 from .model import (
     AskTask,
     BasePrompt,
     CallOutcome,
-    ChatConfig,
     Context,
     ContextOverflowError,
     Prompts,
@@ -32,27 +29,15 @@ from .model import (
 )
 from .pricing import PriceCatalog
 from .provider import get_provider
-from .runtime import Runtime, estimate
+from .runtime import Runtime
 from .state import StateStore
+from .usage import estimate_async
 from .usage_compat import _GLOBAL_USAGE, ApiPrice, LLMUsage
 from .workers import run_sync
 
 _log = get_logger()
 if TYPE_CHECKING:
     from TIYA.logger import BlockHandle, Logger
-
-_CONTEXT_LOCKS = weakref.WeakKeyDictionary()
-
-
-def context_lock(context: Context) -> asyncio.Lock:
-    """同一事件循环内，共享 Context 的 Chat 共用一把提交锁。"""
-    per_loop = _CONTEXT_LOCKS.setdefault(context, weakref.WeakKeyDictionary())
-    loop = asyncio.get_running_loop()
-    if loop not in per_loop:
-        per_loop[loop] = asyncio.Lock()
-
-    return per_loop[loop]
-
 
 class Chat:
     def __init__(
@@ -132,7 +117,7 @@ class Chat:
         self._context: Context = context
         self._queue = asyncio.PriorityQueue()
         self._sequence = 0
-        self._route_clients = {}
+        self._route_clients: dict[str, httpx.AsyncClient] = {}  # 保存使用过/在使用的连接对象
         self._runtime = None
         self._last_outcome = CallOutcome()
         self._outcome_var = ContextVar(f"llm_outcome_{id(self)}", default=None)
@@ -166,33 +151,45 @@ class Chat:
         previous = self._config
         old_client = self._client_identity(previous.primary)
         if new_config.candidates is not None:
-            updated = new_config.copy()
+            updated = copy.deepcopy(new_config)
             updated.request_policy = updated.request_policy or RequestPolicy()
+
         else:
             updated = previous.copy()
             if new_config.model_params is not None:
+                assert updated.candidates is not None
+                updated.candidates[0] = copy.deepcopy(previous.primary)
                 updated.model_params = new_config.model_params
+
             if new_config.auto_compress_rate is not None:
                 updated.auto_compress_rate = new_config.auto_compress_rate
+
             if new_config.request_policy is not None:
                 updated.request_policy = copy.deepcopy(new_config.request_policy)
+
         # Session options update only when explicitly supplied, even on preset switches.
         for field in ("keep_alive", "logger", "log_off"):
             value = getattr(new_config, field)
             setattr(
                 updated, field, value if value is not None else getattr(previous, field)
             )
+
         if previous.model != updated.model:
-            self._context._usage_accumulation.clear()
+            self._context.replace_usage(TokenUsage())
+
+        updated.refresh_fingerprints()
         self._config = updated
         if new_config.system_prompt is not None:
             self._context.append(SystemPrompt(new_config.system_prompt))
+
         if self._client is not None and old_client != self._client_identity(
             updated.primary
         ):
             self._client_stale = True
+
         if self._runtime is not None:
             self._runtime.logger = self._config.logger
+
         if not self.log_off:
             self._config.logger.info(f"已更新配置。当前模型: [{self._config.model}]")
 
@@ -219,7 +216,7 @@ class Chat:
     @property
     def config(self) -> ChatConfig:
         """Return an isolated configuration snapshot; apply changes with setting()."""
-        return self._config.copy()
+        return copy.deepcopy(self._config)
 
     @property
     def log_off(self) -> bool:
@@ -231,13 +228,8 @@ class Chat:
 
     @staticmethod
     def _client_identity(candidate: LLMConfig) -> str:
-        return fingerprint(
-            [
-                candidate.endpoint,
-                get_provider(candidate).headers(),
-                candidate.client_params,
-            ]
-        )
+        """返回一个候选连接预设的指纹"""
+        return candidate.connection_fingerprint(get_provider(candidate).headers())
 
     def _update_client(self):
         client_params = self._config.client_params.copy()
@@ -323,9 +315,6 @@ class Chat:
         await asyncio.sleep(0)
         await self.close()
 
-    def _snapshot_config(self) -> ChatConfig:
-        return self._config.copy()
-
     def _header_constructor(self):
         return get_provider(self._config.primary).headers()
 
@@ -348,6 +337,7 @@ class Chat:
             return Gateway(
                 await self._ensure_client(), download_options=route.client_params
             )
+
         key = fingerprint(
             [route.endpoint, get_provider(route).headers(), route.client_params]
         )
@@ -360,17 +350,18 @@ class Chat:
                 headers=get_provider(route).headers(),
                 **params,
             )
+
         return Gateway(self._route_clients[key], download_options=route.client_params)
 
     async def _tiktoken_prompts(self, prompts: Prompts) -> int:
-        """在线程池估算输入下界，不把估算当作供应商真实 usage。"""
-        return (await run_sync(estimate, Context(prompts)))["input"]
+        """复用消息级估算；未计算的内容在线程池处理，不作为真实 usage。"""
+        return (await estimate_async(Context(prompts)))["input"]
 
     async def _estimate_context_windows(self, new_prompts: Prompts) -> int:
         """对补充本轮输入后的快照估算窗口，不修改业务 Context。"""
-        snapshot = copy.deepcopy(self._context)
+        snapshot = self._context.copy()
         snapshot.append(new_prompts)
-        return (await run_sync(estimate, snapshot))["input"]
+        return (await estimate_async(snapshot))["input"]
 
     async def run(self) -> None:
         """队列消费协程，串行处理任务并通知等待者；由 close 取消收尾。"""
@@ -379,12 +370,15 @@ class Chat:
             try:
                 if task.cancelled or task.event.is_set():
                     continue
+
                 task.handle = asyncio.create_task(self._execute_task(task))
                 try:
                     task.response = await task.handle
+
                 except asyncio.CancelledError:
                     if self._closed:
                         return
+
                 except Exception as exc:
                     task.error = exc
                     task.outcome = getattr(
@@ -397,19 +391,22 @@ class Chat:
                             category="commit",
                         ),
                     )
+
             finally:
                 task.event.set()
                 self._queue.task_done()
-                task = None
+                task = None  # 只是为了清除引用，让大对象 GC
 
     async def post(self, task: AskTask) -> Prompts | None:
         """执行请求并把待提交结果挂到 task；此步骤不修改业务 Context。"""
         if task.cancelled or task.event.is_set():
             return None
-        preset = self._snapshot_config()
+
+        # setting() 安装新对象，不原地修改在途请求使用的配置。
+        preset = self._config
         self._running_task_id = task.id
         try:
-            service = await run_sync(self._service)
+            service = await run_sync(self._service)  # 数据库和其他组件初始化是有一定时间的
             pending = await service.execute(
                 self._context, task.prompts, preset, self._gateway, task.timeout
             )
@@ -423,14 +420,23 @@ class Chat:
             )
             response = pending.result.prompts
             response._duration = max(0.0, time.time() - float(task.prompts.time))
-            self._last_usage = copy.deepcopy(response.usage)
-            self._context_use = response.usage.total_t if response.usage else 0
+            if response.usage is None:
+                self._last_usage = TokenUsage()
+                self._context_use = 0
+
+            else:
+                self._last_usage = response.usage.copy()
+                self._context_use = response.usage.total_t
+
             return response
+
         except asyncio.CancelledError as exc:
             task.outcome = getattr(exc, "llm_outcome", CallOutcome("cancelled"))
             raise
+
         except ContextOverflowError:
             raise
+
         except Exception as exc:
             task.error = exc
             task.outcome = getattr(
@@ -440,42 +446,45 @@ class Chat:
             return None
 
     async def _execute_task(self, task: AskTask) -> Prompts | None:
-        """持有共享 Context 锁执行请求，检查取消/替换后提交；排队和 no_wait 共用。"""
+        """执行单个队列任务，检查取消/替换后提交；Context 的跨 Chat 并发由业务控制。"""
         context = self._context
-        async with context_lock(context):
-            if self._closed or task.cancelled or task.event.is_set():
-                return None
-            self._running.clear()
-            try:
-                async with asyncio.timeout(task.timeout):
-                    response = await self.post(task)
-                if (
-                    response is not None
-                    and not task.cancelled
-                    and not task.event.is_set()
-                ):
-                    if self._context is not context:
-                        raise RuntimeError("Context 已替换，拒绝提交")
-                    await self._service().commit_async(
-                        context, task.pending, lambda: setattr(task, "committed", True)
-                    )
-                    task.outcome.status = "completed"
-                    task.outcome.committed = True
-                return response
-            finally:
-                if not self._config.keep_alive:
-                    await self._close_clients()
-                self._running_task_id = ""
-                self._running.set()
+        if self._closed or task.cancelled or task.event.is_set():
+            return None
+
+        self._running.clear()
+        try:
+            async with asyncio.timeout(task.timeout):
+                response = await self.post(task)
+
+            if response is not None and not task.cancelled and not task.event.is_set():
+                if self._context is not context:
+                    raise RuntimeError("Context 已替换，拒绝提交")
+
+                await self._service().commit_async(
+                    context, task.pending, lambda: setattr(task, "committed", True)
+                )
+                task.outcome.status = "completed"
+                task.outcome.committed = True
+
+            return response
+
+        finally:
+            if not self._config.keep_alive:
+                await self._close_clients()
+
+            self._running_task_id = ""
+            self._running.set()
 
     async def post_nowait(self, task: AskTask) -> Prompts | None:
-        """兼容立即调度入口，仍遵守共享 Context 锁和统一提交规则。"""
+        """兼容直接调度入口，沿用统一提交规则；调用方负责与队列任务互斥。"""
         try:
             task.handle = asyncio.create_task(self._execute_task(task))
             return await task.handle
+
         except asyncio.CancelledError:
             if not task.cancelled:
                 raise
+
             return None
 
     async def ask(
@@ -487,35 +496,41 @@ class Chat:
         no_wait: bool = False,
         timeout: float | None = None,
     ) -> Prompts | None:
-        """请求一轮对话，成功返回已提交的 Prompts；普通失败/超时返回 None。
-        new_ask 是本轮输入；task_id 可用于人工中止；queue=False 且繁忙时直接返回；
-        no_wait 提高排队优先级，仍遵守同 Context 串行提交；timeout 为总等待秒数。
-        窗口不足抛 ContextOverflowError，外部取消传播 CancelledError。失败详情从
-        last_outcome 读取；retry_allowed=False 时，上层不得盲目再发生成请求。
+        """
+        使用new_ask开始新一轮对话请求，并返回响应
+        :param new_ask: Prompts对象
+        :param task_id: 指定任务ID
+        :param queue: 是否进入任务队列等待其他任务。若为False，则有任务在运行时直接跳过，不会保存Prompts
+        :param no_wait: 是否不进入任务队列直接开始，若为True，则在这一个任务结束后直接运行
+        :param timeout: 超时/秒
+        :return: 响应的 Prompts 对象
         """
         if self._closed or not new_ask:
             return None
+
         timeout = (
             timeout
             if timeout is not None and timeout > 0
             else SETTING_CFG.LLM.ChatRequestTimeout
         )
+
         if not isinstance(new_ask, Prompts):
             new_ask = (
                 Prompts(TextPrompt("user", new_ask))
                 if isinstance(new_ask, str)
                 else Prompts(new_ask)
             )
-        if (
-            not queue
-            and not no_wait
-            and (
-                self._ask_tasks
-                or context_lock(self._context).locked()
-                or not self._queue.empty()
-            )
-        ):
-            return None
+
+        if not queue and not no_wait:
+            if self._ask_tasks:
+                return None
+
+            if not self._running.is_set():
+                return None
+
+            if not self._queue.empty():
+                return None
+
         # Preserve the existing early compression signal without changing another candidate's Context.
         rate = max(
             0.3,
@@ -526,6 +541,7 @@ class Chat:
                 else 0.7,
             ),
         )
+
         if (
             self._config.max_context
             and self._last_usage.input_t >= (rate - 0.1) * self._config.max_context
@@ -535,9 +551,11 @@ class Chat:
                 >= rate * self._config.max_context
             ):
                 raise ContextOverflowError()
+
         identifier = task_id or uuid4().hex
         while identifier in self._ask_tasks:
             identifier = uuid4().hex
+
         task = AskTask(copy.deepcopy(new_ask), timeout, identifier)
         self._ask_tasks[identifier] = task
         self._sequence += 1
@@ -547,15 +565,19 @@ class Chat:
             self._publish_outcome(task)
             if isinstance(task.error, ContextOverflowError):
                 raise task.error
+
             return task.response
+
         except TimeoutError:
             await self.stop_from_id(identifier)
             self._publish_outcome(task)
             return None
+
         except asyncio.CancelledError:
             await self.stop_from_id(identifier)
             self._publish_outcome(task)
             raise
+
         finally:
             self._ask_tasks.pop(identifier, None)
 
@@ -572,7 +594,7 @@ class Chat:
         return self._outcome_var.get() or self._last_outcome
 
     def copy(self, new_context: bool = True) -> Chat:
-        """复制配置创建 Chat；new_context=False 共享原 Context，并共用提交锁。"""
+        """复制配置创建 Chat；new_context=False 共享原 Context，并发由业务控制。"""
         config = self._config.copy()
         config.system_prompt = (
             None  # Copy the current Context system, not an old setting command.
@@ -588,21 +610,23 @@ class Chat:
         )
 
     async def clear(self, system: bool = False, tools: bool = False) -> None:
-        """持有 Context 锁清除历史；system/tools 指定是否连同系统提示和工具一起清除。"""
-        async with context_lock(self._context):
-            self._context.clear(system, tools)
+        """清除历史；system/tools 指定是否连同系统提示和工具一起清除。"""
+        self._context.clear(system, tools)
 
     async def stop_from_id(self, task_id: str) -> None:
         """取消指定未提交任务并等待本地收尾；普通断连不保证服务器停止推理。"""
         task = self._ask_tasks.get(task_id)
         if task is None:
             return
+
         if task.committed:
             return  # The response has already been atomically committed; cancellation arrived too late.
+
         task.cancelled = True
         if task.handle and not task.handle.done():
             task.handle.cancel()
             await asyncio.gather(task.handle, return_exceptions=True)
+
         task.response = None
         task.event.set()
 
@@ -617,12 +641,14 @@ class Chat:
         for task in list(self._ask_tasks.values()):
             if task.committed:
                 continue
+
             task.cancelled = True
             task.response = None
             task.event.set()
             if task.handle and not task.handle.done():
                 task.handle.cancel()
                 handles.append(task.handle)
+
         await asyncio.gather(*handles, return_exceptions=True)
 
     async def _close_clients(self):
@@ -630,7 +656,12 @@ class Chat:
         self._route_clients.clear()
         if self._client is not None:
             clients.append(self._client)
+
         self._client = None
+        if self._runtime is not None:
+            await self._runtime.media.close_clients(clients)
+            return
+
         for client in clients:
             await client.aclose()
 

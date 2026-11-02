@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from TIYA.llm.config import fingerprint
+from TIYA.utils import fingerprint
 from llm_config_fixtures import configuration, candidate
 from TIYA.llm.gateway import Gateway
 from TIYA.llm.model import Context, Prompts, TextPrompt, SystemPrompt
@@ -294,6 +294,11 @@ def test_cross_model_fallback_commits_with_existing_model_usage(tmp_path):
             rt.commit(context, pending)
         assert context._messages[-1].text == "new"
         assert context.usage.model == "small"
+        assert context.usage.models == ("large", "small")
+        assert context.usage.input_t == 25
+        assert context.usage.total_t == 28
+        assert context.usage.request_ids == (pending.result.request_id,)
+        assert context.usage.sources["input"] == "mixed"
         assert len(context._messages) == 4
 
     asyncio.run(run())

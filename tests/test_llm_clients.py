@@ -57,8 +57,7 @@ def test_images_client_caches_results_and_preserves_alpha_mask(tmp_path, monkeyp
             response = await client.generate(
                 ImageGenerateRequest("image-2.5", "draw", background="transparent")
             )
-            assert response.data[0].image.kind == "cache"
-            assert response.data[0].image.value == "cached"
+            assert response.data[0].image.hash_name == "cached"
             await client.edit(
                 ImageEditRequest(
                     "image-2.5",
@@ -192,8 +191,8 @@ def test_image_stream_caches_previews_and_deduplicates_final_events(
             )
         assert len(result.data) == 1
         assert result.created == 10
-        assert result.metadata["output_format"] == "png"
-        assert previews[0].image.kind == "cache"
+        assert result.output_format == "png"
+        assert previews[0].image.hash_name == "cached"
         assert len(cached) == 2
 
     asyncio.run(run())

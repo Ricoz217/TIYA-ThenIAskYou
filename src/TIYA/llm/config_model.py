@@ -7,6 +7,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Literal, TYPE_CHECKING
 
+from TIYA.utils import fingerprint
+
 if TYPE_CHECKING:
     from TIYA.logger import Logger, BlockHandle
     from .usage_compat import ApiPrice
@@ -74,6 +76,26 @@ class LLMConfig:
     provider_options: Params = field(default_factory=dict)
     max_retries: int | None = None  # None uses the enclosing RequestPolicy.
     legacy_price: ApiPrice | None = None  # Only the existing single-model price input.
+    _scope: str | None = field(default=None, init=False, repr=False, compare=False)
+    _revision: str | None = field(default=None, init=False, repr=False, compare=False)
+    _connection_fingerprint: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    def refresh_fingerprints(self) -> None:
+        """配置修改后清除缓存，下次读取时重算；不监控外部对嵌套字典的写入。"""
+        self._scope = None
+        self._revision = None
+        self._connection_fingerprint = None
+
+    def connection_fingerprint(self, headers: dict[str, str]) -> str:
+        """缓存 HTTP 连接身份；headers 由所选 Provider 构造。"""
+        if self._connection_fingerprint is None:
+            self._connection_fingerprint = fingerprint(
+                [self.endpoint, headers, self.client_params]
+            )
+
+        return self._connection_fingerprint
 
     @property
     def ref(self) -> str:
@@ -81,10 +103,11 @@ class LLMConfig:
 
     @property
     def scope(self) -> str:
-        from .config import fingerprint
+        if self._scope is not None:
+            return self._scope
 
         # Preserve the existing account/model scope so parent checkpoints remain usable.
-        return fingerprint(
+        self._scope = fingerprint(
             [
                 self.provider_type,
                 self.connection_name,
@@ -98,12 +121,14 @@ class LLMConfig:
                 },
             ]
         )
+        return self._scope
 
     @property
     def revision(self) -> str:
-        from .config import fingerprint
+        if self._revision is not None:
+            return self._revision
 
-        return fingerprint(
+        self._revision = fingerprint(
             [
                 self.ref,
                 self.endpoint,
@@ -120,6 +145,7 @@ class LLMConfig:
                 self.legacy_price.to_dict() if self.legacy_price else None,
             ]
         )
+        return self._revision
 
 
 @dataclass(slots=True)
@@ -178,6 +204,7 @@ class ChatConfig:
     logger: Logger | BlockHandle | None
     log_off: bool | None
     _model_params_update: Params | None  # Used only while candidates is None.
+    _revision: str | None
 
     def __init__(
         self,
@@ -202,25 +229,58 @@ class ChatConfig:
         self.preset_name = preset_name
         self.auto_compress_rate = auto_compress_rate
         self.request_policy = copy.deepcopy(request_policy)
-        self.system_prompt, self.keep_alive = system_prompt, keep_alive
-        self.logger, self.log_off = logger, log_off
+        self.system_prompt = system_prompt
+        self.keep_alive = keep_alive
+        self.logger = logger
+        self.log_off = log_off
         self._model_params_update = None
+        self._revision = None
         if model_params is not None:
             self.model_params = model_params
 
     def copy(self) -> ChatConfig:
-        """Isolate mutable configuration while keeping the business logger by reference."""
-        return ChatConfig(
-            self.candidates,
-            preset_name=self.preset_name,
-            auto_compress_rate=self.auto_compress_rate,
-            request_policy=self.request_policy,
-            system_prompt=self.system_prompt,
-            keep_alive=self.keep_alive,
-            logger=self.logger,
-            log_off=self.log_off,
-            model_params=self._model_params_update if self.candidates is None else None,
+        return self.__copy__()
+
+    def __copy__(self) -> ChatConfig:
+        """浅复制外层容器，候选、策略和 logger 保持引用。"""
+        result = object.__new__(type(self))
+        result.candidates = self.candidates.copy() if self.candidates is not None else None
+        result.preset_name = self.preset_name
+        result.auto_compress_rate = self.auto_compress_rate
+        result.request_policy = self.request_policy
+        result.system_prompt = self.system_prompt
+        result.keep_alive = self.keep_alive
+        result.logger = self.logger
+        result.log_off = self.log_off
+        result._model_params_update = (
+            self._model_params_update.copy()
+            if self._model_params_update is not None
+            else None
         )
+        result._revision = self._revision
+        return result
+
+    def __deepcopy__(self, memo: dict[int, object]) -> ChatConfig:
+        """隔离配置数据；logger 是借用的业务资源，始终保留原引用。"""
+        result = object.__new__(type(self))
+        memo[id(self)] = result
+        result.candidates = copy.deepcopy(self.candidates, memo)
+        result.preset_name = self.preset_name
+        result.auto_compress_rate = self.auto_compress_rate
+        result.request_policy = copy.deepcopy(self.request_policy, memo)
+        result.system_prompt = self.system_prompt
+        result.keep_alive = self.keep_alive
+        result.logger = self.logger
+        result.log_off = self.log_off
+        result._model_params_update = copy.deepcopy(self._model_params_update, memo)
+        result._revision = self._revision
+        return result
+
+    def refresh_fingerprints(self) -> None:
+        """框架完成配置更新后调用；候选与预设的指纹一起失效。"""
+        self._revision = None
+        for candidate in self.candidates or []:
+            candidate.refresh_fingerprints()
 
     @property
     def primary(self) -> LLMConfig:
@@ -230,9 +290,10 @@ class ChatConfig:
 
     @property
     def revision(self) -> str:
-        from .config import fingerprint
+        if self._revision is not None:
+            return self._revision
 
-        return fingerprint(
+        self._revision = fingerprint(
             [
                 self.preset_name,
                 [c.revision for c in self.candidates or []],
@@ -240,6 +301,7 @@ class ChatConfig:
                 vars_policy(self.request_policy or RequestPolicy()),
             ]
         )
+        return self._revision
 
     @property
     def model_params(self) -> Params | None:
@@ -256,6 +318,8 @@ class ChatConfig:
         else:
             self._model_params_update = copy.deepcopy(value)
 
+        self.refresh_fingerprints()
+
     @property
     def model(self) -> str:
         return self.primary.model
@@ -263,6 +327,7 @@ class ChatConfig:
     @model.setter
     def model(self, value: str):
         self.primary.model = value
+        self.refresh_fingerprints()
 
     @property
     def endpoint(self) -> str:
@@ -275,6 +340,7 @@ class ChatConfig:
                 None  # A new account must not inherit the old Files binding.
             )
         self.primary.endpoint = value
+        self.refresh_fingerprints()
 
     @property
     def token(self) -> str:
@@ -285,6 +351,7 @@ class ChatConfig:
         if value != self.primary.token:
             self.primary.files = None
         self.primary.token = value
+        self.refresh_fingerprints()
 
     @property
     def api_provider(self) -> str:
@@ -295,6 +362,7 @@ class ChatConfig:
         if value != self.primary.provider_type:
             self.primary.files = None
         self.primary.provider_type = value
+        self.refresh_fingerprints()
 
     @property
     def max_context(self) -> int | None:
@@ -303,6 +371,7 @@ class ChatConfig:
     @max_context.setter
     def max_context(self, value: int | None):
         self.primary.max_context = value
+        self.refresh_fingerprints()
 
     @property
     def client_params(self) -> Params:
@@ -311,6 +380,7 @@ class ChatConfig:
     @client_params.setter
     def client_params(self, value: Params):
         self.primary.client_params = copy.deepcopy(value)
+        self.refresh_fingerprints()
 
     @property
     def price(self) -> ApiPrice | None:

@@ -10,6 +10,7 @@ from hashlib import blake2b
 from copy import deepcopy
 from TIYA.config import DATA_DIR
 from TIYA.logger import get_logger
+from TIYA.utils import fingerprint
 from .usage import Ledger
 import shutil
 import threading
@@ -161,10 +162,19 @@ class UsageStorage:
     def __copy__(self):
         return UsageStorage(
             self.model,
-            self.price.copy() if self.price is not None else None,
-            deepcopy(self.usage),
+            self.price,
+            self.usage.copy(),
             self.last_update,
         )
+
+    def __deepcopy__(self, memo: dict[int, object]) -> UsageStorage:
+        result = object.__new__(type(self))
+        memo[id(self)] = result
+        result.model = self.model
+        result.price = deepcopy(self.price, memo)
+        result.usage = deepcopy(self.usage, memo)
+        result.last_update = self.last_update
+        return result
 
     # 已弃用
     @staticmethod
@@ -373,8 +383,6 @@ class LLMUsage:
         return None  # Every ledger mutation is already committed.
 
     def load_dict(self, data):
-        from .config import fingerprint
-
         self.ledger.import_aggregate(data, fingerprint(data))
 
     def to_dict(self):

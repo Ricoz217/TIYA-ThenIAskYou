@@ -1,15 +1,14 @@
 """HTTP transport and SSE framing. No model semantics and no automatic retries."""
-
 from __future__ import annotations
+
+import httpx
 
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-
-import httpx
+from typing import Any
 
 from TIYA.utils import parse_proxies_to_httpx
-
 from .config_model import JsonValue, Params
 
 
@@ -79,7 +78,7 @@ class Gateway:
         """借用调用方的 HTTP 客户端；download_options 只保留下载所需网络选项。"""
         self.client = client
         self.last_request_id = ""
-        self.download_options = {
+        self.download_options: dict[str, Any] = {
             k: v
             for k, v in (download_options or {}).items()
             if k
@@ -87,28 +86,36 @@ class Gateway:
         }
 
     def _remember(self, response):
+        """记录上一个请求"""
         headers = getattr(response, "headers", {})
         self.last_request_id = str(
             headers.get("x-request-id", headers.get("request-id", ""))
         )[:1024]
 
-    def _kwargs(self, request, timeout):
-        result = {"timeout": timeout}
+    def _kwargs(self, request: WireRequest, timeout: float):
+        """只是一个解包，得看具体后续处理逻辑"""
+        result: dict[str, Any] = {"timeout": timeout}
         defaults = getattr(self.client, "headers", {})
         if request.headers and any(
             defaults.get(k) != v for k, v in request.headers.items()
         ):
             result["headers"] = request.headers
+
         if request.json is not None:
             result["json"] = request.json
+
         if request.data is not None:
             result["data"] = request.data
+
         if request.files is not None:
             result["files"] = request.files
+
         if request.params is not None:
             result["params"] = request.params
+
         return result
 
+    # 这里可能要审阅一下错误处理逻辑
     async def send(self, request: WireRequest, timeout: float) -> Params:
         """发送一次 JSON 请求（timeout 单位秒），HTTP 失败抛 HTTPFailure；不自动重试。"""
         kwargs = self._kwargs(request, timeout)
@@ -117,23 +124,31 @@ class Gateway:
             response = await self.client.send(
                 prepared, auth=None, follow_redirects=False
             )
+
         elif request.method == "POST":
             response = await self.client.post(url=request.url, **kwargs)
+
         else:
             response = await self.client.request(request.method, request.url, **kwargs)
+
         self._remember(response)
         if response.status_code == 204:
             return {}
+
         try:
             body = response.json()
+
         except ValueError as exc:
             if response.status_code < 300:
                 raise ValueError("HTTP 成功响应不是有效 JSON") from exc
+
             body = {"transport_error": "non_json_response"}
+
         if response.status_code >= 300:
             raise HTTPFailure(
                 response.status_code, body, getattr(response, "headers", {})
             )
+
         return body
 
     async def send_bytes(self, request: WireRequest, timeout: float) -> bytes:
@@ -144,15 +159,17 @@ class Gateway:
                 auth=None,
                 follow_redirects=False,
             )
+
         else:
             response = await self.client.request(
                 request.method, request.url, **self._kwargs(request, timeout)
             )
+
         response.raise_for_status()
         return response.content
 
     @staticmethod
-    def _isolated_request(request, timeout):
+    def _isolated_request(request: WireRequest, timeout: float):
         return httpx.Request(
             request.method,
             request.url,
@@ -165,7 +182,7 @@ class Gateway:
         )
 
     @asynccontextmanager
-    async def _response_context(self, request, timeout):
+    async def _response_context(self, request: WireRequest, timeout: float):
         if request.isolate_headers:
             response = await self.client.send(
                 self._isolated_request(request, timeout),
@@ -175,8 +192,10 @@ class Gateway:
             )
             try:
                 yield response
+
             finally:
                 await response.aclose()
+
         else:
             async with self.client.stream(
                 request.method, request.url, **self._kwargs(request, timeout)
@@ -193,13 +212,17 @@ class Gateway:
                 await response.aread()
                 try:
                     body = response.json()
+
                 except ValueError:
                     body = {"transport_error": "non_json_response"}
+
                 raise HTTPFailure(response.status_code, body, response.headers)
+
             if "application/json" in response.headers.get("content-type", ""):
                 await response.aread()
                 yield response.json()
                 return
+
             async for frame in frames(response.aiter_lines()):
                 yield frame
 
@@ -210,6 +233,7 @@ class Gateway:
         proxies = options.pop("proxies", {})
         if proxies:
             options["mounts"] = parse_proxies_to_httpx(proxies)
+
         async with httpx.AsyncClient(
             follow_redirects=True, timeout=timeout, **options
         ) as download_client:

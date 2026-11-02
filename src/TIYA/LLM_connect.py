@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx  # Historical monkeypatch/integration seam; the transport uses this same module.
 from TIYA.utils import parse_proxies_to_httpx
 from TIYA.LLM_usage import ApiPrice, LLMUsage, _GLOBAL_USAGE
+from .llm.config_model import ChatConfig, LLMConfig, FilesConfig, RequestPolicy
 from .llm.model import (
     ContextOverflowError,
     ContextEmptyError,
@@ -18,10 +19,6 @@ from .llm.model import (
     Prompts,
     Context,
     AskTask,
-    ChatConfig,
-    LLMConfig,
-    FilesConfig,
-    RequestPolicy,
     MediaRef,
     ImageGenerateRequest,
     ImageEditRequest,

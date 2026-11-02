@@ -3,7 +3,8 @@ from __future__ import annotations
 import copy
 from dataclasses import fields
 
-from ..config import fingerprint
+from TIYA.utils import fingerprint
+
 from ..gateway import WireRequest
 from ..model import ImageEditRequest, ImageGenerateRequest, MediaRef
 from .base import Provider

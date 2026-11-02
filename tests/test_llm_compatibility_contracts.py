@@ -173,7 +173,7 @@ def test_schema_keeps_enum_defaults_collections_and_optional_contract():
 
 
 def test_estimator_does_not_tokenize_opaque_replay_metadata_twice():
-    from TIYA.llm.snapshot import estimate
+    from TIYA.llm.usage import estimate
 
     prompt = TextPrompt("assistant", "short answer")
     before = estimate(Context(prompt))["input"]

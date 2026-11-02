@@ -3,20 +3,53 @@ import asyncio
 import copy
 import datetime
 import inspect
+import hashlib
 import time
+
 from enum import Enum
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, overload, Literal
 from uuid import uuid4
+
 from TIYA.time_id import next_time_id
+from TIYA.utils import fingerprint
+from TIYA.file_cache import add_file_async, get_file_path_async
+from .legacy_media import (
+    _IMAGE_NAME_MAPPING,
+    _load_image_hashes,
+    handle_unload_image,
+)
+from .tool_schema import build_tool_payloads
+from .usage_model import TokenUsage as TokenUsage
 from .config_model import (
-    ChatConfig as ChatConfig,
-    LLMConfig as LLMConfig,
-    FilesConfig as FilesConfig,
-    RequestPolicy as RequestPolicy,
     Params,
 )
+
+type MediaKind = Literal["path", "url", "bytes", "base64", "remote"]
+
+
+def stable(value: object) -> dict | list | object:
+    """把 LLM 数据转换为指纹内容：字节取摘要，callable 展开为工具 schema。
+
+    只构造用于比较的数据，不执行 Prompt.to_dict() 或图片文件操作。
+    """
+    if isinstance(value, bytes):
+        return {"sha256": hashlib.sha256(value).hexdigest()}
+
+    if isinstance(value, dict):
+        return {k: stable(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [stable(v) for v in value]
+
+    if callable(value):
+        return build_tool_payloads(value)
+
+    if hasattr(value, "__dict__"):
+        return stable(vars(value))
+
+    return value
 
 
 class ContextOverflowError(Exception):
@@ -41,6 +74,11 @@ class PromptType(Enum):
 
 
 class BasePrompt:
+    # 计算缓存独立于 __dict__，不参与消息指纹、原生回放校验和序列化。
+    __slots__ = ("__dict__", "__weakref__", "estimated_tokens")
+
+    estimated_tokens: int | None  # 当前进程的 o200k 估算缓存，非供应商 usage。
+
     def __init__(self, role: str, contain_type: str, create_time: str = None):
         if create_time is None:
             create_time = str(time.time())
@@ -50,6 +88,7 @@ class BasePrompt:
         self.time: str = create_time
         self.id: str = str(next_time_id())
         self.native: dict = {}
+        self.estimated_tokens = None
 
     def to_dict(self) -> dict:
         return {
@@ -98,7 +137,10 @@ class SystemPrompt(BasePrompt):
         return new_prompt
 
     def __copy__(self):
-        return SystemPrompt(self.text, create_time=self.time)
+        result = SystemPrompt(self.text, create_time=self.time)
+        result.native = self.native.copy()
+        result.estimated_tokens = self.estimated_tokens
+        return result
 
     def __eq__(self, other):
         if isinstance(other, SystemPrompt):
@@ -167,40 +209,50 @@ class TextPrompt(BasePrompt):
 
 
 class ImagePrompt(BasePrompt):
+    """图片消息；hash_name 是原件 ID，image 是旧版有序派生件 ID 列表。
+
+    image 参数保留 Path/bytes/base64 输入入口；准备后原件入库，image_input 清空。
+    已有缓存可直接传 hash_name，不需要解析路径或重新计算内容指纹。
+    """
+
+    # 内容身份由 hash_name/image 决定；补齐 MIME/尺寸不应改变远端上下文前缀。
+    __slots__ = ("resource",)
+
     def __init__(
         self,
         role: str,
-        image: str | Path | bytes,
+        image: str | Path | bytes | None = None,
         name: str = "",
         create_time: str = None,
+        *,
+        hash_name: str = "",
     ):
         super().__init__(role, "IMAGE", create_time)
-        self.name: str = name  # 图片的唯一ID，用于查询缓存
-        self.image: list[str] = []  # base64字符串哈希列表，节省内存
+        self.name: str = name  # 业务别名，用于旧版分片映射；不作为文件内容标识。
+        self.image: list[str] = []  # 旧版压缩/分片的 file_cache ID，按发送顺序保存。
         self.image_input = image
-        self.media_descriptor: str = ""
-        self.prepared_input: str = ""
+        self.hash_name = hash_name  # 原件的 file_cache ID；准备后以此为准，image_input 清空。
         self.resource: MediaRef | None = None
 
     def to_dict(self) -> dict:
-        if not isinstance(self.image_input, Path):
-            from TIYA.file_cache import get_file_path, add_file
+        hash_name = self.hash_name
+        origin_image_path = None
+        if not hash_name and isinstance(self.image_input, Path):
+            origin_image_path = str(self.image_input)
 
-            origin_image_path = get_file_path(
-                add_file(self.image_input)
-            )  # 这是保底，正常不会触发
+        elif not hash_name and self.image_input is not None:
+            from TIYA.file_cache import add_file
 
-        else:
-            origin_image_path = self.image_input
+            # 未发送就存档时的保底；已归一的图片存档不再读取本地文件。
+            hash_name = add_file(self.image_input, "IMAGE")
 
         base_dict = super().to_dict()
         base_dict["type"] = PromptType.IMAGE.value
         base_dict["data"] = {
             "name": self.name,
             "image": self.image,
-            "image_input": str(origin_image_path),
-            "media_descriptor": self.media_descriptor,
-            "prepared_input": self.prepared_input,
+            "image_input": origin_image_path,
+            "hash_name": hash_name,
             "resource": asdict(self.resource) if self.resource else None,
         }
         return base_dict
@@ -209,26 +261,18 @@ class ImagePrompt(BasePrompt):
     def from_dict(cls, data: dict):
         new_prompt = ImagePrompt(
             data["role"],
-            Path(data["data"]["image_input"]),
+            Path(data["data"]["image_input"]) if data["data"].get("image_input") else None,
             data["data"]["name"],
             data["time"],
+            hash_name=data["data"].get("hash_name", ""),
         )
         new_prompt.id = data["id"]
         new_prompt.image = data["data"]["image"]
-        new_prompt.media_descriptor = data["data"].get("media_descriptor", "")
-        new_prompt.prepared_input = data["data"].get("prepared_input", "")
         if data["data"].get("resource"):
             new_prompt.resource = MediaRef(**data["data"]["resource"])
         return new_prompt
 
     async def load_image(self, cache: dict[str, str]) -> bool:
-        from .legacy_media import (
-            _IMAGE_NAME_MAPPING,
-            _load_image_hashes,
-            handle_unload_image,
-        )
-        from TIYA.file_cache import add_file_async, get_file_path_async
-
         if self.name:
             hash_name_list = _IMAGE_NAME_MAPPING.get(self.name, [])
             if hash_name_list and await _load_image_hashes(hash_name_list, cache):
@@ -239,9 +283,15 @@ class ImagePrompt(BasePrompt):
 
         self.image = []
         try:
-            hash_name = await add_file_async(self.image_input)  # 入库
-            hash_name_list = await handle_unload_image(self.image_input, cache)
-            self.image_input = await get_file_path_async(hash_name)
+            if self.hash_name:
+                source = await get_file_path_async(self.hash_name)
+
+            else:
+                source = self.image_input
+                self.hash_name = await add_file_async(source, "IMAGE")
+
+            hash_name_list = await handle_unload_image(source, cache)
+            self.image_input = None
 
         except (FileNotFoundError, OSError, ValueError):
             return False
@@ -275,16 +325,6 @@ class ImagePrompt(BasePrompt):
 
 
 class ToolInput(BasePrompt):
-    def __deepcopy__(self, memo):
-        # Bound methods belong to business objects, often containing locks/clients.
-        result = object.__new__(type(self))
-        memo[id(self)] = result
-        result.__dict__ = {
-            k: v if k == "function" else copy.deepcopy(v, memo)
-            for k, v in vars(self).items()
-        }
-        return result
-
     def __init__(
         self,
         function: Callable | Awaitable,
@@ -336,6 +376,17 @@ class ToolInput(BasePrompt):
         output += f"[TOOL输入; function_name: {self.function_name}]"
         output += "\n"
         return output
+
+    def __deepcopy__(self, memo):
+        # Bound methods belong to business objects, often containing locks/clients.
+        result = object.__new__(type(self))
+        memo[id(self)] = result
+        result.__dict__ = {
+            k: v if k == "function" else copy.deepcopy(v, memo)
+            for k, v in vars(self).items()
+        }
+        result.estimated_tokens = self.estimated_tokens
+        return result
 
 
 class ToolCall(BasePrompt):
@@ -434,113 +485,6 @@ class ToolResponse(BasePrompt):
         return output
 
 
-@dataclass(slots=True)
-class TokenUsage:
-    """统一 token 统计结构。"""
-
-    input_t: int = 0
-    output_t: int = 0
-    cache_hit_t: int = 0
-    total_t: int = 0
-    model: str = ""
-    id: str = field(default_factory=lambda: str(next_time_id()))
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "input_t": self.input_t,
-            "output_t": self.output_t,
-            "cache_hit_t": self.cache_hit_t,
-            "total_t": self.total_t,
-            "model": self.model,
-            "id": self.id,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict):
-        new_usage = TokenUsage(
-            data.get("input_t", 0),
-            data.get("output_t", 0),
-            data.get("cache_hit_t", 0),
-            data.get("total_t", 0),
-            data.get("model", ""),
-            data.get("id", str(next_time_id())),
-        )
-        return new_usage
-
-    def clear(self):
-        self.input_t = 0
-        self.output_t = 0
-        self.cache_hit_t = 0
-        self.total_t = 0
-        self.model = ""
-
-    def copy(self):
-        return self.__copy__()
-
-    def __copy__(self):
-        return TokenUsage(
-            self.input_t, self.output_t, self.cache_hit_t, self.total_t, self.model
-        )
-
-    def __add__(self, other) -> TokenUsage:
-        if not isinstance(other, TokenUsage):
-            raise TypeError(f"'+' doesn't support type: {type(other)}")
-
-        if self.model != other.model:
-            if self.model:
-                raise ValueError("Not Same Model")
-
-            else:
-                self.model = other.model
-
-        new_input_t = self.input_t + other.input_t
-        new_output_t = self.output_t + other.output_t
-        new_cache_hit_t = self.cache_hit_t + other.cache_hit_t
-        new_total_t = self.total_t + other.total_t
-        return TokenUsage(
-            new_input_t, new_output_t, new_cache_hit_t, new_total_t, self.model
-        )
-
-    def __sub__(self, other) -> TokenUsage:
-        if not isinstance(other, TokenUsage):
-            raise TypeError(f"'-' doesn't support type: {type(other)}")
-
-        if self.model != other.model:
-            if self.model:
-                raise ValueError("Not Same Model")
-
-        new_input_t = max(0, self.input_t - other.input_t)
-        new_output_t = max(0, self.output_t - other.output_t)
-        new_cache_hit_t = max(0, self.cache_hit_t - other.cache_hit_t)
-        new_total_t = max(0, self.total_t - other.total_t)
-        return TokenUsage(
-            new_input_t, new_output_t, new_cache_hit_t, new_total_t, self.model
-        )
-
-    def __gt__(self, other):
-        if not isinstance(other, TokenUsage):
-            raise TypeError(f"'>' doesn't support type: {type(other)}")
-
-        if self.model != other.model:
-            if self.model:
-                raise ValueError("Not Same Model")
-
-        return self.total_t > other.total_t
-
-    def __lt__(self, other):
-        if not isinstance(other, TokenUsage):
-            raise TypeError(f"'>' doesn't support type: {type(other)}")
-
-        if self.model != other.model:
-            if self.model:
-                raise ValueError("Not Same Model")
-
-        return self.total_t < other.total_t
-
-    def __bool__(self):
-        return bool(self.total_t)
-
-
 class Prompts:
     def __init__(
         self, *args, role: str = "", create_time: str = None, duration: float = 0.0
@@ -553,6 +497,7 @@ class Prompts:
         self.time = create_time  # 最新一条消息的时间
         self._duration: float = duration  # 耗时
         self.usage: TokenUsage | None = None
+        self._signature: str | None = None
         if args:
             self._initiate_prompts(args)
 
@@ -641,6 +586,7 @@ class Prompts:
                 return 0.0
 
     def append(self, addition: BasePrompt | Prompts | TokenUsage | str | list) -> None:
+        self.refresh_fingerprints(content_changed=False)
         roles = set()
         self._unpack_prompts(addition, roles)
         if len(roles) == 1:
@@ -658,6 +604,22 @@ class Prompts:
     def extend(self, addition: BasePrompt | Prompts | str | list) -> None:
         return self.append(addition)
 
+    def refresh_fingerprints(self, *, content_changed: bool = True) -> None:
+        """刷新内容指纹；仅增删容器成员时保留各消息的 token 估算。"""
+        self._signature = None
+        if content_changed:
+            for prompt in self.prompts:
+                prompt.estimated_tokens = None
+
+    @property
+    def signature(self) -> str:
+        """消息内容指纹；框架修改后刷新，不监控消息对象的外部直接修改。"""
+        if self._signature is None:
+            messages = [stable(vars(prompt)) for prompt in self.prompts]
+            self._signature = fingerprint([self.role, messages])
+
+        return self._signature
+
     def discard_prompt_ids(self, prompt_ids: set[str]) -> int:
         if not prompt_ids:
             return 0
@@ -666,6 +628,7 @@ class Prompts:
         self.prompts = [
             prompt for prompt in self.prompts if prompt.id not in prompt_ids
         ]
+        self.refresh_fingerprints(content_changed=False)
         return original_count - len(self.prompts)
 
     def copy(self):
@@ -740,9 +703,32 @@ class Prompts:
         return bool(self.prompts)
 
     def __copy__(self):
-        return copy.deepcopy(self)
+        result = Prompts()
+        result.prompts = self.prompts.copy()
+        result.role = self.role
+        result.time = self.time
+        result._duration = self._duration
+        result.usage = self.usage.copy() if self.usage is not None else None
+        result._signature = self._signature
+        return result
 
-    def __getitem__(self, item):
+    def __deepcopy__(self, memo: dict[int, object]) -> Prompts:
+        result = object.__new__(type(self))
+        memo[id(self)] = result
+        result.__dict__ = copy.deepcopy(self.__dict__, memo)
+        return result
+
+    @overload
+    def __getitem__(self, item: int) -> BasePrompt: ...
+
+    @overload
+    def __getitem__(self, item: slice) -> Prompts: ...
+
+    def __getitem__(self, item: int | slice) -> BasePrompt | Prompts:
+        """索引取单条消息；切片返回新 Prompts 容器，内部消息仍共享。"""
+        if isinstance(item, slice):
+            return Prompts(self.prompts[item])
+
         if not isinstance(item, int):
             raise KeyError("index must be int")
 
@@ -757,6 +743,10 @@ class Context:
         self._rounds: dict[str, Prompts] = {}
         self._tools: list[ToolInput] = []
         self._usage_accumulation: TokenUsage = TokenUsage()
+        self._signature: str | None = None
+        self._message_fingerprints: tuple[str, ...] | None = None
+        self._header_signature: str | None = None
+        self.estimated_tokens: int | None = None  # 当前消息和工具的本地 token 汇总。
         if args:
             self._initiate(args)
 
@@ -766,10 +756,52 @@ class Context:
         if new_round:
             self._submit_round(new_round)
 
-    def _add_usage(self, usage: TokenUsage):
-        if not self._usage_accumulation.model:
-            self._usage_accumulation.model = usage.model
+    def refresh_fingerprints(self, *, content_changed: bool = True) -> None:
+        """刷新指纹和估算；仅增删成员/准备媒体时传 False，保留消息级估算。
 
+        默认按内容修改处理，清除各消息缓存。不探测外部对消息字段的直接写入。
+        """
+        self._signature = None
+        self._message_fingerprints = None
+        self._header_signature = None
+        self.estimated_tokens = None
+        if content_changed:
+            for prompt in self:
+                prompt.estimated_tokens = None
+
+        for prompts in self._rounds.values():
+            prompts.refresh_fingerprints(content_changed=False)
+
+    @property
+    def message_fingerprints(self) -> tuple[str, ...]:
+        if self._message_fingerprints is None:
+            messages = [stable(vars(prompt)) for prompt in self._messages]
+            self._message_fingerprints = tuple(fingerprint(message) for message in messages)
+
+        return self._message_fingerprints
+
+    @property
+    def signature(self) -> str:
+        if self._signature is None:
+            tools = [stable(vars(tool)) for tool in self._tools]
+            self._signature = fingerprint([list(self.message_fingerprints), tools])
+
+        return self._signature
+
+    @property
+    def header_signature(self) -> str:
+        """system/tools 的稳定指纹，用于判断能否沿用远端上下文。"""
+        if self._header_signature is None:
+            system = None
+            if self._system_prompt is not None:
+                system = stable(vars(self._system_prompt))
+
+            tools = [stable(vars(tool)) for tool in self._tools]
+            self._header_signature = fingerprint([system, tools])
+
+        return self._header_signature
+
+    def _add_usage(self, usage: TokenUsage):
         self._usage_accumulation += usage
 
     def _submit_round(self, round_list: dict):
@@ -825,9 +857,15 @@ class Context:
         if not addition:
             return
 
+        self.refresh_fingerprints(content_changed=False)
         if self._rounds:
             key = next(reversed(self._rounds))
-            last_round = {"prompts": self._rounds[key].prompts.copy(), "usage": []}
+            previous = self._rounds[key]
+            # 重建最后一轮时携带旧用量；只交给 _submit_round，不再次累计到总用量。
+            last_round = {
+                "prompts": previous.prompts.copy(),
+                "usage": [previous.usage] if previous.usage is not None else [],
+            }
             del self._rounds[key]
 
         else:
@@ -858,8 +896,29 @@ class Context:
         if tools:
             self._tools.clear()
 
+        self.refresh_fingerprints(content_changed=False)
+
     def to_prompts(self) -> Prompts:
         return Prompts(self._messages, self._tools)
+
+    def replace_contents(self, other: Context) -> None:
+        """替换当前会话的数据；复制外层容器，消息/轮次/工具仍引用 other 的对象。
+
+        用于提交已准备好的工作上下文，不改变当前 session_id。
+        """
+        self._system_prompt = other._system_prompt
+        self._messages = other._messages.copy()
+        self._rounds = other._rounds.copy()
+        self._tools = other._tools.copy()
+        self.replace_usage(other._usage_accumulation)
+        self._signature = other._signature
+        self._message_fingerprints = other._message_fingerprints
+        self._header_signature = other._header_signature
+        self.estimated_tokens = other.estimated_tokens
+
+    def replace_usage(self, usage: TokenUsage) -> None:
+        """替换累计用量的外层视图，不改动各轮自己的 usage。"""
+        self._usage_accumulation = usage.copy()
 
     def discard_prompt_ids(self, prompt_ids: set[str]) -> int:
         if not prompt_ids:
@@ -877,12 +936,14 @@ class Context:
                 for prompt in filtered_prompts.prompts
                 if prompt.id not in prompt_ids
             ]
+            filtered_prompts.refresh_fingerprints(content_changed=False)
             if filtered_prompts:
                 self._rounds[round_id] = filtered_prompts
 
             else:
                 self._rounds.pop(round_id)
 
+        self.refresh_fingerprints(content_changed=False)
         return original_count - len(self._messages)
 
     def back2last_round(self) -> Prompts:
@@ -901,6 +962,7 @@ class Context:
                     if not isinstance(prompt, SystemPrompt):
                         self._messages.append(prompt)
 
+        self.refresh_fingerprints(content_changed=False)
         return last_round
 
     def to_dict(self):
@@ -1020,7 +1082,7 @@ class Context:
         return self._rounds.copy()
 
     @property
-    def usage(self) -> TokenUsage | None:
+    def usage(self) -> TokenUsage:
         """返回累积token消耗"""
         return self._usage_accumulation.copy()
 
@@ -1061,8 +1123,24 @@ class Context:
         return output
 
     def __copy__(self):
-        result = copy.deepcopy(self)
-        result.session_id = uuid4().hex
+        """沿用旧接口：新会话及外层容器，内部 Prompt/轮次/工具对象共享。"""
+        result = Context()
+        result._system_prompt = self._system_prompt
+        result._messages = self._messages.copy()
+        result._rounds = self._rounds.copy()
+        result._tools = self._tools.copy()
+        result._usage_accumulation = self._usage_accumulation.copy()
+        result._signature = self._signature
+        result._message_fingerprints = self._message_fingerprints
+        result._header_signature = self._header_signature
+        result.estimated_tokens = self.estimated_tokens
+        return result
+
+    def __deepcopy__(self, memo: dict[int, object]) -> Context:
+        """复制数据快照并保留 session_id；memo 保持消息/轮次内的共享关系。"""
+        result = object.__new__(type(self))
+        memo[id(self)] = result
+        result.__dict__ = copy.deepcopy(self.__dict__, memo)
         return result
 
     def __iter__(self):
@@ -1107,21 +1185,23 @@ class AskTask:
     outcome: CallOutcome | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MediaRef:
-    """统一资源引用：输入可为原件、缓存或远端 ID，返回图片使用 cache。
+    """资源引用；本地文件直接使用 hash_name，无须解释 kind/value。
 
-    kind 指明 value 的解释方式；scope 绑定远端账户，expires_at 为 Unix 秒。
-    width/height 记录已知尺寸，不触发读取或下载。
+    kind/value 仅描述尚未归一的输入或远端传输引用。远端引用可同时携带原件
+    hash_name，供失效重传使用；content() 优先读取本地原件。scope 绑定远端账户，
+    expires_at 为 Unix 秒。尺寸为已知元数据，访问字段不触发 IO。
     """
 
-    kind: str  # cache/path/url/bytes/base64/remote
-    value: str | Path | bytes
+    kind: MediaKind | None = None
+    value: str | Path | bytes | None = None
     mime_type: str | None = None
     scope: str | None = None
     width: int | None = None
     height: int | None = None
     expires_at: float | None = None
+    hash_name: str = ""  # file_cache 的内容标识，不再二次哈希文件内容。
 
 
 @dataclass
@@ -1149,21 +1229,44 @@ class ImageEditRequest(ImageGenerateRequest):
     mask: MediaRef | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class ImageResponseItem:
-    """已落盘的单张输出/预览；image 为 file_cache ID，不向业务返回临时 URL。"""
+    """已落盘的输出/预览；image.hash_name 可直接交给业务的文件消费接口。
+
+    image_index 为结果位置，partial_image_index 为预览序号；created_at 为 Unix 秒。
+    metadata 只保留未建模的供应商扩展，不含图片载荷和以下已知字段。
+    """
 
     image: MediaRef
     revised_prompt: str | None = None
     metadata: Params = field(default_factory=dict)
+    output_format: str | None = None
+    background: str | None = None
+    quality: str | None = None
+    size: str | None = None
+    image_index: int | None = None
+    partial_image_index: int | None = None
+    created_at: int | None = None
+    event_type: str | None = None
+    safety_identifier: str | None = None
+    usage: Params = field(default_factory=dict)  # 单个流事件附带的原生 usage。
 
 
-@dataclass
+@dataclass(slots=True)
 class ImagesResponse:
-    """已缓存的最终图片集合；request_id 为本地账本 ID，usage 保留真实返回值。"""
+    """已缓存的最终图片集合；request_id 为本地账本 ID，usage 保留真实返回值。
+
+    格式、背景、质量及尺寸来自供应商实际响应，不以请求参数猜测返回值。
+    metadata 仅容纳以下字段之外的供应商扩展。
+    """
 
     created: int | None = None
     data: list[ImageResponseItem] = field(default_factory=list)
     usage: Params = field(default_factory=dict)
     request_id: str = ""
     metadata: Params = field(default_factory=dict)
+    output_format: str | None = None
+    background: str | None = None
+    quality: str | None = None
+    size: str | None = None
+    safety_identifier: str | None = None

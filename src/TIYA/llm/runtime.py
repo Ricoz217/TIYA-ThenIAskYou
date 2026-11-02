@@ -1,8 +1,8 @@
 """通信调度：准备快照 → 选择候选 → 有界尝试 → 返回待提交结果。
 
 execute 不修改业务 Context。只有 commit/commit_async 校验快照仍有效后才提交；
-取消、部分输出或远端执行不明一律停止重发。账本记录每次实际发送，检查点和
-fallback 冷却只在业务提交后持久化，避免把未消费结果当作已完成的一轮。
+取消、部分输出或远端执行不明一律停止重发。账本记录每次实际发送，检查点只在
+业务提交后持久化；fallback 冷却在安全失败后的候选切换时更新。
 """
 
 from __future__ import annotations
@@ -13,15 +13,15 @@ import json
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import TYPE_CHECKING, TypedDict, cast
 
-import httpx
+from TIYA.utils import fingerprint
 
-from .config import fingerprint
 from .config_model import ChatConfig, JsonValue, LLMConfig, Params
 from .gateway import Frame, Gateway, HTTPFailure, WireRequest
-from .media import MediaError, MediaService
+from .media import MediaError, MediaService, UploadSender
 from .model import (
     BasePrompt,
     CallOutcome,
@@ -30,7 +30,6 @@ from .model import (
     ImagePrompt,
     MediaRef,
     Prompts,
-    SystemPrompt,
     TokenUsage,
 )
 from .provider import get_provider
@@ -43,7 +42,7 @@ from .provider.base import (
     StreamDecoder,
 )
 from .provider.common import normalize
-from .snapshot import context_signature, estimate, prefix, stable
+from .usage import UsageEstimate, estimate_async
 from .workers import run_sync
 
 if TYPE_CHECKING:
@@ -97,7 +96,6 @@ class _Call:
     attempts: int = 0
     last_error: BaseException | None = None
     reason: str = ""
-    overflow: bool = False
     last_request_id: str = ""
     last_remote_state: str = "not_sent"
     last_category: str = "preflight"
@@ -111,7 +109,7 @@ class _Candidate:
     index: int
     provider: ConversationProvider
     gateway: Gateway
-    estimation: Params
+    estimation: UsageEstimate
     checkpoint_key: str
     checkpoints: list[Checkpoint]
     header: str
@@ -222,43 +220,44 @@ class Runtime:
             raise ValueError("Runtime 只接受完整 ChatConfig")
 
         self.media.degraded = False
-        expected = context_signature(context)
+        expected = context.signature
         planned = copy.deepcopy(context)
         planned.append(copy.deepcopy(prompts))
         planned = normalize(planned)
         deadline = time.monotonic() + timeout
+        call_id = await self._db(self.ledger.begin_call, config.preset_name)
         call = _Call(
-            context.session_id,
-            expected,
-            planned,
-            config,
-            deadline,
-            await self._db(self.ledger.begin_call, config.preset_name),
-            fingerprint([context.session_id, config.revision]),
+            session_id=context.session_id,
+            expected=expected,
+            planned=planned,
+            config=config,
+            deadline=deadline,
+            call_id=call_id,
+            route_key=fingerprint([context.session_id, config.revision]),
         )
         cooldown = await run_sync(self._state_get, "cooldown", call.route_key)
-        selected = (
-            cooldown.get("index", 0)
-            if cooldown and cooldown["until"] > time.time()
-            else 0
-        )
+        selected = 0
+        if cooldown and cooldown["until"] > time.time():
+            selected = cooldown.get("index", 0)
+
         if selected >= len(config.candidates):
             selected = 0
 
         try:
             for index in range(selected, len(config.candidates)):
+                if call.attempts >= config.request_policy.max_attempts:
+                    break
+
                 candidate = await self._prepare_candidate(
                     call, index, gateway_for_route
                 )
-                if candidate is None:  # 该候选窗口不足，未发送，不生成请求账目。
-                    continue
-
                 pending = await self._execute_candidate(call, candidate)
                 if pending is not None:
                     return pending
 
-            if call.overflow:
-                raise ContextOverflowError("所有可用组合上下文窗口不足")
+                # 当前候选已安全失败：记录下一候选；末项失败清除 CD，本次就此结束。
+                # 下次任务才从首选开始，本次不回绕已尝试的候选。
+                await run_sync(self._advance_route, call, index)
 
             if call.last_error:
                 raise call.last_error
@@ -280,14 +279,57 @@ class Runtime:
         finally:
             await self._mirror_subscribers(call.call_id)
 
+    def _advance_route(self, call: _Call, current_index: int) -> None:
+        """安全失败后同步更新下一候选的 CD；不在本次任务内回绕。
+
+        cooldown 的 value 为 {index: 候选下标, until: Unix 到期秒}。
+        推进到备用时刷新到期时间；末项失败删除记录，下次任务才从下标 0 开始。
+        成功请求不延长 CD。此处包含 SQLite IO，由调用方在线程池执行。
+        """
+        candidates = call.config.candidates
+        assert candidates is not None
+        policy = call.config.request_policy
+        assert policy is not None
+        next_index = current_index + 1
+        if next_index == len(candidates):
+            next_index = 0
+
+        try:
+            if next_index == 0:
+                self.state.delete("cooldown", call.route_key)
+
+            else:
+                until = time.time() + policy.fallback_cooldown_seconds
+                self.state.put(
+                    "cooldown",
+                    call.route_key,
+                    {"index": next_index, "until": until},
+                    until,
+                )
+
+        except (sqlite3.Error, OSError) as exc:
+            self._log(f"LLM 冷却状态更新失败: {type(exc).__name__}")
+
+        if next_index == 0:
+            self._log(
+                f"LLM 末项候选失败，删除 fallback 冷却；本次失败结束，下次从首选 {candidates[0].ref} 开始; "
+                f"原因={call.reason}; call={call.call_id}; request={call.last_request_id}"
+            )
+
+        else:
+            self._log(
+                f"LLM 已进入 fallback: {candidates[current_index].ref} -> {candidates[next_index].ref}; "
+                f"原因={call.reason}; call={call.call_id}; request={call.last_request_id}; 冷却至={until}"
+            )
+
     async def _prepare_candidate(
         self,
         call: _Call,
         index: int,
         gateway_for_route: GatewayFactory,
-    ) -> _Candidate | None:
-        """检查窗口/能力并选择最长有效检查点；保持消息、工具顺序不变。"""
-        route = copy.deepcopy(call.config.candidates[index])
+    ) -> _Candidate:
+        """检查当前候选窗口/能力并选择检查点；窗口不足直接抛出，不自动换候选。"""
+        route = call.config.candidates[index]
         provider = get_provider(route)
         if not callable(getattr(provider, "encode", None)):
             raise ValueError(
@@ -306,25 +348,20 @@ class Runtime:
                 "后台 Responses 需要显式声明 responses.supports_background"
             )
 
-        estimation = await run_sync(estimate, call.planned)
+        estimation = await estimate_async(call.planned)
         if route.max_context and estimation["input"] > route.max_context:
-            call.overflow = True
-            return None
+            call.last_category = "context_overflow"
+            raise ContextOverflowError(
+                f"候选 {route.ref} 的上下文估算下界 {estimation['input']} 超过其窗口 {route.max_context}"
+            )
 
         gateway = await gateway_for_route(route)
         checkpoint_key = fingerprint([call.session_id, route.scope])
         checkpoints = (
             await run_sync(self._state_get, "checkpoints", checkpoint_key) or []
         )
-        current_prefix = prefix(call.planned)
-        header = fingerprint(
-            [
-                stable(vars(call.planned._system_prompt))
-                if call.planned._system_prompt
-                else None,
-                [stable(vars(t)) for t in call.planned._tools],
-            ]
-        )
+        current_prefix = list(call.planned.message_fingerprints)
+        header = call.planned.header_signature
         matching = [
             c
             for c in checkpoints
@@ -363,38 +400,54 @@ class Runtime:
                 raise TimeoutError("LLM 逻辑请求总时限已到")
 
             # 续接只发送后缀；父 ID 无效时 _recover 会移除 parent，重新完整回放。
-            send_context = copy.deepcopy(call.planned)
+            send_context = call.planned
             if candidate.parent:
-                suffix = send_context._messages[len(candidate.parent["prefix"]) :]
-                send_context._messages = (
-                    [send_context._system_prompt] if send_context._system_prompt else []
-                ) + [p for p in suffix if not isinstance(p, SystemPrompt)]
+                suffix = call.planned.message[len(candidate.parent["prefix"]):]
+                send_context = Context(suffix, call.planned.tools)
+                # 历史前缀包含 system；切掉前缀后仍需构造本轮 instructions。
+                system = call.planned.system
+                if system is not None:
+                    send_context.append(system)
 
-            async def send_file(wire: WireRequest) -> Params:
-                return await self._control(
-                    call.call_id,
-                    candidate.route,
-                    wire,
-                    candidate.gateway,
-                    call.deadline,
-                )
+            # 固定发起者和客户端；不能捕获下一次循环可能变化的 candidate/call。
+            send_file = UploadSender(
+                partial(
+                    self._send_shared_file,
+                    call_id=call.call_id,
+                    route=candidate.route,
+                    gateway=candidate.gateway,
+                ),
+                candidate.gateway,
+            )
 
             try:
-                candidate.media = await self._prepare_media(
+                media_changed = await self._prepare_media(
                     send_context,
-                    call.planned,
                     candidate.provider,
                     send_file,
                     candidate.media,
                     candidate.inline,
                     candidate.force,
                 )
+                if media_changed:
+                    call.planned.refresh_fingerprints(content_changed=False)
+                    if send_context is not call.planned:
+                        send_context.refresh_fingerprints(content_changed=False)
 
             except (MediaError, OSError, ProviderFailure) as exc:
                 call.attempts += 1
                 call.last_error = exc
                 call.last_category = "media_preflight"
                 call.reason = f"media_preflight/{type(exc).__name__}"
+                if isinstance(exc, ProviderFailure):
+                    failure = exc.failure
+                    call.last_category = failure.category
+                    if failure.safe and await self._retry_candidate(call, candidate, failure):
+                        continue
+
+                    if not failure.fallback_allowed:
+                        raise
+
                 return None
 
             attempt = await self._begin_attempt(call, candidate, send_context)
@@ -407,6 +460,7 @@ class Runtime:
                 if (
                     isinstance(exc, asyncio.CancelledError)
                     or attempt.partial
+                    or call.last_remote_state == "completed"
                     or not failure.safe
                 ):
                     raise
@@ -415,8 +469,14 @@ class Runtime:
                 call.reason = (
                     f"{failure.category}/{failure.code} request={attempt.request_id}"
                 )
-                if not await self._recover(call, candidate, failure):
+                if await self._recover(call, candidate, failure):
+                    if call.attempts < call.config.request_policy.max_attempts:
+                        continue
+
+                if failure.fallback_allowed:
                     return None
+
+                raise
 
         return None
 
@@ -541,6 +601,7 @@ class Runtime:
                     else:
                         body = frame
 
+                    attempt.raw_body = body
                     attempt.decoder.feed(body)
 
                 result = attempt.decoder.finish()
@@ -558,7 +619,7 @@ class Runtime:
                         "queued",
                         "in_progress",
                     ):
-                        body = await self._control(
+                        body = await self._send_auxiliary_request(
                             call.call_id,
                             candidate.route,
                             candidate.provider.background_operation(
@@ -612,7 +673,7 @@ class Runtime:
                 f"LLM 端点未保存 response，后续使用完整历史: {candidate.route.ref}"
             )
 
-        output_estimate = (await run_sync(estimate, Context(result.prompts)))[
+        output_estimate = (await estimate_async(Context(result.prompts)))[
             "input"
         ]
         await self._db(
@@ -633,9 +694,8 @@ class Runtime:
         for image_prompt, image_wire in result.images:
             cached = await self.media.materialize(image_wire, candidate.gateway)
             image_prompt.resource = cached.image
-            from TIYA.file_cache import get_file_path_async
-
-            image_prompt.image_input = await get_file_path_async(cached.image.value)
+            image_prompt.hash_name = cached.image.hash_name
+            image_prompt.image_input = None
 
         result.images.clear()
         await self._db(
@@ -648,23 +708,19 @@ class Runtime:
             reported_model=result.reported_model,
         )
         usage_row = await self._db(self.ledger.get_request, attempt.request_id)
-        usage = usage_row["effective"]
         result.prompts.usage = TokenUsage(
-            input_t=usage.get("input", 0) or 0,
-            output_t=usage.get("output", 0) or 0,
-            cache_hit_t=usage.get("cached", 0) or 0,
-            total_t=usage.get(
-                "total",
-                (usage.get("input", 0) or 0) + (usage.get("output", 0) or 0),
-            ),
             model=candidate.route.model,
+            request_id=usage_row["id"],
+            call_id=usage_row["call_id"],
+            reported=usage_row["reported"],
+            estimated=usage_row["estimated"],
         )
         checkpoint = (
             {
                 "response_id": result.response_id,
                 "header": candidate.header,
-                "prefix": prefix(
-                    Context(call.planned._messages, result.prompts)
+                "prefix": list(
+                    Context(call.planned.message, result.prompts).message_fingerprints
                 ),
             }
             if (
@@ -696,12 +752,14 @@ class Runtime:
         attempt: _Attempt,
         exc: BaseException,
     ) -> Failure:
-        """保留失败时的 usage、远端状态和平台 ID；返回分类，恢复策略另行决定。"""
+        """保留失败证据，解释 Provider 建议并叠加实际执行状态，不改写原错误对象。"""
+        observed_usage: Params = {}
         if attempt.decoder:
             attempt.partial = attempt.decoder.partial
             # Retain known usage even when tool JSON/final framing is damaged.
             try:
                 usage_result = candidate.provider.usage_result(attempt.decoder.usage)
+                observed_usage = usage_result.usage
                 await self._db(
                     self.ledger.observe_usage,
                     attempt.request_id,
@@ -721,42 +779,40 @@ class Runtime:
             ).body.get("id", "")
 
         cancel_status = await self._cancel_background(call, candidate, attempt, exc)
-        if isinstance(exc, HTTPFailure):
-            failure = candidate.provider.failure(exc.status, exc.body, exc.headers)
+        failure = candidate.provider.classify_failure(exc)
 
-        elif isinstance(exc, ProviderFailure):
-            failure = exc.failure
-
-        elif isinstance(
-            exc,
-            (
-                httpx.ConnectError,
-                httpx.ConnectTimeout,
-                httpx.PoolTimeout,
-            ),
-        ):
-            failure = Failure("connection", remote_state="rejected")
-
-        else:
-            failure = Failure(
-                "cancelled" if cancelled else "transport",
-                remote_state="unknown",
+        result_complete = bool(attempt.result and attempt.result.complete)
+        stream_complete = bool(attempt.decoder and attempt.decoder.complete)
+        body = attempt.raw_body if isinstance(attempt.raw_body, dict) else {}
+        body_complete = bool(
+            body
+            and (
+                body.get("status") == "completed"
+                or any("message" in c for c in body.get("choices", []))
             )
-
-        if attempt.partial and failure.safe:
-            failure.remote_state = "unknown"
-
-        raw_error = (
-            exc.body
-            if isinstance(exc, HTTPFailure)
-            else exc.failure.raw
-            if isinstance(exc, ProviderFailure)
-            else attempt.raw_body or {}
         )
+        remote_complete = result_complete or stream_complete or body_complete
+        has_observed_usage = any(
+            isinstance(value, (int, float)) and value > 0 for value in observed_usage.values()
+        )
+        if remote_complete:
+            failure = replace(failure, remote_state="completed")
+
+        elif cancelled or attempt.partial or attempt.background_id or has_observed_usage:
+            # 已创建后台任务、出现输出/消耗或本地取消，不能因错误建议重建生成。
+            failure = replace(failure, remote_state="unknown")
+
+        raw_error = body
+        if isinstance(exc, HTTPFailure) and isinstance(exc.body, dict):
+            raw_error = exc.body
+
+        elif isinstance(exc, ProviderFailure) and exc.failure.raw:
+            raw_error = exc.failure.raw
+
         if raw_error.get("usage"):
             known = candidate.provider.usage_result(raw_error["usage"])
-            if any(isinstance(v, (int, float)) and v > 0 for v in known.usage.values()):
-                failure.remote_state = "unknown"
+            if not remote_complete and any(isinstance(v, (int, float)) and v > 0 for v in known.usage.values()):
+                failure = replace(failure, remote_state="unknown")
 
             await self._db(
                 self.ledger.observe_usage,
@@ -781,13 +837,6 @@ class Runtime:
                 "rejected",
             )
 
-        remote_complete = bool(attempt.result and attempt.result.complete) or bool(
-            attempt.raw_body
-            and (
-                attempt.raw_body.get("status") == "completed"
-                or any("message" in c for c in attempt.raw_body.get("choices", []))
-            )
-        )
         status = (
             (
                 "materialization_failed"
@@ -821,6 +870,10 @@ class Runtime:
             if isinstance(exc, ProviderFailure)
             else None,
             resource=failure.resource,
+            retryable=failure.retryable,
+            fallback_allowed=failure.fallback_allowed,
+            recovery=failure.recovery,
+            resend_safe=failure.safe and not cancelled,
         )
         return failure
 
@@ -838,7 +891,7 @@ class Runtime:
         ):
             try:
                 cancelled_body = await asyncio.wait_for(
-                    self._control(
+                    self._send_auxiliary_request(
                         call.call_id,
                         candidate.route,
                         candidate.provider.background_operation(
@@ -867,13 +920,14 @@ class Runtime:
         candidate: _Candidate,
         failure: Failure,
     ) -> bool:
-        """仅处理确认未执行的失败；True 在本候选重试，False 切换下一个。"""
-        if failure.category == "context_overflow":
-            call.overflow = True
-            return False
+        """执行 Provider 建议的有界恢复/重试，False 表示未恢复，不隐含允许切换。"""
+        if failure.recovery == "context_overflow":
+            raise ContextOverflowError(
+                f"候选 {candidate.route.ref} 返回上下文溢出: {failure.code}"
+            ) from call.last_error
 
         if (
-            failure.category == "parent_invalid"
+            failure.recovery == "rebuild_parent"
             and candidate.parent
             and "parent" not in candidate.recovered
         ):
@@ -896,16 +950,15 @@ class Runtime:
             return True
 
         if (
-            failure.category in ("file_invalid", "files_unsupported")
+            failure.recovery in ("refresh_file", "inline_images", "disable_files")
             and "files" not in candidate.recovered
         ):
-            if failure.category == "file_invalid" and not failure.resource:
-                return (
-                    False  # Never invalidate unrelated files without a concrete target.
-                )
+            if failure.recovery == "refresh_file" and not failure.resource:
+                # 无明确目标不失效任何文件；是否原样重试仍由 Provider 的独立许可决定。
+                return await self._retry_candidate(call, candidate, failure)
 
             candidate.recovered.add("files")
-            candidate.inline = failure.category == "files_unsupported"
+            candidate.inline = failure.recovery in ("inline_images", "disable_files")
             candidate.force = {
                 pid
                 for pid, refs in candidate.media.items()
@@ -931,7 +984,7 @@ class Runtime:
                     candidate.parent = None
                     candidate.media = {}
 
-            if candidate.inline:
+            if failure.recovery == "disable_files":
                 await self._db(
                     self.state.put,
                     "unsupported_files",
@@ -942,18 +995,27 @@ class Runtime:
 
             return True
 
-        if failure.category in (
-            "rate_limit",
-            "connection",
-        ) and candidate.retries < (
+        return await self._retry_candidate(call, candidate, failure)
+
+    async def _retry_candidate(
+        self,
+        call: _Call,
+        candidate: _Candidate,
+        failure: Failure,
+    ) -> bool:
+        """只执行 Provider 允许的原样重试；统一限制次数、等待和剩余时限。"""
+        if call.attempts >= call.config.request_policy.max_attempts:
+            return False
+
+        if failure.retryable and candidate.retries < (
             candidate.route.max_retries
             if candidate.route.max_retries is not None
             else call.config.request_policy.max_retries_per_candidate
         ):
             candidate.retries += 1
             delay = min(
-                failure.retry_after or 0.2,
-                max(0, call.deadline - time.monotonic()),
+                failure.retry_after if failure.retry_after is not None else 0.2,
+                max(0.0, call.deadline - time.monotonic()),
             )
             await asyncio.sleep(delay)
             return True
@@ -996,34 +1058,66 @@ class Runtime:
     async def _prepare_media(
         self,
         send_context: Context,
-        planned: Context,
         provider: ConversationProvider,
         send_file: SendFile,
         media: PreparedMedia,
         inline: bool,
         force: set[str],
-    ) -> PreparedMedia:
-        """只准备将发送的图片，将准备结果同步回请求副本，保持上传引用稳定。"""
+    ) -> bool:
+        """原地补充/修复 media，返回是否更新；已准备好的传输引用供重试复用。
+
+        inline 只转换尚未内联的图片；force 中成功修复的消息随即移除，避免下一次
+        普通重试再次读文件或编码。发送视图与工作上下文共享消息，由调用方刷新指纹。
+        """
+        changed = False
         for prompt in send_context:
-            if isinstance(prompt, ImagePrompt) and (
-                prompt.id not in media or inline or prompt.id in force
-            ):
-                media[prompt.id] = await self.media.prepare_prompt(
-                    prompt,
-                    provider,
-                    send_file,
-                    inline=inline,
-                    force=prompt.id in force,
-                )
-                original = next(p for p in planned._messages if p.id == prompt.id)
-                original.image_input = prompt.image_input
-                original.image = list(prompt.image)
-                original.media_descriptor = prompt.media_descriptor
-                original.prepared_input = prompt.prepared_input
+            if not isinstance(prompt, ImagePrompt):
+                continue
 
-        return media
+            existing = media.get(prompt.id)
+            needs_prepare = existing is None
+            if inline and existing is not None:
+                needs_prepare = any(ref.kind != "base64" for ref in existing)
 
-    async def _control(
+            if prompt.id in force:
+                needs_prepare = True
+
+            if not needs_prepare:
+                continue
+
+            media[prompt.id] = await self.media.prepare_prompt(
+                prompt,
+                provider,
+                send_file,
+                inline=inline,
+            )
+            force.discard(prompt.id)
+            changed = True
+
+        return changed
+
+    async def _send_shared_file(
+        self,
+        wire: WireRequest,
+        *,
+        call_id: str,
+        route: LLMConfig,
+        gateway: Gateway,
+    ) -> Params:
+        """共享 Files 任务只记一次实际请求，归首次发起的 call_id。
+
+        上传使用自身时限和独立 Gateway 状态，不借用首个等待者的剩余时间，
+        也不与模型请求共用 last_request_id；HTTP 客户端仍复用原连接池。
+        """
+        return await self._send_auxiliary_request(
+            call_id,
+            route,
+            wire,
+            Gateway(gateway.client),
+            time.monotonic() + self.media.upload_timeout,
+        )
+
+    async def _send_auxiliary_request(
         self,
         call_id: str,
         route: LLMConfig,
@@ -1065,19 +1159,8 @@ class Runtime:
                 get_provider(route).check_body(result)
 
         except BaseException as exc:
-            if isinstance(exc, HTTPFailure):
-                classifier = (
-                    file_provider.failure
-                    if file_provider
-                    else get_provider(route).failure
-                )
-                failure = classifier(exc.status, exc.body, exc.headers)
-
-            elif isinstance(exc, ProviderFailure):
-                failure = exc.failure
-
-            else:
-                failure = Failure("transport")
+            provider = file_provider if file_provider is not None else get_provider(route)
+            failure = provider.classify_failure(exc)
 
             await self._db(
                 self.ledger.finish_request,
@@ -1087,7 +1170,13 @@ class Runtime:
                 code=failure.code,
                 http_status=exc.status if isinstance(exc, HTTPFailure) else None,
                 platform_request_id=gateway.last_request_id,
+                retryable=failure.retryable,
+                fallback_allowed=failure.fallback_allowed,
+                recovery=failure.recovery,
             )
+            if not isinstance(exc, (ProviderFailure, asyncio.CancelledError)):
+                raise ProviderFailure(failure) from exc
+
             raise
 
         await self._db(
@@ -1111,7 +1200,7 @@ class Runtime:
         pending: Pending,
         on_commit: Callable[[], None] | None = None,
     ) -> Prompts:
-        """校验并提交 Context，再持久化续接/冷却；on_commit 在内存提交后同步调用。"""
+        """校验并提交 Context，再持久化续接检查点；on_commit 在内存提交后同步调用。"""
         self._apply(context, pending)
         if on_commit:
             on_commit()
@@ -1123,53 +1212,23 @@ class Runtime:
     def _apply(context: Context, pending: Pending) -> None:
         if (
             context.session_id != pending.session
-            or context_signature(context) != pending.expected
+            or context.signature != pending.expected
         ):
             raise RuntimeError("Context 在请求期间已修改，拒绝提交过期响应")
 
-        updated = copy.deepcopy(pending.planned)
-        if updated._usage_accumulation.model != pending.route.model:
-            # Legacy Context exposes one model's aggregate; the ledger retains every model's charges.
-            updated._usage_accumulation = TokenUsage(model=pending.route.model)
-
+        # planned 已是本次请求独占的工作上下文，提交时无需再复制整份历史。
+        updated = pending.planned
         updated.append(pending.result.prompts)
-        context.__dict__.update(updated.__dict__)
+        context.replace_contents(updated)
 
     def _persist_commit(self, session_id: str, pending: Pending) -> None:
-        """仅为已提交结果保存检查点和非滑动冷却；失败不回滚已消费结果。"""
+        """仅为已提交结果保存续接检查点；失败不回滚已消费结果。"""
         try:
             key = fingerprint([session_id, pending.route.scope])
             if pending.checkpoint:
                 entries = self.state.get("checkpoints", key) or []
                 entries.append(pending.checkpoint)
                 self.state.put("checkpoints", key, entries[-64:])
-
-            route_key = fingerprint([session_id, pending.config.revision])
-            old = self.state.get("cooldown", route_key)
-            if pending.route_index:
-                if (
-                    not old
-                    or old["index"] != pending.route_index
-                    or old["until"] <= time.time()
-                ):
-                    until = time.time() + float(
-                        pending.config.request_policy.fallback_cooldown_seconds
-                    )
-                    self.state.put(
-                        "cooldown",
-                        route_key,
-                        {"index": pending.route_index, "until": until},
-                    )
-                    self._log(
-                        f"LLM 已进入 fallback: {pending.config.candidates[0].ref} -> {pending.route.ref}; "
-                        f"原因={pending.fallback_reason}; call={pending.call_id}; request={pending.result.request_id}; 冷却至={until}"
-                    )
-
-            elif old:
-                self.state.delete("cooldown", route_key)
-                self._log(
-                    f"LLM 已恢复首选组合 {pending.route.ref}; call={pending.call_id}"
-                )
 
         except (sqlite3.Error, OSError) as exc:
             self._log(f"LLM 结果已提交，但通信状态持久化失败: {type(exc).__name__}")

@@ -79,17 +79,25 @@ def test_smaller_fallback_window_is_checked_without_mutating_context(tmp_path):
             {"endpoint": "https://backup"},
             max_context=1,
         )
+        larger = candidate(
+            "chat_completions:c:m",
+            "chat_completions",
+            "c",
+            "m",
+            {"endpoint": "https://larger"},
+            max_context=100000,
+        )
         context = Context()
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
 
             async def gateway(route):
                 return Gateway(client)
 
-            with pytest.raises(ContextOverflowError):
+            with pytest.raises(ContextOverflowError, match="chat_completions:b:m"):
                 await rt.execute(
                     context,
                     Prompts(TextPrompt("user", "hi")),
-                    configuration("p", [primary, backup]),
+                    configuration("p", [primary, backup, larger]),
                     gateway,
                     5,
                 )

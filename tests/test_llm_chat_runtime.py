@@ -64,7 +64,7 @@ def test_queue_and_nowait_commit_once_and_cancel_never_commits(monkeypatch):
     asyncio.run(run())
 
 
-def test_shared_context_serializes_two_chats_and_copies_isolate_parameters(monkeypatch):
+def test_chat_copies_isolate_parameters_and_can_explicitly_share_history(monkeypatch):
     from TIYA.llm import chat as module
     from TIYA.llm.model import Context, TextPrompt
 
@@ -87,21 +87,19 @@ def test_shared_context_serializes_two_chats_and_copies_isolate_parameters(monke
 
     async def run():
         context = Context()
-        first, second = (
-            Chat(config=config(), context=context),
-            Chat(config=config(), context=context),
-        )
+        first = Chat(config=config(), context=context)
+        second = first.copy(new_context=False)
         copied = first.copy()
         try:
             copied.model["parameter"]["custom"] = {"value": 1}
             assert "custom" not in first.model["parameter"]
             assert copied._context.session_id != context.session_id
-            await asyncio.gather(
-                first.ask("one", timeout=5), second.ask("two", timeout=5)
-            )
+            # 共享只保留旧接口语义；跨 Chat 的执行顺序由调用方控制。
+            await first.ask("one", timeout=5)
+            await second.ask("two", timeout=5)
             assert peak == 1
             assert len(context._messages) == 4
-            assert first.context._messages[0] is not context._messages[0]
+            assert first.context._messages[0] is context._messages[0]
             assert await first.get_context() is context
             first.back_to_last_round()
             assert len(context._messages) == 2

@@ -194,7 +194,7 @@ def test_concurrent_first_use_of_separate_sqlite_stores(tmp_path):
 def test_files_binding_preserves_existing_upload_cache_scope(monkeypatch):
     from test_llm_config_v2 import document as file_document
 
-    from TIYA.llm.config import fingerprint
+    from TIYA.utils import fingerprint
     from TIYA.llm.provider.files import FilesProvider
 
     data = file_document()

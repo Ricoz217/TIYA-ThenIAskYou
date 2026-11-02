@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from TIYA.config import ConfigMap, LLMPresetConfig, get_llm, get_proxy
-from .config import credential, endpoint, plain, resolve_preset
+from TIYA.utils import plain
+
+from .config import credential, endpoint, resolve_preset
 from .config_model import ChatConfig, FilesConfig, LLMConfig, RequestPolicy
 
 

@@ -3,13 +3,18 @@ from __future__ import annotations
 import copy
 import json
 
-from ..model import Context, TextPrompt, ToolCall, ToolResponse
+from TIYA.utils import fingerprint
+
+from ..model import Context, TextPrompt, ToolCall, ToolResponse, stable
 
 
-def normalize(context):
-    """Repair a snapshot only; return the complete planned context for atomic commit."""
-    result = copy.deepcopy(context)
+def normalize(context: Context) -> Context:
+    """重建容器并修补工具协议；不修改输入，未修补的消息保持原引用。
+
+    Runtime 在入口负责请求隔离，这里只创建替代消息，不重复深复制整份历史。
+    """
     messages, pending = [], {}
+    original_ids = {}
 
     def close():
         for call_id, prompt in pending.items():
@@ -27,7 +32,8 @@ def normalize(context):
             )
         pending.clear()
 
-    for prompt in result._messages:
+    for prompt in context.message:
+        original_id = prompt.id
         if isinstance(prompt, ToolCall):
             pending[prompt.call_id] = prompt
         elif isinstance(prompt, ToolResponse):
@@ -51,25 +57,44 @@ def normalize(context):
         elif prompt.role == "user":
             close()
         messages.append(prompt)
+        original_ids[original_id] = prompt.id
     close()
     # Rebuild rounds from the normalized snapshot, retaining native items on each prompt.
-    rebuilt = Context(messages, result._tools)
+    rebuilt = Context(messages, context.tools)
     rebuilt.session_id = context.session_id
-    rebuilt._usage_accumulation = result._usage_accumulation
+    rebuilt.replace_usage(context.usage)
+    # 轮次重建不能丢掉旧响应的用量。孤立工具响应被转换后，用原消息 ID 找回归属。
+    round_for_message = {
+        prompt.id: round_prompts
+        for round_prompts in rebuilt.rounds.values()
+        for prompt in round_prompts
+    }
+    for previous in context.rounds.values():
+        if previous.usage is None:
+            continue
+
+        for prompt in reversed(previous):
+            target = round_for_message.get(original_ids.get(prompt.id, prompt.id))
+            if target is not None:
+                if target.usage is None:
+                    target.usage = previous.usage.copy()
+
+                else:
+                    target.usage += previous.usage
+
+                break
+
     return rebuilt
 
 
 def projection_fingerprint(prompt):
-    from ..snapshot import stable
-    from ..config import fingerprint
-
     return fingerprint(stable({k: v for k, v in vars(prompt).items() if k != "native"}))
 
 
 def native_items(prompt, protocol, scope, context):
     record = getattr(prompt, "native", {}).get(protocol)
     if record and record.get("scope") == scope:
-        current = {p.id: p for p in context._messages}
+        current = {p.id: p for p in context.message}
         if all(
             pid in current
             and record.get("projection_hashes", {}).get(pid)
@@ -90,6 +115,7 @@ def attach_native(result, protocol, scope):
                 p.id: projection_fingerprint(p) for p in result.prompts
             },
         }
+        result.prompts.refresh_fingerprints(content_changed=False)
 
 
 def tool_arguments(text):

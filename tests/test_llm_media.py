@@ -2,7 +2,6 @@ import asyncio
 import base64
 from io import BytesIO
 
-import httpx
 from PIL import Image
 
 
@@ -30,13 +29,12 @@ def test_generated_images_are_materialized_before_return(tmp_path, monkeypatch):
         result = await service.materialize(
             {"b64_json": base64.b64encode(png()).decode()}, None
         )
-        assert result.image.kind == "cache"
-        assert result.image.value == "cache-id"
+        assert result.image.hash_name == "cache-id"
         assert result.image.mime_type == "image/png"
         assert cached["content"] == png()
         data_url = "data:image/png;base64," + base64.b64encode(png()).decode()
         embedded = await service.materialize({"url": data_url}, None)
-        assert embedded.image.value == "cache-id"
+        assert embedded.image.hash_name == "cache-id"
 
     asyncio.run(run())
 

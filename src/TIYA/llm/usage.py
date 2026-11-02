@@ -1,17 +1,114 @@
-"""Durable per-attempt ledger. Reported and estimated evidence are independent."""
+"""本地用量估算与逐次请求账本；供应商真实用量和本地估算独立保存。"""
 
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
+import tiktoken
+
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Literal, TypedDict
 from uuid import uuid4
 
 from .config_model import JsonValue, Params
+from .model import (
+    BasePrompt,
+    Context,
+    ImagePrompt,
+    SystemPrompt,
+    TextPrompt,
+    ToolCall,
+    ToolInput,
+    ToolResponse,
+)
 from .pricing import PriceCatalog
 from .storage import Database
+from .tool_schema import build_tool_payloads
+from .usage_model import RequestUsageRecord
+from .workers import run_sync
+
+
+class UsageEstimate(TypedDict):
+    """本地 token 下界及估算依据；不能作为供应商实测用量。"""
+
+    input: int
+    cached: int
+    algorithm: str
+    completeness: Literal["lower_bound"]
+    assumptions: str
+
+
+def estimate(context: Context) -> UsageEstimate:
+    """估算上下文 token 下界，复用消息和 Context 上的进程内缓存。
+
+    返回 input/cached 和算法、完整性及假设说明；cached=0 是本地估算，
+    不代表供应商真实缓存命中。原生回放元数据不重复计入，图片按固定下界计入。
+    不进行网络或图片 IO，不修改业务内容。追加消息仅重算汇总和新增内容；
+    显式修改内容后调用 context.refresh_fingerprints() 清除旧估算。
+    """
+    total = context.estimated_tokens
+    if total is None:
+        total = sum(_estimate_prompt(prompt) for prompt in context)
+        context.estimated_tokens = total
+
+    return {
+        "input": total,
+        "cached": 0,
+        "algorithm": "o200k-image1440-v1",
+        "completeness": "lower_bound",
+        "assumptions": "images=1440 each; remote output and cached input unknown",
+    }
+
+
+async def estimate_async(context: Context) -> UsageEstimate:
+    """已缓存的汇总直接读取；需要汇总/编码时交给 LLM 专用线程池。"""
+    # 这里写得有点绕，不过算是能跑
+    if context.estimated_tokens is not None:
+        return estimate(context)
+
+    return await run_sync(estimate, context)
+
+
+def _estimate_prompt(prompt: BasePrompt) -> int:
+    # 图片计数便宜，且准备/重建派生件可能改变数量，不缓存图片的单条计数。
+    if isinstance(prompt, ImagePrompt):
+        return 1440 * max(1, len(prompt.image))
+
+    if prompt.estimated_tokens is not None:
+        return prompt.estimated_tokens
+
+    tokenizer = tiktoken.get_encoding("o200k_base")
+    if isinstance(prompt, (TextPrompt, SystemPrompt)):
+        text = prompt.text + getattr(prompt, "reasoning_content", "")
+
+    elif isinstance(prompt, ToolCall):
+        text = json.dumps(
+            [prompt.function_name, prompt.arguments],
+            ensure_ascii=False,
+            default=str,
+        )
+
+    elif isinstance(prompt, ToolResponse):
+        text = json.dumps(prompt.response, ensure_ascii=False, default=str)
+
+    elif isinstance(prompt, ToolInput):
+        text = json.dumps(
+            build_tool_payloads(prompt.function)["openai"],
+            ensure_ascii=False,
+            default=str,
+        )
+
+    else:
+        text = json.dumps(
+            {k: v for k, v in vars(prompt).items() if k not in ("native", "id", "time")},
+            default=str,
+        )
+
+    prompt.estimated_tokens = len(tokenizer.encode(text)) + 3
+    return prompt.estimated_tokens
 
 
 class Ledger:
@@ -197,33 +294,37 @@ class Ledger:
                 pass
 
     @staticmethod
-    def _effective(reported, estimated):
+    def _effective(reported: Params, estimated: Params) -> Params:
         keys = (reported.keys() | estimated.keys()) - {
             "algorithm",
             "completeness",
             "assumptions",
         }
         return {
-            k: reported[k] if reported.get(k) is not None else estimated.get(k)
-            for k in keys
+            key: reported[key] if reported.get(key) is not None else estimated.get(key)
+            for key in keys
         }
 
     @classmethod
-    def _decode(cls, row):
-        result = dict(row)
-        for key in (
-            "identity",
-            "estimated",
-            "reported",
-            "diagnostic",
-            "price_snapshot",
-            "charge",
-        ):
-            result[key] = json.loads(result[key]) if result[key] is not None else None
-        result["effective"] = cls._effective(result["reported"], result["estimated"])
-        return result
+    def _decode(cls, row: sqlite3.Row) -> RequestUsageRecord:
+        reported = json.loads(row["reported"])
+        estimated = json.loads(row["estimated"])
+        return {
+            "id": row["id"],
+            "call_id": row["call_id"],
+            "created": row["created"],
+            "identity": json.loads(row["identity"]),
+            "estimated": estimated,
+            "reported": reported,
+            "status": row["status"],
+            "remote_state": row["remote_state"],
+            "diagnostic": json.loads(row["diagnostic"]),
+            "price_snapshot": json.loads(row["price_snapshot"]) if row["price_snapshot"] is not None else None,
+            "charge": json.loads(row["charge"]) if row["charge"] is not None else None,
+            "effective": cls._effective(reported, estimated),
+        }
 
-    def get_request(self, request_id: str) -> Params:
+    def get_request(self, request_id: str) -> RequestUsageRecord:
         """同步读取完整尝试，含 estimated/reported/effective；不存在抛 KeyError。"""
         with self.db.transaction() as db:
             row = db.execute(
@@ -233,7 +334,7 @@ class Ledger:
             raise KeyError(request_id)
         return self._decode(row)
 
-    def mirror_request(self, row: Params) -> None:
+    def mirror_request(self, row: RequestUsageRecord) -> None:
         """同步镜像已有尝试，不重新分配 call_id/request_id，不增加第二份生成费用。"""
         with self.db.transaction() as db:
             db.execute(
@@ -292,7 +393,7 @@ class Ledger:
         operation: str | None = None,
         scope: str | None = None,
         status: str | None = None,
-    ) -> list[Params]:
+    ) -> list[RequestUsageRecord]:
         """同步分页查询，按 created/id 升序；时间范围为 Unix 秒，limit 为 1..1000。
         可按逻辑调用、预设、模型、操作、账户作用域及终态过滤，None 不限制该项。
         """

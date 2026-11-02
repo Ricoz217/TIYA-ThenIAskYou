@@ -8,7 +8,8 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
-from .config import fingerprint, plain
+from TIYA.utils import fingerprint, plain
+
 from .config_model import Params
 from .storage import Database
 

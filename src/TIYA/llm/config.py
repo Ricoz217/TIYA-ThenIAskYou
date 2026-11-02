@@ -2,22 +2,10 @@
 
 from __future__ import annotations
 
-import copy
-import hashlib
-import json
 from collections.abc import Mapping
 
 from TIYA.config import LLMPresetConfig
 from TIYA.utils import plain
-
-
-def fingerprint(value: object) -> str:
-    """打印一个稳定内容的sha256"""
-    return hashlib.sha256(
-        json.dumps(
-            plain(value), sort_keys=True, ensure_ascii=False, default=str
-        ).encode()
-    ).hexdigest()
 
 
 PATHS = {

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import copy
+import asyncio
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
+
+import httpx
 
 from ..config_model import JsonValue, LLMConfig, Params
-from ..gateway import WireRequest
+from ..gateway import HTTPFailure, WireRequest
 from ..model import Context, ImagePrompt, MediaRef, Prompts
 
 
@@ -19,14 +23,35 @@ def merge_headers(*mappings: Mapping[str, str] | None) -> dict[str, str]:
     return dict(values.values())
 
 
+type RecoveryAction = Literal[
+    "none",
+    "context_overflow",
+    "rebuild_parent",
+    "refresh_file",
+    "inline_images",
+    "disable_files",
+]
+
+
 @dataclass
 class Failure:
-    category: str
+    """Provider 对错误的解释与处理建议，不在此执行网络重发。
+
+    safe 只描述执行状态；retryable 允许同候选原样重试，fallback_allowed
+    允许放弃当前候选。recovery 是改变请求内容的专项恢复动作，各自有次数上限。
+    Runtime 仍须依据取消、部分输出和真实 usage 否决生成重发。
+    """
+
+    category: str  # 诊断分类；Runtime 不再据此猜测重试/切换策略。
     code: str = ""
     resource: str | None = None
     retry_after: float | None = None
     remote_state: str = "unknown"
-    raw: dict = field(default_factory=dict)
+    raw: Params = field(default_factory=dict)
+    retryable: bool = field(default=False, kw_only=True)  # 允许同候选原样重试。
+    fallback_allowed: bool = field(default=False, kw_only=True)  # 允许切换模型候选。
+    # inline_images 只改传输方式；disable_files 还会缓存 Files 不受支持的证据。
+    recovery: RecoveryAction = field(default="none", kw_only=True)
 
     @property
     def safe(self) -> bool:
@@ -53,7 +78,8 @@ def classify_error(
     error = body.get("error", {}) if isinstance(body, dict) else {}
     error = error if isinstance(error, dict) else {"code": str(error)}
     code = str(error.get("code") or error.get("type") or "")
-    base = body.get("base_resp", {}) if isinstance(body, dict) else {}
+    base_value = body.get("base_resp") if isinstance(body, dict) else None
+    base = base_value if isinstance(base_value, dict) else {}
     if dialect == "minimax" and base.get("status_code"):
         code = str(base["status_code"])
     category, remote, resource = "unknown", "unknown", None
@@ -95,18 +121,62 @@ def classify_error(
     elif code in ("rate_limit_error",):
         category, remote = "rate_limit", "rejected"
     retry_after = None
-    try:
-        retry_after = float((headers or {}).get("retry-after"))
-    except (TypeError, ValueError):
-        pass
+    raw_retry_after = (headers or {}).get("retry-after")
+    if raw_retry_after is not None:
+        try:
+            retry_after = float(raw_retry_after)
+            if not math.isfinite(retry_after) or retry_after < 0:
+                retry_after = None
+
+        except (TypeError, ValueError):
+            pass
+
+    # 共享默认策略由 Provider 层维护；各 Provider 可覆盖 failure()。
+    retryable = category == "rate_limit"
+    fallback_allowed = category in (
+        "quota", "rate_limit", "authentication", "invalid_request",
+        "parent_invalid", "file_invalid", "files_unsupported",
+    )
+    recovery: RecoveryAction = "none"
+    if category == "context_overflow":
+        recovery = "context_overflow"
+
+    elif category == "parent_invalid":
+        recovery = "rebuild_parent"
+
+    elif category == "file_invalid":
+        recovery = "refresh_file"
+
+    elif category == "files_unsupported":
+        recovery = "disable_files"
+
     return Failure(
         category,
         code,
-        resource,
+        resource if isinstance(resource, str) else None,
         retry_after,
         remote,
         copy.deepcopy(body) if isinstance(body, dict) else {},
+        retryable=retryable,
+        fallback_allowed=fallback_allowed,
+        recovery=recovery,
     )
+
+
+def classify_transport_error(error: BaseException) -> Failure:
+    """解释传输阶段的默认策略；未发送的连接失败允许重试，读写中断保持未知。"""
+    if isinstance(error, asyncio.CancelledError):
+        return Failure("cancelled")
+
+    if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+        return Failure(
+            "connection",
+            remote_state="rejected",
+            retryable=True,
+            fallback_allowed=True,
+        )
+
+    return Failure("transport")
 
 
 @dataclass
@@ -173,6 +243,10 @@ class ConversationProvider(Protocol):
         self, status: int, body: Params, headers: dict[str, str] | None = None
     ) -> Failure: ...
 
+    def classify_failure(self, error: BaseException) -> Failure:
+        """统一解释 HTTP、流式业务错误或传输异常，给出处理建议。"""
+        ...
+
     def accepts_image_files(self) -> bool: ...
 
     def check_body(self, body: Params) -> None: ...
@@ -211,15 +285,37 @@ class Provider:
     def failure(
         self, status: int, body: Params, headers: Mapping[str, str] | None = None
     ) -> Failure:
-        """按配置的 error_dialect 分类响应，不在 Provider 内重试。"""
+        """按 error_dialect 解释响应和处理建议；子类可覆盖，不在此重发。"""
+        dialect = self.route.provider_options.get("error_dialect", "openai")
+        if not isinstance(dialect, str):
+            dialect = "openai"
+
         return classify_error(
             status,
             body,
-            self.route.provider_options.get("error_dialect", "openai"),
+            dialect,
             headers,
         )
 
+    def transport_failure(self, error: BaseException) -> Failure:
+        """传输异常的默认建议；子类可单独禁止连接重试或候选切换。"""
+        return classify_transport_error(error)
+
+    def classify_failure(self, error: BaseException) -> Failure:
+        """统一错误入口；已解码的 ProviderFailure 保留原 Provider 的结论。"""
+        if isinstance(error, ProviderFailure):
+            return error.failure
+
+        if isinstance(error, HTTPFailure):
+            return self.failure(error.status, error.body, error.headers)
+
+        return self.transport_failure(error)
+
     def check_body(self, body: Params) -> None:
         """检查 HTTP 200 内嵌业务错误；失败抛 ProviderFailure。"""
-        if body.get("error") or body.get("base_resp", {}).get("status_code", 0):
+        if body.get("error"):
+            raise ProviderFailure(self.failure(200, body))
+
+        base = body.get("base_resp")
+        if isinstance(base, dict) and base.get("status_code", 0):
             raise ProviderFailure(self.failure(200, body))

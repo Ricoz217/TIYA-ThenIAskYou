@@ -15,9 +15,8 @@ import httpx
 from PIL import Image
 
 from TIYA.config import DATA_DIR
-from TIYA.utils import parse_proxies_to_httpx
+from TIYA.utils import fingerprint, parse_proxies_to_httpx
 
-from .config import fingerprint
 from .config_model import LLMConfig, Params
 from .gateway import Frame, Gateway
 from .media import MediaError, MediaService, inspect_image
@@ -30,7 +29,7 @@ from .model import (
 )
 from .pricing import PriceCatalog
 from .provider import get_provider
-from .provider.base import ProviderFailure, classify_error
+from .provider.base import ProviderFailure
 from .provider.files import FileMetadata, FilesProvider
 from .settings import model_config_from_settings
 from .state import StateStore
@@ -116,9 +115,7 @@ class FilesClient(ServiceClient):
                 body.get("error") or body.get("base_resp", {}).get("status_code")
             ):
                 raise ProviderFailure(
-                    classify_error(
-                        200, body, self.settings.get("error_dialect", "openai")
-                    )
+                    FilesProvider(self.settings).failure(200, body)
                 )
             await run_sync(
                 self.ledger.finish_request,
@@ -223,6 +220,7 @@ class ImagesClient(ServiceClient):
             model=model,
         )
         candidate.client_params = copy.deepcopy(self.client_params)
+        candidate.refresh_fingerprints()
         return candidate
 
     def pricing_identity(
@@ -437,11 +435,20 @@ class ImagesClient(ServiceClient):
             raise MediaError("response", "缺少最终图片", request_id=request_id)
         items = [await self.media.materialize(item, gateway) for item in body["data"]]
         return ImagesResponse(
-            body.get("created"),
-            items,
-            body.get("usage") or {},
-            request_id,
-            {k: v for k, v in body.items() if k not in ("data", "usage")},
+            created=body.get("created"),
+            data=items,
+            usage=body.get("usage") or {},
+            request_id=request_id,
+            output_format=body.get("output_format"),
+            background=body.get("background"),
+            quality=body.get("quality"),
+            size=body.get("size"),
+            safety_identifier=body.get("safety_identifier"),
+            metadata={
+                k: v for k, v in body.items()
+                if k not in ("created", "data", "usage", "output_format", "background",
+                             "quality", "size", "safety_identifier")
+            },
         )
 
     async def recover_images(self, error: MediaError) -> ImagesResponse:

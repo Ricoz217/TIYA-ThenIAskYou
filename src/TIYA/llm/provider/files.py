@@ -7,10 +7,20 @@ import time
 from dataclasses import dataclass
 from urllib.parse import quote
 
-from ..config import credential, endpoint, fingerprint
+import httpx
+
+from TIYA.utils import fingerprint
+
+from ..config import credential, endpoint
 from ..config_model import Params
-from ..gateway import WireRequest
-from .base import Failure, ProviderFailure, classify_error, merge_headers
+from ..gateway import HTTPFailure, WireRequest
+from .base import (
+    Failure,
+    ProviderFailure,
+    classify_error,
+    classify_transport_error,
+    merge_headers,
+)
 
 
 @dataclass
@@ -26,18 +36,48 @@ class FilesProvider:
         self, status: int, body: Params, headers: dict[str, str] | None = None
     ) -> Failure:
         """按文件服务 dialect 分类错误；不在此尝试模型 fallback。"""
-        return classify_error(
-            status, body, self.settings.get("error_dialect", self.dialect), headers
-        )
+        dialect = self.settings.get("error_dialect", self.dialect)
+        if not isinstance(dialect, str):
+            dialect = self.dialect
+
+        failure = classify_error(status, body, dialect, headers)
+        # 认证/配额错误不隐瞒为内联成功，可由 Runtime 按 fallback_allowed 切换连接。
+        # 上传暂时不可用时，改用内联属于恢复动作，不等同于模型候选切换。
+        if status >= 300 and failure.category not in ("authentication", "invalid_request", "quota"):
+            if failure.recovery != "disable_files":
+                failure.recovery = "inline_images"
+
+        return failure
+
+    def transport_failure(self, error: BaseException) -> Failure:
+        """上传连接失败或断流可放弃上传改用内联；取消和本地解析失败不降级。"""
+        failure = classify_transport_error(error)
+        if isinstance(error, (httpx.RequestError, OSError, TimeoutError)):
+            failure.recovery = "inline_images"
+
+        return failure
+
+    def classify_failure(self, error: BaseException) -> Failure:
+        if isinstance(error, ProviderFailure):
+            return error.failure
+
+        if isinstance(error, HTTPFailure):
+            return self.failure(error.status, error.body, error.headers)
+
+        return self.transport_failure(error)
 
     def __init__(self, settings: Params) -> None:
         """读取独立 Files 连接及显式 dialect，不继承模型认证或猜测地址。"""
         self.settings = settings
-        self.dialect = settings.get("dialect", "openai")
-        if self.dialect not in ("openai", "deepseek", "anthropic"):
-            raise ValueError(f"未知 Files dialect: {self.dialect}")
+        dialect = settings.get("dialect", "openai")
+        if not isinstance(dialect, str) or dialect not in ("openai", "deepseek", "anthropic"):
+            raise ValueError(f"未知 Files dialect: {dialect}")
+
+        self.dialect = dialect
         self.endpoint = endpoint(settings, "files_api")
         self.scope = fingerprint(settings)
+        # 默认请求远端保留一天；中转不支持该字段时可显式配置 null。
+        self.expires_after_seconds = settings.get("expires_after_seconds", 86400)
 
     def headers(self) -> dict[str, str]:
         """构造文件服务自己的认证头及需要的版本/beta 头。"""
@@ -59,7 +99,7 @@ class FilesProvider:
         data = dict(self.settings.get("upload_params") or {})
         if self.dialect != "anthropic":
             data.setdefault("purpose", self.settings.get("purpose", "user_data"))
-            ttl = self.settings.get("expires_after_seconds")
+            ttl = self.expires_after_seconds
             if ttl is not None:
                 data.update(
                     {
@@ -67,8 +107,8 @@ class FilesProvider:
                         "expires_after[seconds]": str(ttl),
                     }
                 )
-        elif self.settings.get("expires_after_seconds") is not None:
-            data["expires_in_seconds"] = str(self.settings["expires_after_seconds"])
+        elif self.expires_after_seconds is not None:
+            data["expires_in_seconds"] = str(self.expires_after_seconds)
         return WireRequest(
             self.endpoint,
             headers=self.headers(),
@@ -116,8 +156,15 @@ class FilesProvider:
             expiry = datetime.datetime.fromisoformat(
                 expiry.replace("Z", "+00:00")
             ).timestamp()
-        if expiry is None and self.settings.get("expires_after_seconds") is not None:
-            expiry = time.time() + self.settings["expires_after_seconds"]
+        if expiry is None and self.expires_after_seconds is not None:
+            created = body.get("created_at")
+            if isinstance(created, str):
+                created = datetime.datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+
+            if not isinstance(created, (int, float)):
+                created = time.time()
+
+            expiry = created + self.expires_after_seconds
         return FileMetadata(
             body.get("id", body.get("file_id")),
             expiry,
