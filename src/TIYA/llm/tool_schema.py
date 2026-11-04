@@ -111,6 +111,9 @@ def build_tool_payloads(func: Callable) -> ToolPayloads:
             if non_null and isinstance(non_null.get("type"), str):
                 merged = dict(non_null)
                 merged["type"] = [non_null["type"], "null"]
+                if "enum" in merged and None not in merged["enum"]:
+                    merged["enum"] = [*merged["enum"], None]
+
                 return merged
 
         return {"anyOf": _schema}

@@ -84,7 +84,7 @@ class BasePrompt:
     """
 
     # 计算缓存独立于 __dict__，不参与消息指纹、原生回放校验和序列化。
-    __slots__ = ("__dict__", "__weakref__", "estimated_tokens", "_signature")
+    __slots__ = ("__dict__", "__weakref__", "estimated_tokens", "_assumed_tokens", "_signature")
 
     estimated_tokens: int | None  # 当前进程的 o200k 估算缓存，非供应商 usage。
 
@@ -98,6 +98,7 @@ class BasePrompt:
         self.id: str = str(next_time_id())
         self.native: dict = {}
         self.estimated_tokens = None
+        self._assumed_tokens: int | None = None  # 账本字符估算缓存，不调用 tokenizer。
         self._signature: str | None = None
 
     def _signature_data(self) -> dict[str, object]:
@@ -120,6 +121,7 @@ class BasePrompt:
         """显式清除消息签名和 token 估算；已有容器缓存由所属容器刷新。"""
         self._signature = None
         self.estimated_tokens = None
+        self._assumed_tokens = None
 
     def to_dict(self) -> dict:
         return {
@@ -171,6 +173,7 @@ class SystemPrompt(BasePrompt):
         result = SystemPrompt(self.text, create_time=self.time)
         result.native = self.native.copy()
         result.estimated_tokens = self.estimated_tokens
+        result._assumed_tokens = self._assumed_tokens
         return result
 
     def __eq__(self, other):
@@ -439,6 +442,7 @@ class ToolInput(BasePrompt):
             for k, v in vars(self).items()
         }
         result.estimated_tokens = self.estimated_tokens
+        result._assumed_tokens = self._assumed_tokens
         result._signature = self._signature
         # 入口快照也复用源工具的 schema；首次复制时构建，后续副本不再生成。
         result._tool_payloads = self.tool_payloads

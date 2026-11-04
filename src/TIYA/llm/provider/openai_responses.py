@@ -168,9 +168,7 @@ class Responses(Provider):
                         )
 
                     elif block.get("type") == "refusal":
-                        result.prompts.append(
-                            TextPrompt("assistant", block.get("refusal", ""))
-                        )
+                        self.refuse(str(block.get("refusal") or ""), body)
 
             elif item.get("type") == "function_call":
                 result.prompts.append(
@@ -214,6 +212,7 @@ class Responses(Provider):
 class ResponsesStream:
     def __init__(self, provider):
         self.provider = provider
+        self.refusal_parts: list[str] = []
         self.partial, self.complete = False, False
         self.body: Params = {"output": []}
         self.items = {}
@@ -251,7 +250,15 @@ class ResponsesStream:
 
             self.complete = True
 
-        if kind in ("response.output_text.delta", "response.refusal.delta"):
+        if kind == "response.refusal.delta":
+            refusal = event.get("delta", "")
+            if not isinstance(refusal, str):
+                raise ValueError("拒绝增量必须为字符串")
+
+            self.refusal_parts.append(refusal)
+            return [StreamText(refusal)]
+
+        if kind == "response.output_text.delta":
             return [StreamText(event.get("delta", ""))]
 
         if kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
@@ -261,6 +268,9 @@ class ResponsesStream:
 
     def finish(self) -> Result:
         """聚合本次流式结果，保留 complete 状态；不补造缺失的结束事件。"""
+        if self.refusal_parts:
+            self.provider.refuse("".join(self.refusal_parts), {"usage": self.usage})
+
         if not self.body.get("output"):
             self.body["output"] = [self.items[k] for k in sorted(self.items)]
 

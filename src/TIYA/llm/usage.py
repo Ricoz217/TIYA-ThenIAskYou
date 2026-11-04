@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Literal, TypedDict
 from uuid import uuid4
 
-from .config_model import JsonValue, Params
+from .config_model import JsonValue, LLMConfig, Params
 from .model import (
     BasePrompt,
     Context,
+    ContextOverflowError,
     ImagePrompt,
     SystemPrompt,
     TextPrompt,
@@ -26,18 +27,66 @@ from .model import (
 )
 from .pricing import PriceCatalog
 from .storage import Database
-from .usage_model import RequestUsageRecord
+from .usage_model import RequestUsageRecord, TokenUsage
 from .workers import run_sync
 
 
 class UsageEstimate(TypedDict):
-    """本地 token 下界及估算依据；不能作为供应商实测用量。"""
+    """本地估算及算法/完整性说明；不能作为供应商实测用量。"""
 
     input: int
     cached: int
     algorithm: str
-    completeness: Literal["lower_bound"]
+    completeness: Literal["lower_bound", "heuristic"]
     assumptions: str
+
+
+def reported_context_tokens(
+    usage: TokenUsage | None,
+    route: LLMConfig,
+    usage_scope: str | None = None,
+) -> int | float | None:
+    """读取同模型/连接的真实水位；缺少完整计量或来源不匹配时返回 None。
+
+    调用方先校验 Context 签名。存档没有连接 scope 时仍须匹配 model；
+    不读取 effective、估算值或历史累计量，零为有效实测值。
+    """
+    if usage is None or not usage.samples:
+        return None
+
+    latest = usage.samples[-1]
+    if latest.model != route.model:
+        return None
+
+    if usage_scope is not None and usage_scope != route.scope:
+        return None
+
+    # 一轮工具循环也可能包含多个请求；取最后一笔，不能把重复前缀计量累加作水位。
+    reported = latest.reported
+    total = reported.get("total")
+    if isinstance(total, (int, float)):
+        return total
+
+    input_tokens = reported.get("input")
+    output_tokens = reported.get("output")
+    if isinstance(input_tokens, (int, float)) and isinstance(output_tokens, (int, float)):
+        return input_tokens + output_tokens
+
+    return None
+
+
+def check_context_window(
+    tokens: int | float,
+    route: LLMConfig,
+    auto_compress_rate: float | None,
+) -> None:
+    """按配置系数发出压缩信号，不比较裸窗口，不改变历史或自动换候选。"""
+    if not route.max_context:
+        return
+
+    rate = max(0.3, min(0.9, auto_compress_rate if auto_compress_rate is not None else 0.7))
+    if tokens >= rate * route.max_context:
+        raise ContextOverflowError(f"候选 {route.ref} 的上下文水位已达到配置阈值")
 
 
 def estimate(context: Context) -> UsageEstimate:
@@ -80,6 +129,12 @@ def _estimate_prompt(prompt: BasePrompt) -> int:
         return prompt.estimated_tokens
 
     tokenizer = tiktoken.get_encoding("o200k_base")
+    text = _prompt_text(prompt)
+    prompt.estimated_tokens = len(tokenizer.encode(text, disallowed_special=())) + 3
+    return prompt.estimated_tokens
+
+
+def _prompt_text(prompt: BasePrompt) -> str:
     if isinstance(prompt, (TextPrompt, SystemPrompt)):
         text = prompt.text + getattr(prompt, "reasoning_content", "")
 
@@ -106,8 +161,40 @@ def _estimate_prompt(prompt: BasePrompt) -> int:
             default=str,
         )
 
-    prompt.estimated_tokens = len(tokenizer.encode(text)) + 3
-    return prompt.estimated_tokens
+    return text
+
+
+def assume_usage(context: Context) -> UsageEstimate:
+    """账本的低成本假设值：字符数约除以三，图片每张 1440，不运行 tokenizer。
+
+    这不是上下文上限判断，也不保证下界；真实 reported 按字段优先。
+    结构化工具内容首次序列化后缓存计数，历史消息不反复序列化。
+    由 Runtime 在线程池调用，消息显式刷新时同时清除缓存。
+    """
+    total = 0
+    for prompt in context:
+        if isinstance(prompt, ImagePrompt):
+            total += 1440 * max(1, len(prompt.image))
+            continue
+
+        if prompt._assumed_tokens is None:
+            if isinstance(prompt, (TextPrompt, SystemPrompt)):
+                length = len(prompt.text) + len(getattr(prompt, "reasoning_content", ""))
+
+            else:
+                length = len(_prompt_text(prompt))
+
+            prompt._assumed_tokens = (length + 2) // 3 + 3
+
+        total += prompt._assumed_tokens
+
+    return {
+        "input": total,
+        "cached": 0,
+        "algorithm": "characters-div3-image1440-v1",
+        "completeness": "heuristic",
+        "assumptions": "characters/3; images=1440 each; not a context limit or measured usage",
+    }
 
 
 class Ledger:
@@ -374,7 +461,9 @@ class Ledger:
                 for k in columns
             ]
             db.execute(
-                "INSERT INTO requests VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET reported=excluded.reported,status=excluded.status,charge=excluded.charge",
+                "INSERT INTO requests VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "estimated=excluded.estimated,reported=excluded.reported,status=excluded.status,"
+                "remote_state=excluded.remote_state,diagnostic=excluded.diagnostic,charge=excluded.charge",
                 encoded,
             )
         self._notify()

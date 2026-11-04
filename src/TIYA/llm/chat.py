@@ -13,7 +13,7 @@ from TIYA.config import DATA_DIR, SETTING_CFG
 from TIYA.logger import get_logger
 from TIYA.utils import fingerprint, parse_proxies_to_httpx
 
-from .config_model import ChatConfig, LLMConfig, Params, RequestPolicy
+from .config_model import ChatConfig, FilesConfig, LLMConfig, Params, RequestPolicy
 from .gateway import Gateway
 from .model import (
     AskTask,
@@ -31,7 +31,7 @@ from .pricing import PriceCatalog
 from .provider import get_provider
 from .runtime import Runtime
 from .state import StateStore
-from .usage import estimate_async
+from .usage import check_context_window, reported_context_tokens
 from .usage_compat import _GLOBAL_USAGE, ApiPrice, LLMUsage
 from .workers import run_sync
 
@@ -125,6 +125,16 @@ class Chat:
         self._last_usage: TokenUsage = TokenUsage()
         self._usage_record: list[LLMUsage] = usage_record
         self._context_use: int = 0
+        for previous_round in reversed(context.rounds.values()):
+            if previous_round.usage is not None:
+                self._last_usage = previous_round.usage.copy()
+                self._context_use = self._last_usage.total_t
+                break
+
+        self._usage_context_signature: str | None = (
+            context.signature if self._last_usage.samples else None
+        )
+        self._usage_scope: str | None = None  # 存档只有 model；新提交复用实际候选 scope。
 
         # 状态位和工具
         self._closed = False
@@ -331,8 +341,23 @@ class Chat:
 
         return self._runtime
 
-    async def _gateway(self, route: LLMConfig) -> Gateway:
-        """按账户和连接选项复用 HTTP 客户端，由本 Chat 负责关闭。"""
+    async def _gateway(self, route: LLMConfig | FilesConfig) -> Gateway:
+        """复用模型/Files 各自的网络连接，由本 Chat 负责关闭。
+
+        Files 请求自带隔离认证头，其连接池只按网络选项复用，不继承模型代理。
+        """
+        if isinstance(route, FilesConfig):
+            key = fingerprint(["files", route.client_params])
+            if key not in self._route_clients:
+                params = copy.deepcopy(route.client_params)
+                proxies = params.pop("proxies", {})
+                params.pop("headers", None)
+                self._route_clients[key] = httpx.AsyncClient(
+                    mounts=parse_proxies_to_httpx(proxies), **params
+                )
+
+            return Gateway(self._route_clients[key], download_options=route.client_params)
+
         if self._client_identity(route) == self._client_identity(self._config.primary):
             return Gateway(
                 await self._ensure_client(), download_options=route.client_params
@@ -352,16 +377,6 @@ class Chat:
             )
 
         return Gateway(self._route_clients[key], download_options=route.client_params)
-
-    async def _tiktoken_prompts(self, prompts: Prompts) -> int:
-        """复用消息级估算；未计算的内容在线程池处理，不作为真实 usage。"""
-        return (await estimate_async(Context(prompts)))["input"]
-
-    async def _estimate_context_windows(self, new_prompts: Prompts) -> int:
-        """对补充本轮输入后的快照估算窗口，不修改业务 Context。"""
-        snapshot = self._context.copy()
-        snapshot.append(new_prompts)
-        return (await estimate_async(snapshot))["input"]
 
     async def run(self) -> None:
         """队列消费协程，串行处理任务并通知等待者；由 close 取消收尾。"""
@@ -387,8 +402,8 @@ class Chat:
                         CallOutcome(
                             "failed",
                             False,
-                            remote_state="completed" if task.pending else "unknown",
-                            category="commit",
+                            remote_state="completed" if task.pending else "not_sent",
+                            category="context_overflow" if isinstance(exc, ContextOverflowError) else "commit",
                         ),
                     )
 
@@ -408,7 +423,14 @@ class Chat:
         try:
             service = await run_sync(self._service)  # 数据库和其他组件初始化是有一定时间的
             pending = await service.execute(
-                self._context, task.prompts, preset, self._gateway, task.timeout
+                self._context,
+                task.prompts,
+                preset,
+                self._gateway,
+                task.timeout,
+                context_usage=self._current_context_usage(),
+                usage_signature=self._usage_context_signature,
+                usage_scope=self._usage_scope,
             )
             task.pending = pending
             task.outcome = CallOutcome(
@@ -418,17 +440,7 @@ class Chat:
                 pending.result.request_id,
                 "completed",
             )
-            response = pending.result.prompts
-            response._duration = max(0.0, time.time() - float(task.prompts.time))
-            if response.usage is None:
-                self._last_usage = TokenUsage()
-                self._context_use = 0
-
-            else:
-                self._last_usage = response.usage.copy()
-                self._context_use = response.usage.total_t
-
-            return response
+            return pending.result.prompts
 
         except asyncio.CancelledError as exc:
             task.outcome = getattr(exc, "llm_outcome", CallOutcome("cancelled"))
@@ -461,19 +473,73 @@ class Chat:
                     raise RuntimeError("Context 已替换，拒绝提交")
 
                 await self._service().commit_async(
-                    context, task.pending, lambda: setattr(task, "committed", True)
+                    context, task.pending, lambda: self._publish_committed(task, response)
                 )
-                task.outcome.status = "completed"
-                task.outcome.committed = True
 
             return response
 
+        except Exception as exc:
+            if not task.committed:
+                raise
+
+            logger = self._config.logger
+            if logger is not None:
+                logger.error(f"LLM 结果已提交，后续收尾失败: {type(exc).__name__}")
+
+            return task.response
+
         finally:
             if not self._config.keep_alive:
-                await self._close_clients()
+                try:
+                    await self._close_clients()
+
+                except Exception as exc:
+                    if not task.committed:
+                        raise
+
+                    logger = self._config.logger
+                    if logger is not None:
+                        logger.error(f"LLM 结果已提交，连接清理失败: {type(exc).__name__}")
 
             self._running_task_id = ""
             self._running.set()
+
+    def _publish_committed(self, task: AskTask, response: Prompts) -> None:
+        """内存提交回调：同步发布成功结果，不等待检查点和连接清理。"""
+        response._duration = max(0.0, time.time() - float(task.prompts.time))
+        task.response = response
+        task.committed = True
+        task.outcome.status = "completed"
+        task.outcome.committed = True
+        self._last_usage = response.usage.copy() if response.usage is not None else TokenUsage()
+        self._context_use = self._last_usage.total_t
+        self._usage_context_signature = self._context.signature
+        self._usage_scope = task.pending.route.scope
+        task.event.set()
+
+    def _current_context_usage(self) -> TokenUsage | None:
+        """借用仍对应当前历史的最近计量；模型/连接来源由实际候选再校验。"""
+        if self._usage_context_signature is None:
+            return None
+
+        if self._context.signature != self._usage_context_signature:
+            return None
+
+        return self._last_usage
+
+    def _check_context_window(self) -> None:
+        """单候选真实用量的同步快检；未知计量/多候选留给 Runtime 执行时判断。
+
+        不运行 tokenizer、不查路由 CD、不让出执行权。多候选的实际模型只有
+        Runtime 选路后才确定，不能用首选身份否定正常备用模型的真实计量。
+        """
+        if not self._config.candidates or len(self._config.candidates) != 1:
+            return
+
+        route = self._config.primary
+        tokens = reported_context_tokens(self._current_context_usage(), route, self._usage_scope)
+        if tokens is not None:
+            check_context_window(tokens, route, self._config.auto_compress_rate)
 
     async def post_nowait(self, task: AskTask) -> Prompts | None:
         """兼容直接调度入口，沿用统一提交规则；调用方负责与队列任务互斥。"""
@@ -531,26 +597,7 @@ class Chat:
             if not self._queue.empty():
                 return None
 
-        # Preserve the existing early compression signal without changing another candidate's Context.
-        rate = max(
-            0.3,
-            min(
-                0.9,
-                self._config.auto_compress_rate
-                if self._config.auto_compress_rate is not None
-                else 0.7,
-            ),
-        )
-
-        if (
-            self._config.max_context
-            and self._last_usage.input_t >= (rate - 0.1) * self._config.max_context
-        ):
-            if (
-                await self._estimate_context_windows(new_ask)
-                >= rate * self._config.max_context
-            ):
-                raise ContextOverflowError()
+        self._check_context_window()
 
         identifier = task_id or uuid4().hex
         while identifier in self._ask_tasks:
@@ -559,7 +606,7 @@ class Chat:
         task = AskTask(copy.deepcopy(new_ask), timeout, identifier)
         self._ask_tasks[identifier] = task
         self._sequence += 1
-        await self._queue.put((0 if no_wait else 1, self._sequence, task))
+        self._queue.put_nowait((0 if no_wait else 1, self._sequence, task))
         try:
             await asyncio.wait_for(task.event.wait(), timeout)
             self._publish_outcome(task)
@@ -571,7 +618,7 @@ class Chat:
         except TimeoutError:
             await self.stop_from_id(identifier)
             self._publish_outcome(task)
-            return None
+            return task.response if task.committed else None
 
         except asyncio.CancelledError:
             await self.stop_from_id(identifier)

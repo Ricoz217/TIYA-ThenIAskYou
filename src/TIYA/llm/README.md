@@ -133,7 +133,19 @@ Files 是独立能力，有配置且模型协议支持图片文件引用时优�
 
 安全拒绝后的重试耗尽，或遇到可安全切换的终止错误时，按顺序进入下一组合并立即记录会话 CD。CD 内沿用当前备用；该备用也失败时继续向后并刷新 CD。末项失败则删除 CD，本次按失败结束，下一次任务才从首选开始；同一任务不回绕已失败的候选。单候选执行既定重试后也按此规则结束。总尝试次数和截止时间仍是上限，普通成功不续 CD，到期后下一次调用直接回到首选。人工取消、部分输出、远端结果不明均立即停止，不触发路由切换。
 
-每个实际候选按自己的 max_context 检查完整逻辑上下文。当前候选窗口不足，或服务端明确返回上下文超限时，立即抛出 ContextOverflowError 给上层；不自动跳到窗口更大的候选，不压缩或删除历史，也不把某个候选的超限归因为“所有候选都超限”。
+压缩水位共用 usage.py 的判定规则：优先使用最近一笔有效请求的 reported.total，或完整的 reported.input + reported.output；零是有效值，不回退到估算。工具轮次含多笔请求时不将 repeated-prefix 用量累加作当前水位。Chat 仅在单候选且已有有效真实计量时做同步快检，不启动 tokenizer，也不猜测 CD 对应的实际模型。
+
+真实计量关联已提交历史的现有 Context.signature、实际模型和候选 scope；清理、回滚、压缩或替换后旧签名不再适用，换模型/连接后旧来源不再适用。在途旧请求仍可按原快照完成和记账，但其计量不会成为新模型的有效水位。直接复用已有缓存签名和 scope，不新增哈希算法；未显式刷新的 BasePrompt 原位修改仍由调用方负责。存档没有 scope 时仍必须匹配 model，来源未知不冒充新模型实测值。
+
+Runtime 在队列任务实际执行、选定候选后做权威检查，按该候选 max_context 与配置系数发出 ContextOverflowError；不是估算值直接与裸窗口比较。只有缺少有效真实计量且原 Context 非空时，才复用 tokenizer 缓存或补算本轮工作上下文；同次调用跨候选复用汇总，媒体分片变化才失效。空 Context 的首次新增输入硬上限仍由服务器判断。服务端明确超限继续按既有 Provider 规则上抛；不自动换大窗口、压缩或删除历史。
+
+ask 的空闲检查、任务登记与无界队列 put_nowait 之间没有 await；queue=False 的竞争调用不会跨越估算等待而一起入队。no_wait 的既有优先级规则不变。排队期间历史和 usage 更新后，执行时预检会看到最新状态；未发送的超限任务不创建实际 request 账目。
+
+Runtime.execute 原有五个位置参数不变，可选关键字 context_usage: TokenUsage、usage_signature、usage_scope 提供对应原始历史的最近计量，按只读借用。签名不匹配不采用，模型/连接在选路后校验；省略时可复用本 Runtime 最近一次 commit/commit_async 保存的计量。Runtime 不访问 Chat 对象，也不把 Context.usage 的累计值当水位；更改日志/系数等无关设置不使真实计量失效。
+
+Chat 内存提交时同步保存 task.response、committed 和最终 outcome，再通知 ask 等待者；检查点写入和连接清理仍由当前队列任务收尾，不创建额外后台任务。已提交任务与超时竞争时返回保存的结果，后续收尾失败不撤销成功。Runtime 的统一 deadline 覆盖候选准备、Files、发送和结果物化；失败记账、镜像等收尾仍须完成，线程内已开始的 SQLite 写入不能靠 asyncio 强制中断。
+
+显式协议 refusal（包括 Chat 的内容过滤结束、Responses refusal、Anthropic refusal stop_reason）不转换为普通 TextPrompt。Provider 通过失败通道报告拒绝，日志可记录原因；Chat 返回 None、不提交本轮问答、不重试或 fallback，真实消耗仍记账，状态为 refused。普通 content 中的自然语言拒绝不做关键词推断。Chat Completions 只支持 n=1，不合并多个候选。
 
 ## 启用服务端 Prompt 缓存
 
@@ -223,6 +235,8 @@ Runtime 的 `UploadSender` 固定首次发起者的 call_id/连接，并使用�
 
 `FilesClient(settings)` 提供 `upload(MediaRef)`、`retrieve(id)`、`list(params=...)`、`delete(id)`、`download(id)`，可单独使用。下载能力仍以目标服务及具体文件为准。传入共享 httpx client 时，Files 使用自己的显式请求头，不继承模型密钥。
 
+FilesClient/ImagesClient 的 client_params 按连接节点默认值与构造参数逐字段合并，显式构造参数优先；借入现成 HTTP client 时不修改其网络配置。Chat 关联 Files 的网络选项与模型相同时复用连接，不同时按 FilesConfig 获取独立网络池；遇到需要准备的图片才取 Files 连接。Images 编辑复用同一 FilesClient；网络配置不同时持有独立连接池，到 ImagesClient.close() 时关闭，不逐图/逐次编辑重建。借入的模型客户端不关闭。自定义 Runtime GatewayFactory 需同时接受 LLMConfig 与 FilesConfig。
+
 Files 上传默认请求远端保留 86400 秒，可通过 `expires_after_seconds` 覆盖；显式设为 `null` 不发送自动到期参数，适用于不支持 TTL 的中转。OpenAI/DeepSeek 使用 `expires_after[anchor/seconds]`，Anthropic 使用 `expires_in_seconds`。以服务端返回的 `expires_at` 为准；没有返回时，以创建时间和请求 TTL 计算本地引用的保守刷新时间，不表示已确认服务端执行了删除。协议参考：[OpenAI](https://developers.openai.com/api/reference/resources/files/methods/create)、[DeepSeek](https://api-docs.deepseek.com/api/create-file/)、[Anthropic](https://platform.claude.com/docs/en/build-with-claude/files)。
 
 `ImagesClient(settings, provider_ref="image_generation:连接名")` 可沿用配置树中的连接引用；`settings` 仍须显式传入该连接节点，`provider_ref` 选择协议实现并标识定价作用域，不自动读取全局配置。默认使用 `image_generation:direct`。`images.pricing_identity(model, operation="images_generate", preset="")` 返回实际使用的定价绑定。生成与编辑分别使用 images_generate/images_edit。流式预览回调接收的也是已缓存的 `ImageResponseItem`，预览不会计为最终图片。
@@ -242,6 +256,8 @@ Files 上传默认请求远端保留 86400 秒，可通过 `expires_after_second
 可同步调用 `StateStore.cleanup(now=..., batch_size=500)` 执行一批清理，异步代码通过 `run_sync` 调用；显式清理更新同库共享时钟，不额外叠加自动批次。清理不扫描/删除本地图片，不调用远端删除，不触碰用量账本；SQLite 空闲页供后续写入复用，不在请求链路执行 VACUUM。
 
 账本每次真实尝试分配独立 request_id，同一逻辑调用共享 call_id；平台 request ID、response ID 分开记录。先持久化初始估算，再发送网络请求。reported 与 estimated 分别保存，effective 逐字段优先采用 reported。缺失真实值不填成真实零值。观察幂等，费用修订不会增加请求数量；确认未执行的拒绝保留初始估算证据，并以新的估算观察注明拒绝状态。
+
+Runtime 的账本 estimated 使用 characters-div3-image1440-v1：字符数约除以三，加每条消息固定开销，图片按每张 1440；completeness=heuristic，既不是实测值，也不保证下界，不用于上下文拦截。新增结构化消息的计数缓存在 BasePrompt 的运行期槽中，显式刷新失效，不参与签名/序列化。候选与重试复用同次逻辑调用的输入假设；输出同样采用轻量假设，不为记账运行 tokenizer。重复镜像同一请求时更新可变快照，不新建请求、不修改冻结价格。
 
 `Ledger` 提供 begin_call/begin_request/observe_usage/finish_request、分页 query_requests/query_observations 和 summarize。旧 `LLM_usage` 的日志和统计入口通过适配器读取 SQLite。JSON 仅首次备份并导入历史聚合，不将历史聚合伪造成逐请求记录，也不重复累计 last_record。
 
@@ -280,7 +296,7 @@ catalog.publish(identity, rules, source="经核对的价格来源")
 
 LLM 中原先通过 `to_thread` / `run_in_executor` 卸载的同步 SQLite、token 估算和图片处理，现统一走 `llm/workers.py` 的 `run_sync()`，使用 `TIYA/executor.py` 中的进程级 `LLM_EXECUTOR`，默认最多 4 个工作线程，线程名前缀为 `llm`。线程数在现有全局线程池管理文件中集中调整，无需修改连接配置。所有 Chat、FilesClient 和 ImagesClient 共用这个池；HTTP 仍为异步收发，file_cache 使用它已有的独立线程池。
 
-本地 token 下界估算使用 `llm/usage.py` 的 `estimate(context: Context) -> UsageEstimate`；返回明确的估算字段和依据，不进行媒体 IO、不修改业务内容。消息缓存单条估算，Context 缓存汇总；追加、删除、回滚只使汇总失效，未修改的历史文本和工具 schema 不重复编码。`estimate_async()` 在汇总已缓存时直接返回，否则交给 LLM 专用线程池。Chat 压缩检查和 Runtime 窗口检查共用这些结果，重试及切换候选不重复编码相同历史；每次实际请求仍独立保存初始估算和 request_id。
+tokenizer 估算使用 `llm/usage.py` 的 `estimate(context: Context) -> UsageEstimate`；返回明确的估算字段和依据，不进行媒体 IO、不修改业务内容。消息缓存单条估算，Context 缓存汇总；追加、删除、回滚只使汇总失效，未修改的历史文本和工具 schema 不重复编码。`estimate_async()` 在汇总已缓存时直接返回，否则交给 LLM 专用线程池。只在显式 estimate 调用或 Runtime 缺少有效真实计量的预检中启动 tokenizer，特殊 token 字面量作为普通文本计数；Runtime 记账使用另一套轻量假设，不因此调用 tokenizer。
 
 显式修改消息内容后调用 `Context.refresh_fingerprints()`，同时清除内容指纹和估算缓存；仅改变成员关系或媒体传输信息时，框架使用 `content_changed=False` 保留消息级估算。缓存随进程内副本保留，不写入历史归档，也不参与消息指纹、原生回放校验和网络请求体。重新加载归档后首次估算会计算一次。用量模块单向依赖数据对象，`model.py` 不导入估算、配置解析或 Runtime 模块。
 
@@ -294,7 +310,7 @@ rows = await run_sync(ledger.query_requests, preset="MAIN", limit=100)
 
 Runtime 的 `execute()` 是主调度入口，只制作 Context 快照并按有序候选执行。参数和提交边界直接写在函数文档中，主要步骤如下：
 
-- `_prepare_candidate()`：窗口检查、连接获取、选择匹配的历史检查点。
+- `_prepare_candidate()`：按实际候选检查水位与协议能力、获取连接、选择历史检查点。
 - `_advance_route()`：安全失败后更新下一候选的 CD；末项失败删除 CD，本次结束，下次任务从首选开始。
 - `_execute_candidate()`：单候选的有界尝试，准备将实际发送的媒体。
 - `_begin_attempt()` / `_send_attempt()`：冻结价格并先落估算，再执行一次生成收发。

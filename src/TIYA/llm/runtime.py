@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from TIYA.utils import fingerprint
 
-from .config_model import ChatConfig, JsonValue, LLMConfig, Params
+from .config_model import ChatConfig, FilesConfig, JsonValue, LLMConfig, Params
 from .gateway import Frame, Gateway, HTTPFailure, WireRequest
 from .media import MediaError, MediaService, UploadSender
 from .model import (
@@ -42,7 +42,13 @@ from .provider.base import (
     StreamDecoder,
 )
 from .provider.common import normalize
-from .usage import UsageEstimate, estimate_async
+from .usage import (
+    UsageEstimate,
+    assume_usage,
+    check_context_window,
+    estimate_async,
+    reported_context_tokens,
+)
 from .workers import run_sync
 
 if TYPE_CHECKING:
@@ -53,8 +59,7 @@ if TYPE_CHECKING:
     from .usage import Ledger
     from .usage_compat import LLMUsage
 
-type GatewayFactory = Callable[[LLMConfig], Awaitable[Gateway]]
-type SendFile = Callable[[WireRequest], Awaitable[Params]]
+type GatewayFactory = Callable[[LLMConfig | FilesConfig], Awaitable[Gateway]]
 type PreparedMedia = dict[str, list[MediaRef]]
 
 
@@ -99,6 +104,11 @@ class _Call:
     last_request_id: str = ""
     last_remote_state: str = "not_sent"
     last_category: str = "preflight"
+    estimation: UsageEstimate | None = None  # 同次调用的账本假设值，非窗口判定。
+    context_usage: TokenUsage | None = None  # 原始历史对应的最近一次计量，不是累计值。
+    usage_scope: str | None = None
+    has_history: bool = False
+    window_estimate: int | None = None  # 同次调用跨候选复用的 tokenizer 估算。
 
 
 @dataclass(slots=True)
@@ -109,7 +119,6 @@ class _Candidate:
     index: int
     provider: ConversationProvider
     gateway: Gateway
-    estimation: UsageEstimate
     checkpoint_key: str
     checkpoints: list[Checkpoint]
     header: str
@@ -120,6 +129,7 @@ class _Candidate:
     recovered: set[str] = field(default_factory=set)
     retries: int = 0
     media: PreparedMedia = field(default_factory=dict)
+    files_gateway: Gateway | None = None
 
 
 @dataclass(slots=True)
@@ -158,6 +168,9 @@ class Runtime:
         self.logger = logger
         self.media = MediaService(state, on_warning=self._log)
         self.subscribers = subscribers if subscribers is not None else []
+        self._context_usage: TokenUsage | None = None
+        self._usage_signature: str | None = None
+        self._usage_scope: str | None = None
 
     async def _db(self, method: Callable, *args, **kwargs):
         """操作数据库"""
@@ -205,6 +218,10 @@ class Runtime:
         config: ChatConfig,
         gateway_for_route: GatewayFactory,
         timeout: float,
+        *,
+        context_usage: TokenUsage | None = None,
+        usage_signature: str | None = None,
+        usage_scope: str | None = None,
     ) -> Pending:
         """发送一轮请求，返回待提交结果；失败抛异常并附带 llm_outcome。
 
@@ -212,6 +229,10 @@ class Runtime:
         输入。config 必须含有序候选和重试策略；gateway_for_route 提供对应连接，
         连接生命周期由调用方管理。timeout 是整次调用的秒数，包含 Files、重试和
         后台轮询。成功也不会提交 Context，调用方须再调用 commit_async。
+
+        context_usage 是原始历史最近一次计量，usage_signature 为其 Context 签名，
+        usage_scope 为实际候选的既有 scope；均按只读借用。签名不匹配则不采用。
+        省略时可复用本 Runtime 已提交的计量；无有效真实值且已有历史才估算。
 
         主流程只负责候选顺序和全局终态；单候选尝试、记账、恢复分别在下游方法。
         取消/部分输出/远端未知直接抛出，禁止切换候选生成第二份结果。
@@ -221,6 +242,10 @@ class Runtime:
 
         self.media.degraded = False
         expected = context.signature
+        if context_usage is None or usage_signature != expected:
+            context_usage = self._context_usage if self._usage_signature == expected else None
+            usage_scope = self._usage_scope
+
         planned = copy.deepcopy(context)
         planned.append(copy.deepcopy(prompts))
         planned = normalize(planned)
@@ -234,6 +259,9 @@ class Runtime:
             deadline=deadline,
             call_id=call_id,
             route_key=fingerprint([context.session_id, config.revision]),
+            context_usage=context_usage,
+            usage_scope=usage_scope,
+            has_history=bool(context),
         )
         cooldown = await run_sync(self._state_get, "cooldown", call.route_key)
         selected = 0
@@ -244,20 +272,21 @@ class Runtime:
             selected = 0
 
         try:
-            for index in range(selected, len(config.candidates)):
-                if call.attempts >= config.request_policy.max_attempts:
-                    break
+            async with asyncio.timeout_at(call.deadline):
+                for index in range(selected, len(config.candidates)):
+                    if call.attempts >= config.request_policy.max_attempts:
+                        break
 
-                candidate = await self._prepare_candidate(
-                    call, index, gateway_for_route
-                )
-                pending = await self._execute_candidate(call, candidate)
-                if pending is not None:
-                    return pending
+                    candidate = await self._prepare_candidate(
+                        call, index, gateway_for_route
+                    )
+                    pending = await self._execute_candidate(call, candidate, gateway_for_route)
+                    if pending is not None:
+                        return pending
 
-                # 当前候选已安全失败：记录下一候选；末项失败清除 CD，本次就此结束。
-                # 下次任务才从首选开始，本次不回绕已尝试的候选。
-                await run_sync(self._advance_route, call, index)
+                    # 当前候选已安全失败：记录下一候选；末项失败清除 CD，本次就此结束。
+                    # 下次任务才从首选开始，本次不回绕已尝试的候选。
+                    await run_sync(self._advance_route, call, index)
 
             if call.last_error:
                 raise call.last_error
@@ -328,8 +357,9 @@ class Runtime:
         index: int,
         gateway_for_route: GatewayFactory,
     ) -> _Candidate:
-        """检查当前候选窗口/能力并选择检查点；窗口不足直接抛出，不自动换候选。"""
+        """按当前实际候选检查水位/能力并选检查点；计量不足时才复用或补估算。"""
         route = call.config.candidates[index]
+        await self._check_context_window(call, route)
         provider = get_provider(route)
         if not callable(getattr(provider, "encode", None)):
             raise ValueError(
@@ -346,13 +376,6 @@ class Runtime:
         ).get("supports_background"):
             raise ValueError(
                 "后台 Responses 需要显式声明 responses.supports_background"
-            )
-
-        estimation = await estimate_async(call.planned)
-        if route.max_context and estimation["input"] > route.max_context:
-            call.last_category = "context_overflow"
-            raise ContextOverflowError(
-                f"候选 {route.ref} 的上下文估算下界 {estimation['input']} 超过其窗口 {route.max_context}"
             )
 
         gateway = await gateway_for_route(route)
@@ -382,7 +405,6 @@ class Runtime:
             index,
             provider,
             gateway,
-            estimation,
             checkpoint_key,
             checkpoints,
             header,
@@ -390,8 +412,33 @@ class Runtime:
             parent,
         )
 
+    async def _check_context_window(self, call: _Call, route: LLMConfig) -> None:
+        """执行时的权威预检；同次调用估算一次，正常重试/备用模型复用缓存。"""
+        if not route.max_context:
+            return
+
+        tokens = reported_context_tokens(call.context_usage, route, call.usage_scope)
+        if tokens is None:
+            if not call.has_history:
+                return  # 首次没有历史用量，保留由服务器判断新增输入硬上限的规则。
+
+            if call.window_estimate is None:
+                call.window_estimate = (await estimate_async(call.planned))["input"]
+
+            tokens = call.window_estimate
+
+        try:
+            check_context_window(tokens, route, call.config.auto_compress_rate)
+
+        except ContextOverflowError:
+            call.last_category = "context_overflow"
+            raise
+
     async def _execute_candidate(
-        self, call: _Call, candidate: _Candidate
+        self,
+        call: _Call,
+        candidate: _Candidate,
+        gateway_for_route: GatewayFactory,
     ) -> Pending | None:
         """在单候选预算内尝试；None 表示安全切换，危险终态直接抛出。"""
         while call.attempts < call.config.request_policy.max_attempts:
@@ -409,28 +456,17 @@ class Runtime:
                 if system is not None:
                     send_context.append(system)
 
-            # 固定发起者和客户端；不能捕获下一次循环可能变化的 candidate/call。
-            send_file = UploadSender(
-                partial(
-                    self._send_shared_file,
-                    call_id=call.call_id,
-                    route=candidate.route,
-                    gateway=candidate.gateway,
-                ),
-                candidate.gateway,
-            )
-
             try:
                 async with asyncio.timeout_at(call.deadline):
                     media_changed = await self._prepare_media(
                         send_context,
-                        candidate.provider,
-                        send_file,
-                        candidate.media,
-                        candidate.inline,
-                        candidate.force,
+                        call,
+                        candidate,
+                        gateway_for_route,
                     )
                 if media_changed:
+                    call.estimation = None
+                    call.window_estimate = None
                     call.planned.refresh_fingerprints(content_changed=False)
                     if send_context is not call.planned:
                         send_context.refresh_fingerprints(content_changed=False)
@@ -557,11 +593,14 @@ class Runtime:
                 },
             }
 
+        if call.estimation is None:
+            call.estimation = await run_sync(assume_usage, call.planned)
+
         request_id = await self._db(
             self.ledger.begin_request,
             call.call_id,
             identity,
-            candidate.estimation,
+            call.estimation,
             price_snapshot=price,
         )
         call.last_request_id = request_id
@@ -718,7 +757,7 @@ class Runtime:
                 f"LLM 端点未保存 response，后续使用完整历史: {candidate.route.ref}"
             )
 
-        output_estimate = (await estimate_async(Context(result.prompts)))[
+        output_estimate = (await run_sync(assume_usage, Context(result.prompts)))[
             "input"
         ]
         await self._db(
@@ -826,6 +865,9 @@ class Runtime:
 
         cancel_status = await self._cancel_background(call, candidate, attempt, exc)
         failure = candidate.provider.classify_failure(exc)
+        if failure.category == "refusal":
+            self._log(f"LLM 拒绝回答: {failure.raw.get('message', '')}")
+
 
         result_complete = bool(attempt.result and attempt.result.complete)
         stream_complete = bool(attempt.decoder and attempt.decoder.complete)
@@ -837,7 +879,12 @@ class Runtime:
                 or any("message" in c for c in body.get("choices", []))
             )
         )
-        remote_complete = result_complete or stream_complete or body_complete
+        provider_complete = isinstance(exc, ProviderFailure) and exc.failure.remote_state == "completed"
+        if attempt.decoder is not None and not attempt.decoder.complete:
+            # 拒绝增量证明远端已执行，但断流时不能声称完整响应已收完。
+            provider_complete = False
+
+        remote_complete = result_complete or stream_complete or body_complete or provider_complete
         has_observed_usage = any(
             isinstance(value, (int, float)) and value > 0 for value in observed_usage.values()
         )
@@ -894,6 +941,9 @@ class Runtime:
                 "cancelled" if cancelled else "rejected" if failure.safe else "unknown"
             )
         )
+        if failure.category == "refusal":
+            status = "refused"
+
         call.last_remote_state = cancel_status or (
             "completed" if remote_complete else failure.remote_state
         )
@@ -1104,17 +1154,20 @@ class Runtime:
     async def _prepare_media(
         self,
         send_context: Context,
-        provider: ConversationProvider,
-        send_file: SendFile,
-        media: PreparedMedia,
-        inline: bool,
-        force: set[str],
+        call: _Call,
+        candidate: _Candidate,
+        gateway_for_route: GatewayFactory,
     ) -> bool:
         """原地补充/修复 media，返回是否更新；已准备好的传输引用供重试复用。
 
         inline 只转换尚未内联的图片；force 中成功修复的消息随即移除，避免下一次
         普通重试再次读文件或编码。发送视图与工作上下文共享消息，由调用方刷新指纹。
         """
+        provider = candidate.provider
+        media = candidate.media
+        inline = candidate.inline
+        force = candidate.force
+        send_file: UploadSender | None = None
         changed = False
         for prompt in send_context:
             if not isinstance(prompt, ImagePrompt):
@@ -1130,6 +1183,31 @@ class Runtime:
 
             if not needs_prepare:
                 continue
+
+            if send_file is None:
+                # 遇到需要准备的图片才取 Files 连接；文字请求不额外创建网络设施。
+                file_gateway = candidate.gateway
+                files = candidate.route.files
+                if (
+                    files is not None
+                    and files.client_params != candidate.route.client_params
+                    and provider.accepts_image_files()
+                    and not inline
+                ):
+                    if candidate.files_gateway is None:
+                        candidate.files_gateway = await gateway_for_route(files)
+
+                    file_gateway = candidate.files_gateway
+
+                send_file = UploadSender(
+                    partial(
+                        self._send_shared_file,
+                        call_id=call.call_id,
+                        route=candidate.route,
+                        gateway=file_gateway,
+                    ),
+                    file_gateway,
+                )
 
             media[prompt.id] = await self.media.prepare_prompt(
                 prompt,
@@ -1237,6 +1315,7 @@ class Runtime:
     def commit(self, context: Context, pending: Pending) -> Prompts:
         """同步提交；包含状态库 IO，仅供同步调用方使用。"""
         self._apply(context, pending)
+        self._remember_usage(context, pending)
         self._persist_commit(context.session_id, pending)
         return pending.result.prompts
 
@@ -1248,11 +1327,18 @@ class Runtime:
     ) -> Prompts:
         """校验并提交 Context，再持久化续接检查点；on_commit 在内存提交后同步调用。"""
         self._apply(context, pending)
+        self._remember_usage(context, pending)
         if on_commit:
             on_commit()
 
         await run_sync(self._persist_commit, context.session_id, pending)
         return pending.result.prompts
+
+    def _remember_usage(self, context: Context, pending: Pending) -> None:
+        """仅在业务提交后借用计量，供直接 Runtime 调用复用；不复制历史或重算哈希。"""
+        self._context_usage = pending.result.prompts.usage
+        self._usage_signature = context.signature
+        self._usage_scope = pending.route.scope
 
     @staticmethod
     def _apply(context: Context, pending: Pending) -> None:

@@ -27,6 +27,9 @@ class ChatCompletions(Provider):
 
     def encode(self, context: Context, media: dict[str, list[MediaRef]]) -> Params:
         """编码 Chat Completions 原生请求，保持历史和图片顺序；不上传或发送。"""
+        if self.route.model_params.get("n", 1) not in (None, 1):
+            raise ValueError("当前仅支持单候选 n=1")
+
         messages: list[dict] = []
         tools: list[dict] = []
         for prompt in context:
@@ -134,6 +137,9 @@ class ChatCompletions(Provider):
 
         model = body.get("model", "")
         result = Result(reported_model=model if isinstance(model, str) else "")
+        if len(choices) > 1:
+            raise ValueError("当前仅支持单候选 n=1")
+
         for choice in choices:
             if not isinstance(choice, dict):
                 raise ValueError("Chat choice 必须为对象")
@@ -142,13 +148,19 @@ class ChatCompletions(Provider):
             if not isinstance(message, dict):
                 raise ValueError("Chat message 必须为对象")
 
-            content = message.get("content") or message.get("refusal")
+            if message.get("refusal") or choice.get("finish_reason") == "content_filter":
+                self.refuse(str(message.get("refusal") or "服务端内容过滤"), body)
+
+            content = message.get("content")
             if isinstance(content, list):
                 for block in content:
                     if not isinstance(block, dict):
                         raise ValueError("Chat 内容块必须为对象")
 
-                    if block.get("type") in ("text", "output_text", "refusal"):
+                    if block.get("type") == "refusal":
+                        self.refuse(str(block.get("refusal") or block.get("text") or ""), body)
+
+                    if block.get("type") in ("text", "output_text"):
                         result.prompts.append(
                             TextPrompt(
                                 "assistant", block.get("text", block.get("refusal", ""))
@@ -283,6 +295,7 @@ class ChatStream:
         self.provider = provider
         self.content_parts: list[str | Params] = []
         self.reasoning_parts: list[str] = []
+        self.refusal_parts: list[str] = []
         self.calls: dict[int, _ToolCallFragments] = {}
         self.usage: Params = {}
         self.partial = False
@@ -330,6 +343,19 @@ class ChatStream:
             delta = choice.get("delta", {})
             if not isinstance(delta, dict):
                 raise ValueError("流式 delta 必须为对象")
+
+            if choice.get("index", 0) != 0 or len(choices) > 1:
+                raise ValueError("当前仅支持单候选 n=1")
+
+            refusal = delta.get("refusal")
+            if isinstance(refusal, str) and refusal:
+                self.partial = True
+                self.refusal_parts.append(refusal)
+                logs.append(StreamText(refusal))
+
+            if choice.get("finish_reason") == "content_filter":
+                self.partial = True
+                self.refusal_parts.append("服务端内容过滤")
 
             for key in ("reasoning_content", "reasoning"):
                 reasoning = delta.get(key)
@@ -473,6 +499,7 @@ class ChatStream:
 
         message: Params = {
             "content": self._content(),
+            "refusal": "".join(self.refusal_parts),
             "reasoning_content": "".join(self.reasoning_parts),
             "tool_calls": [self.calls[index].message() for index in sorted(self.calls)],
         }

@@ -24,7 +24,7 @@ def encoded_texts(monkeypatch):
     texts = []
 
     class Tokenizer:
-        def encode(self, text):
+        def encode(self, text, *, disallowed_special=()):
             texts.append(text)
             return list(text)
 
@@ -174,5 +174,6 @@ def test_chat_threshold_fallback_and_next_round_reuse_estimates(encoded_texts, m
     asyncio.run(run())
     assert encoded_texts.count("system") == encoded_texts.count("history") == 1
     assert encoded_texts.count("question") == encoded_texts.count("next") == 1
-    assert encoded_texts.count("answer") == 2
+    # Runtime 记账不运行 tokenizer；只有第二次 ask 的缺失 usage 回退估算旧回答。
+    assert encoded_texts.count("answer") == 1
     assert [request.url.host for request in requests] == ["a.test", "b.test", "b.test"]

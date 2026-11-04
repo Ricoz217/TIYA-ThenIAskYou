@@ -7,7 +7,7 @@ import httpx
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 from ..config_model import JsonValue, LLMConfig, Params
 from ..gateway import HTTPFailure, WireRequest
@@ -205,6 +205,15 @@ class Provider:
     def __init__(self, route: LLMConfig) -> None:
         """接收已解析的单候选配置，不读取全局配置，不管理上下文或网络连接。"""
         self.route = route
+
+    def refuse(self, reason: str, body: Params) -> NoReturn:
+        """显式协议拒绝是已发生的远端执行，不能投影成正常回答或重新生成。"""
+        raise ProviderFailure(Failure(
+            "refusal",
+            "refusal",
+            remote_state="completed",
+            raw={"message": reason or "服务端拒绝回答", "usage": body.get("usage") or {}},
+        ))
 
     @property
     def supports_parent(self) -> bool:

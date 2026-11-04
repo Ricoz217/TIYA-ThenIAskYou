@@ -73,6 +73,16 @@ class PriceCatalog:
             if not isinstance(tier.get("rates"), dict) or not tier["rates"]:
                 raise ValueError("每个价格区间需要明确的非空 rates")
             end = tier.get("up_to")
+            if end is None and i != len(tiers) - 1:
+                raise ValueError("只有最后一个价格区间允许无上限")
+
+            if end is not None and (
+                isinstance(end, bool)
+                or not isinstance(end, (int, float))
+                or not Decimal(str(end)).is_finite()
+            ):
+                raise ValueError("价格区间上限必须是有限数值")
+
             if end is not None and (end <= previous or i == len(tiers) - 1):
                 raise ValueError("价格区间必须递增，最后一个区间无上限")
             previous = end or previous

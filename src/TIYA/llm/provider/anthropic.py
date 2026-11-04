@@ -142,6 +142,18 @@ class Messages(Provider):
     def decode(self, body: Params) -> Result:
         """解析 Anthropic Messages 文本、工具和原生记录；返回图片交给通信层落盘。"""
         self.check_body(body)
+        if body.get("stop_reason") == "refusal":
+            reasons: list[str] = []
+            blocks = body.get("content")
+            if isinstance(blocks, list):
+                for block in blocks:
+                    if isinstance(block, dict):
+                        text = block.get("text")
+                        if isinstance(text, str):
+                            reasons.append(text)
+
+            self.refuse("".join(reasons), body)
+
         if not isinstance(body.get("content"), list):
             raise ValueError("Messages 响应缺少 content")
 
@@ -200,6 +212,7 @@ class MessagesStream:
         self.identifier = ""
         self.model = ""
         self.final: Params | None = None
+        self.stop_reason: str | None = None
 
     def feed(self, event: Params) -> list[StreamText]:
         """接收一个原生事件；输出出现后设置 partial，损坏流仍保留已知 usage。"""
@@ -233,6 +246,11 @@ class MessagesStream:
 
         elif kind == "message_delta":
             self.usage.update(event.get("usage") or {})
+            delta = event.get("delta")
+            if isinstance(delta, dict):
+                stop_reason = delta.get("stop_reason")
+                if isinstance(stop_reason, str):
+                    self.stop_reason = stop_reason
 
         elif kind == "message_stop":
             self.complete = True
@@ -274,6 +292,7 @@ class MessagesStream:
                 "model": self.model,
                 "content": [self.blocks[k] for k in sorted(self.blocks)],
                 "usage": self.usage,
+                "stop_reason": self.stop_reason,
             }
         )
         result.complete = self.complete

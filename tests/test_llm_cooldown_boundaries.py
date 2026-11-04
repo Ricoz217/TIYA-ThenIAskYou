@@ -218,19 +218,24 @@ def test_unsafe_last_candidate_failure_does_not_wrap_or_clear_cooldown(tmp_path,
     assert calls == ["c"]
 
 
-def test_local_overflow_of_selected_candidate_stops_without_trying_larger_candidates(tmp_path):
+def test_local_window_does_not_prevent_sending_the_selected_candidate(tmp_path):
     runtime, config, context, key = setup_routes(tmp_path, windows=(1, 100000, 100000))
     calls = []
 
-    async def gateway(route):
-        calls.append(route.connection_name)
-        raise AssertionError("窗口不足不能发送，也不能自动换候选")
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+        )) as client:
+            async def gateway(route):
+                calls.append(route.connection_name)
+                return Gateway(client)
 
-    with pytest.raises(ContextOverflowError, match="model-a"):
-        asyncio.run(runtime.execute(context, Prompts(TextPrompt("user", "hi")), config, gateway, 5))
+            pending = await runtime.execute(context, Prompts(TextPrompt("user", "hi")), config, gateway, 5)
+            assert pending.result.prompts[0].text == "ok"
 
-    assert calls == []
-    assert runtime.ledger.query_requests() == []
+    asyncio.run(run())
+    assert calls == ["a"]
+    assert len(runtime.ledger.query_requests()) == 1
     assert runtime.state.get("cooldown", key) is None
 
 

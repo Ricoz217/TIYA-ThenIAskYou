@@ -54,13 +54,16 @@ def test_accounting_failure_never_regenerates(tmp_path, monkeypatch, stage):
     asyncio.run(run())
 
 
-def test_smaller_fallback_window_is_checked_without_mutating_context(tmp_path):
+def test_smaller_fallback_uses_server_overflow_without_mutating_context(tmp_path):
     ledger = Ledger(tmp_path / "usage.sqlite3")
     rt = Runtime(StateStore(tmp_path / "runtime.sqlite3"), ledger)
     calls = []
 
     def handler(request):
         calls.append(request)
+        if request.url.host == "backup":
+            return httpx.Response(400, json={"error": {"code": "context_length_exceeded"}})
+
         return httpx.Response(429, json={"error": {"code": "insufficient_quota"}})
 
     async def run():
@@ -101,7 +104,7 @@ def test_smaller_fallback_window_is_checked_without_mutating_context(tmp_path):
                     gateway,
                     5,
                 )
-        assert len(calls) == 1
+        assert [request.url.host for request in calls] == ["primary", "backup"]
         assert not context
 
     asyncio.run(run())

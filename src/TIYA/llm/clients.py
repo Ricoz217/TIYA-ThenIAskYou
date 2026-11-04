@@ -99,7 +99,11 @@ class ServiceClient:
         """
         self.settings = copy.deepcopy(settings)
         self._client, self._own_client = client, client is None
-        self.client_params = copy.deepcopy(client_params or {})
+        configured_params = self.settings.get("client_params") or {}
+        if not isinstance(configured_params, dict):
+            raise TypeError("client_params 必须是字典")
+
+        self.client_params = copy.deepcopy({**configured_params, **(client_params or {})})
         self.ledger = ledger
         self.state = state or StateStore(DATA_DIR / "llm" / "runtime.sqlite3")
         self.prices = prices or PriceCatalog(DATA_DIR / "llm" / "pricing.sqlite3")
@@ -258,6 +262,17 @@ class ImagesClient(ServiceClient):
         if len(parts) != 2 or not all(parts):
             raise ValueError("图片连接引用必须是 分类:连接名")
         self.provider_ref = provider_ref
+        self._files_client: FilesClient | None = None
+
+    async def close(self) -> None:
+        """关闭自建的图片/Files 连接；借入的客户端仍由调用方关闭。"""
+        try:
+            if self._files_client is not None:
+                await self._files_client.close()
+                self._files_client = None
+
+        finally:
+            await super().close()
 
     def _candidate(self, model: str) -> LLMConfig:
         """构造本次图片操作的独立连接快照，不读取全局预设。"""
@@ -379,13 +394,21 @@ class ImagesClient(ServiceClient):
                     if not isinstance(file_settings, dict):
                         raise TypeError("files_api 需要连接配置字典")
 
-                    files = FilesClient(
-                        file_settings,
-                        client=self._client,
-                        ledger=self.ledger,
-                        state=self.state,
-                        prices=self.prices,
-                    )
+                    if self._files_client is None:
+                        shared_client = (
+                            self._client
+                            if (file_settings.get("client_params") or {}) == self.client_params
+                            else None
+                        )
+                        self._files_client = FilesClient(
+                            file_settings,
+                            client=shared_client,
+                            ledger=self.ledger,
+                            state=self.state,
+                            prices=self.prices,
+                        )
+
+                    files = self._files_client
 
                 async def prepare(ref: MediaRef) -> MediaRef:
                     if ref.kind != "bytes":
