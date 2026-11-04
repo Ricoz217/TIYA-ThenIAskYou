@@ -105,6 +105,69 @@ def test_materialization_failure_does_not_regenerate(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_media_error_declares_optional_pending_response():
+    from TIYA.llm.media import MediaError
+
+    assert MediaError("input", "missing file").pending_response is None
+
+
+def test_repeated_image_recovery_preserves_response_and_only_generates_once(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from TIYA.llm.clients import ImagesClient
+    from TIYA.llm.media import MediaError, MediaService
+    from TIYA.llm.usage import Ledger
+    from TIYA.llm import usage_compat
+
+    requests = []
+    attempts = []
+    real_materialize = MediaService.materialize
+
+    async def materialize(self, item, gateway):
+        attempts.append(item)
+        if len(attempts) < 3:
+            raise MediaError("validate_cache", "temporary cache failure")
+
+        return await real_materialize(self, item, gateway)
+
+    monkeypatch.setattr(MediaService, "materialize", materialize)
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "data": [{"b64_json": base64.b64encode(image()).decode()}],
+            "usage": {"output_tokens": 30},
+        })
+
+    async def run():
+        ledger = Ledger(tmp_path / "usage.sqlite3")
+        monkeypatch.setattr(usage_compat, "_GLOBAL_USAGE", SimpleNamespace(ledger=ledger))
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
+            client = ImagesClient({"endpoint": "https://test/gen"}, client=transport, ledger=ledger)
+            with pytest.raises(MediaError) as first:
+                await client.generate(ImageGenerateRequest("image-2.5", "draw"))
+
+            response = first.value.pending_response
+            assert response is not None
+            request_id = first.value.request_id
+            with pytest.raises(MediaError) as second:
+                await client.recover_images(first.value)
+
+            assert second.value.pending_response is response
+            assert second.value.request_id == request_id
+            receiver = ImagesClient({"endpoint": "https://test/gen"}, client=transport)
+            assert receiver.ledger is None
+            result = await receiver.recover_images(second.value)
+            assert result.request_id == request_id
+            assert result.data[0].image.hash_name
+            assert attempts[0] is attempts[1] is attempts[2]
+            rows = ledger.query_requests()
+            assert len(rows) == len(requests) == 1
+            assert rows[0]["status"] == "completed"
+            assert rows[0]["reported"]["output"] == 30
+
+    asyncio.run(run())
+
+
 def test_files_do_not_inherit_model_credentials_from_shared_transport(tmp_path):
     from TIYA.llm.clients import FilesClient
     from TIYA.llm.usage import Ledger

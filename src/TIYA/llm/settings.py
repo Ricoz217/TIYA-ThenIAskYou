@@ -152,7 +152,7 @@ def parse_llm_setting(preset_name: str) -> ChatConfig:
         for candidate in setting.candidates:
             candidate.client_params.pop("proxies", None)
 
-    elif isinstance(mode, Mapping):
+    elif isinstance(mode, (str, Mapping)):
         for candidate in setting.candidates:
             candidate.client_params["proxies"] = get_proxy(mode)
 

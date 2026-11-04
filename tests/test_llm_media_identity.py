@@ -452,16 +452,15 @@ def test_runtime_reuses_repaired_media_on_following_rate_limit_retry(tmp_path, m
 def test_cached_image_metadata_does_not_change_context_identity():
     import copy
     from TIYA.llm.model import Context
-    from TIYA.llm.provider.common import projection_fingerprint
 
     prompt = ImagePrompt("user", hash_name="original")
     context = Context(prompt)
     identity = context.signature
-    projection = projection_fingerprint(prompt)
+    content_signature = prompt.signature
     prompt.resource = MediaRef(hash_name="original", mime_type="image/png", width=3, height=4)
     context.refresh_fingerprints()
     assert context.signature == identity
-    assert projection_fingerprint(prompt) == projection
+    assert prompt.signature == content_signature
     assert copy.deepcopy(prompt).resource == prompt.resource
     prompt.hash_name = "replacement"
     context.refresh_fingerprints()

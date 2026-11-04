@@ -9,7 +9,7 @@ import time
 from enum import Enum
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, Awaitable, overload, Literal
+from typing import Any, Callable, overload, Literal
 from uuid import uuid4
 
 from TIYA.time_id import next_time_id
@@ -20,7 +20,7 @@ from .legacy_media import (
     _load_image_hashes,
     handle_unload_image,
 )
-from .tool_schema import build_tool_payloads
+from .tool_schema import ToolPayloads, build_tool_payloads
 from .usage_model import TokenUsage as TokenUsage
 from .config_model import (
     Params,
@@ -30,7 +30,7 @@ type MediaKind = Literal["path", "url", "bytes", "base64", "remote"]
 
 
 def stable(value: object) -> dict | list | object:
-    """把 LLM 数据转换为指纹内容：字节取摘要，callable 展开为工具 schema。
+    """转换签名输入：消息读取 signature，字节取摘要，callable 展开 schema。
 
     只构造用于比较的数据，不执行 Prompt.to_dict() 或图片文件操作。
     """
@@ -45,6 +45,9 @@ def stable(value: object) -> dict | list | object:
 
     if callable(value):
         return build_tool_payloads(value)
+
+    if isinstance(value, BasePrompt):
+        return value.signature
 
     if hasattr(value, "__dict__"):
         return stable(vars(value))
@@ -74,8 +77,14 @@ class PromptType(Enum):
 
 
 class BasePrompt:
+    """单条消息；id 表示身份，signature 缓存消息内容签名。
+
+    按约定不原位修改已进入上下文的消息。没有属性监听或自动变更检测，
+    框架自己的内容修改入口负责显式刷新；native 是另存的协议附件。
+    """
+
     # 计算缓存独立于 __dict__，不参与消息指纹、原生回放校验和序列化。
-    __slots__ = ("__dict__", "__weakref__", "estimated_tokens")
+    __slots__ = ("__dict__", "__weakref__", "estimated_tokens", "_signature")
 
     estimated_tokens: int | None  # 当前进程的 o200k 估算缓存，非供应商 usage。
 
@@ -88,6 +97,28 @@ class BasePrompt:
         self.time: str = create_time
         self.id: str = str(next_time_id())
         self.native: dict = {}
+        self.estimated_tokens = None
+        self._signature: str | None = None
+
+    def _signature_data(self) -> dict[str, object]:
+        return {key: value for key, value in vars(self).items() if key != "native"}
+
+    @property
+    def signature(self) -> str:
+        """消息签名的统一入口，首次读取计算，之后缓存到显式刷新。
+
+        包含 ID、角色、时间和消息内容，不含 native 协议附件及运行期缓存。
+        不监控原位写入或嵌套对象修改；调用方直接修改后未刷新时，一致性不保证。
+        容器及 Provider 读取本属性，不自行展开消息内容计算另一套指纹。
+        """
+        if self._signature is None:
+            self._signature = fingerprint(stable(self._signature_data()))
+
+        return self._signature
+
+    def refresh_fingerprints(self) -> None:
+        """显式清除消息签名和 token 估算；已有容器缓存由所属容器刷新。"""
+        self._signature = None
         self.estimated_tokens = None
 
     def to_dict(self) -> dict:
@@ -277,11 +308,13 @@ class ImagePrompt(BasePrompt):
             hash_name_list = _IMAGE_NAME_MAPPING.get(self.name, [])
             if hash_name_list and await _load_image_hashes(hash_name_list, cache):
                 self.image = list(hash_name_list)
+                self.refresh_fingerprints()
                 return True
 
             _IMAGE_NAME_MAPPING.pop(self.name, None)
 
         self.image = []
+        self.refresh_fingerprints()
         try:
             if self.hash_name:
                 source = await get_file_path_async(self.hash_name)
@@ -300,6 +333,7 @@ class ImagePrompt(BasePrompt):
             return False
 
         self.image = hash_name_list
+        self.refresh_fingerprints()
         if self.name:
             _IMAGE_NAME_MAPPING[self.name] = list(self.image)
 
@@ -325,9 +359,11 @@ class ImagePrompt(BasePrompt):
 
 
 class ToolInput(BasePrompt):
+    __slots__ = ("_tool_payloads",)
+
     def __init__(
         self,
-        function: Callable | Awaitable,
+        function: Callable,
         function_name: str = None,
         create_time: str = None,
     ):
@@ -335,13 +371,30 @@ class ToolInput(BasePrompt):
             function_name = function.__name__
 
         super().__init__("function", "FUNCTION", create_time)
-        self.function: Callable | Awaitable = function
+        self.function: Callable = function
         self.function_name: str = function_name
+        self._tool_payloads: ToolPayloads | None = None
         if inspect.iscoroutinefunction(function):
             self.function_type = "ASYNC"
 
         else:
             self.function_type = "SYNC"
+
+    @property
+    def tool_payloads(self) -> ToolPayloads:
+        """惰性构建一次 schema；编码、估算和指纹共用，调用方不得修改缓存。"""
+        if self._tool_payloads is None:
+            self._tool_payloads = build_tool_payloads(self.function)
+
+        return self._tool_payloads
+
+    def refresh_schema(self) -> None:
+        """显式替换 callable/注解后重建 schema；普通历史增删无需调用。"""
+        self._tool_payloads = None
+        self.refresh_fingerprints()
+
+    def _signature_data(self) -> dict[str, object]:
+        return {**super()._signature_data(), "function": self.tool_payloads}
 
     def to_dict(self) -> dict:
         base_dict = super().to_dict()
@@ -386,6 +439,9 @@ class ToolInput(BasePrompt):
             for k, v in vars(self).items()
         }
         result.estimated_tokens = self.estimated_tokens
+        result._signature = self._signature
+        # 入口快照也复用源工具的 schema；首次复制时构建，后续副本不再生成。
+        result._tool_payloads = self.tool_payloads
         return result
 
 
@@ -609,13 +665,13 @@ class Prompts:
         self._signature = None
         if content_changed:
             for prompt in self.prompts:
-                prompt.estimated_tokens = None
+                prompt.refresh_fingerprints()
 
     @property
     def signature(self) -> str:
-        """消息内容指纹；框架修改后刷新，不监控消息对象的外部直接修改。"""
+        """组合角色和成员 signature；不重新展开各条消息内容。"""
         if self._signature is None:
-            messages = [stable(vars(prompt)) for prompt in self.prompts]
+            messages = [prompt.signature for prompt in self.prompts]
             self._signature = fingerprint([self.role, messages])
 
         return self._signature
@@ -767,23 +823,24 @@ class Context:
         self.estimated_tokens = None
         if content_changed:
             for prompt in self:
-                prompt.estimated_tokens = None
+                prompt.refresh_fingerprints()
 
         for prompts in self._rounds.values():
             prompts.refresh_fingerprints(content_changed=False)
 
     @property
     def message_fingerprints(self) -> tuple[str, ...]:
+        """按历史顺序读取消息 signature，供远端检查点匹配前缀。"""
         if self._message_fingerprints is None:
-            messages = [stable(vars(prompt)) for prompt in self._messages]
-            self._message_fingerprints = tuple(fingerprint(message) for message in messages)
+            self._message_fingerprints = tuple(prompt.signature for prompt in self._messages)
 
         return self._message_fingerprints
 
     @property
     def signature(self) -> str:
+        """组合有序消息签名和工具签名，作为当前上下文的整体签名。"""
         if self._signature is None:
-            tools = [stable(vars(tool)) for tool in self._tools]
+            tools = [tool.signature for tool in self._tools]
             self._signature = fingerprint([list(self.message_fingerprints), tools])
 
         return self._signature
@@ -794,9 +851,9 @@ class Context:
         if self._header_signature is None:
             system = None
             if self._system_prompt is not None:
-                system = stable(vars(self._system_prompt))
+                system = self._system_prompt.signature
 
-            tools = [stable(vars(tool)) for tool in self._tools]
+            tools = [tool.signature for tool in self._tools]
             self._header_signature = fingerprint([system, tools])
 
         return self._header_signature
@@ -1223,10 +1280,15 @@ class ImageGenerateRequest:
 
 @dataclass
 class ImageEditRequest(ImageGenerateRequest):
-    """编辑请求：images 首张为目标，其余为参考；mask 是首张目标的 PNG alpha 遮罩。"""
+    """编辑请求：images 首张为目标，其余为参考，顺序由业务决定。
+
+    mask 是 PNG alpha 遮罩；markup 是带实际透明像素的 PNG 标注图层。
+    两者均对应首张目标图、尺寸须匹配，不能同时提供；原图不与标注层合成。
+    """
 
     images: list[MediaRef] = field(default_factory=list)
     mask: MediaRef | None = None
+    markup: MediaRef | None = None
 
 
 @dataclass(slots=True)

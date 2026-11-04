@@ -3,15 +3,16 @@ from __future__ import annotations
 import copy
 import asyncio
 import math
+import httpx
+
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
-
-import httpx
+from typing import Protocol
 
 from ..config_model import JsonValue, LLMConfig, Params
 from ..gateway import HTTPFailure, WireRequest
 from ..model import Context, ImagePrompt, MediaRef, Prompts
+from .error_codes import RecoveryAction, extract_error, match_error
 
 
 def merge_headers(*mappings: Mapping[str, str] | None) -> dict[str, str]:
@@ -20,17 +21,8 @@ def merge_headers(*mappings: Mapping[str, str] | None) -> dict[str, str]:
     for mapping in mappings:
         for key, value in (mapping or {}).items():
             values[key.lower()] = (key, value)
+
     return dict(values.values())
-
-
-type RecoveryAction = Literal[
-    "none",
-    "context_overflow",
-    "rebuild_parent",
-    "refresh_file",
-    "inline_images",
-    "disable_files",
-]
 
 
 @dataclass
@@ -72,54 +64,14 @@ def classify_error(
     dialect: str = "openai",
     headers: Mapping[str, str] | None = None,
 ) -> Failure:
-    """将 HTTP/供应商错误转换为稳定分类；dialect 显式选择码表，不靠域名猜测。
-    未知错误默认远端状态 unknown，不能因状态码相似就猜测请求未执行。
+    """按独立码表解释供应商错误；不执行重试，不跨方言猜测业务码。
+
+    精确码表包含独立的处理建议。未知业务码和远端执行状态保持保守，
+    Provider 若有特殊响应结构可覆盖 failure()，无需给本函数增加分支。
     """
-    error = body.get("error", {}) if isinstance(body, dict) else {}
-    error = error if isinstance(error, dict) else {"code": str(error)}
-    code = str(error.get("code") or error.get("type") or "")
-    base_value = body.get("base_resp") if isinstance(body, dict) else None
-    base = base_value if isinstance(base_value, dict) else {}
-    if dialect == "minimax" and base.get("status_code"):
-        code = str(base["status_code"])
-    category, remote, resource = "unknown", "unknown", None
-    quota = {
-        "openai": {"insufficient_quota", "billing_hard_limit_reached"},
-        "deepseek": set(),
-        "glm": {"1113", "1112"},
-        "minimax": {"1008", "1009"},
-    }
-    rate = {"openai": {"rate_limit_exceeded"}, "glm": {"1302"}, "minimax": {"1002"}}
-    if code in quota.get(dialect, set()) or status == 402:
-        category, remote = "quota", "rejected"
-    elif code in rate.get(dialect, set()) or status == 429 and not code:
-        category, remote = "rate_limit", "rejected"
-    elif status in (401, 403):
-        category, remote = "authentication", "rejected"
-    elif code in (
-        "previous_response_not_found",
-        "invalid_previous_response_id",
-        "previous_response_id_not_found",
-    ):
-        category, remote, resource = (
-            "parent_invalid",
-            "rejected",
-            error.get("param", "previous_response_id"),
-        )
-    elif code in ("file_not_found", "invalid_file_id", "file_expired"):
-        category, remote, resource = "file_invalid", "rejected", error.get("file_id")
-    elif code in ("unsupported_file_reference", "file_reference_not_supported"):
-        category, remote = "files_unsupported", "rejected"
-    elif code in ("context_length_exceeded", "context_window_exceeded"):
-        category, remote = "context_overflow", "rejected"
-    elif status in (400, 404, 405, 422):
-        category, remote = "invalid_request", "rejected"
-    elif status in (500, 502, 503, 504) or code in ("1305", "overloaded_error"):
-        category = (
-            "unavailable"  # A 5xx alone does not prove generation did not execute.
-        )
-    elif code in ("rate_limit_error",):
-        category, remote = "rate_limit", "rejected"
+    code, error = extract_error(body, dialect)
+    rule = match_error(status, code, dialect)
+    resource = error.get(rule.resource_field, rule.resource_default)
     retry_after = None
     raw_retry_after = (headers or {}).get("retry-after")
     if raw_retry_after is not None:
@@ -131,35 +83,16 @@ def classify_error(
         except (TypeError, ValueError):
             pass
 
-    # 共享默认策略由 Provider 层维护；各 Provider 可覆盖 failure()。
-    retryable = category == "rate_limit"
-    fallback_allowed = category in (
-        "quota", "rate_limit", "authentication", "invalid_request",
-        "parent_invalid", "file_invalid", "files_unsupported",
-    )
-    recovery: RecoveryAction = "none"
-    if category == "context_overflow":
-        recovery = "context_overflow"
-
-    elif category == "parent_invalid":
-        recovery = "rebuild_parent"
-
-    elif category == "file_invalid":
-        recovery = "refresh_file"
-
-    elif category == "files_unsupported":
-        recovery = "disable_files"
-
     return Failure(
-        category,
+        rule.category,
         code,
         resource if isinstance(resource, str) else None,
         retry_after,
-        remote,
+        rule.remote_state,
         copy.deepcopy(body) if isinstance(body, dict) else {},
-        retryable=retryable,
-        fallback_allowed=fallback_allowed,
-        recovery=recovery,
+        retryable=rule.retryable,
+        fallback_allowed=rule.fallback_allowed,
+        recovery=rule.recovery,
     )
 
 
@@ -195,6 +128,14 @@ class Result:
     stored: bool | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class StreamText:
+    """本次事件新增的可读文本；不包含图片、签名或工具参数等原始载荷。"""
+
+    text: str
+    reasoning: bool = False
+
+
 class StreamDecoder(Protocol):
     """流式对话解码器；partial 表示已观察到输出，之后禁止生成重发。"""
 
@@ -202,8 +143,8 @@ class StreamDecoder(Protocol):
     complete: bool
     usage: Params
 
-    def feed(self, event: Params) -> None:
-        """接收一个 JSON 事件，增量更新内容和 usage。"""
+    def feed(self, event: Params) -> list[StreamText] | None:
+        """更新内容/usage，并返回本事件新增的日志文本；无文本时为空。"""
         ...
 
     def finish(self) -> Result:
@@ -259,6 +200,8 @@ class ConversationProvider(Protocol):
 
 
 class Provider:
+    error_dialect = "openai"
+
     def __init__(self, route: LLMConfig) -> None:
         """接收已解析的单候选配置，不读取全局配置，不管理上下文或网络连接。"""
         self.route = route
@@ -267,28 +210,36 @@ class Provider:
     def supports_parent(self) -> bool:
         # Explicit opt-in: compatibility endpoints may silently ignore store/parent.
         """仅在连接显式声明支持且未设置 store:false 时允许父 response 续接。"""
+        options = self.route.provider_options.get("responses", {})
         return (
-            self.route.provider_options.get("responses", {}).get(
-                "supports_previous_response_id", False
-            )
-            is True
+            isinstance(options, dict)
+            and options.get("supports_previous_response_id", False) is True
             and self.route.model_params.get("store", True) is not False
         )
 
     def headers(self) -> dict[str, str]:
         """构造此模型连接的认证和覆盖头；Files 服务使用自己的凭证。"""
         headers = {"Authorization": f"Bearer {self.route.token}"}
+        configured_headers = self.route.client_params.get("headers")
+        client_headers = None
+        if isinstance(configured_headers, dict):
+            client_headers = {
+                key: value
+                for key, value in configured_headers.items()
+                if isinstance(value, str)
+            }
+
         return merge_headers(
-            headers, self.route.headers, self.route.client_params.get("headers")
+            headers, self.route.headers, client_headers
         )
 
     def failure(
         self, status: int, body: Params, headers: Mapping[str, str] | None = None
     ) -> Failure:
         """按 error_dialect 解释响应和处理建议；子类可覆盖，不在此重发。"""
-        dialect = self.route.provider_options.get("error_dialect", "openai")
+        dialect = self.route.provider_options.get("error_dialect", self.error_dialect)
         if not isinstance(dialect, str):
-            dialect = "openai"
+            dialect = self.error_dialect
 
         return classify_error(
             status,
@@ -313,9 +264,8 @@ class Provider:
 
     def check_body(self, body: Params) -> None:
         """检查 HTTP 200 内嵌业务错误；失败抛 ProviderFailure。"""
-        if body.get("error"):
-            raise ProviderFailure(self.failure(200, body))
-
-        base = body.get("base_resp")
-        if isinstance(base, dict) and base.get("status_code", 0):
+        dialect = self.route.provider_options.get("error_dialect", self.error_dialect)
+        dialect = dialect if isinstance(dialect, str) else self.error_dialect
+        code, _ = extract_error(body, dialect)
+        if body.get("error") or code:
             raise ProviderFailure(self.failure(200, body))

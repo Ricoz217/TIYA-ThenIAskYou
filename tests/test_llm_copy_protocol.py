@@ -74,6 +74,52 @@ def test_prompts_deepcopy_isolates_prompt_and_nested_native_data():
     assert duplicate.duration == 2
 
 
+@pytest.mark.parametrize("kind", ["bytes", "base64", "path", "cache"])
+def test_image_deepcopy_preserves_buffers_and_aliases_without_io(tmp_path, monkeypatch, kind):
+    import base64
+    from pathlib import Path
+    from TIYA.llm.media import MediaService
+    from TIYA.llm.model import ImagePrompt, MediaRef
+
+    raw = b"image-data" * 1000
+    inputs = {"bytes": raw, "base64": base64.b64encode(raw).decode(),
+              "path": tmp_path / "not-read.png", "cache": None}
+    prompt = ImagePrompt("user", inputs[kind], hash_name="original" if kind == "cache" else "")
+    prompt.image = ["part-a", "part-b"]
+    prompt.resource = MediaRef(hash_name="original", mime_type="image/png", width=10, height=20)
+    prompt.native = {"protocol": {"items": ["native"]}}
+    prompt.estimated_tokens = 2880
+    context = Context(SystemPrompt("system"), prompt)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("deepcopy must not serialize, read, load or re-prepare an image")
+
+    monkeypatch.setattr(ImagePrompt, "to_dict", forbidden)
+    monkeypatch.setattr(ImagePrompt, "load_image", forbidden)
+    monkeypatch.setattr(MediaService, "content", forbidden)
+    monkeypatch.setattr(Path, "read_bytes", forbidden)
+    duplicate = copy.deepcopy(context)
+    copied = duplicate.message[1]
+    assert isinstance(copied, ImagePrompt)
+    assert copied is not prompt
+    assert copied.id == prompt.id
+    assert duplicate.session_id == context.session_id
+    assert copied.image == prompt.image and copied.image is not prompt.image
+    assert copied.resource == prompt.resource
+    assert copied.estimated_tokens == prompt.estimated_tokens
+    if kind in ("bytes", "base64"):
+        assert copied.image_input is prompt.image_input
+
+    else:
+        assert copied.image_input == prompt.image_input
+
+    assert any(item is copied for round_prompts in duplicate.rounds.values() for item in round_prompts)
+    copied.native["protocol"]["items"].append("changed")
+    copied.image.append("part-c")
+    assert prompt.native == {"protocol": {"items": ["native"]}}
+    assert prompt.image == ["part-a", "part-b"]
+
+
 def test_system_prompt_copy_preserves_native_data_with_shallow_semantics():
     original = SystemPrompt("system")
     original.native = {"protocol": {"items": ["native"]}}

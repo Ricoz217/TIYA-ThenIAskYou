@@ -7,19 +7,18 @@ import base64
 import io
 import sqlite3
 import time
+import httpx
+
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 from uuid import uuid4
 from weakref import WeakKeyDictionary
-
-import httpx
 from PIL import Image
 
 from TIYA.file_cache import add_file_async, get_file_path_async
 from TIYA.utils import fingerprint
-
 from .config_model import Params
 from .gateway import Gateway, HTTPFailure, WireRequest
 from .model import ImagePrompt, ImageResponseItem, MediaRef
@@ -94,12 +93,18 @@ class MediaError(Exception):
         *,
         request_id: str = "",
         hash_name: str = "",
+        pending_response: Params | None = None,
     ) -> None:
-        """携带失败阶段、账本 ID 和相关本地缓存 ID；原异常保留在 __cause__。"""
+        """携带失败阶段、账本/缓存 ID，原异常保留在 __cause__。
+
+        pending_response 借用待恢复的原生图片响应，不复制其中的 base64/URL；
+        默认为 None。仅用于重试接收、验证和落盘，不允许据此重新生成。
+        """
         super().__init__(f"{stage}: {message}")
         self.stage = stage
         self.request_id = request_id
         self.hash_name = hash_name
+        self.pending_response: Params | None = pending_response
 
 
 def inspect_image(content: bytes) -> tuple[str, int, int]:
@@ -268,15 +273,20 @@ class MediaService:
         category: str = "files_api",
         content: bytes | None = None,
     ) -> MediaRef:
-        """共享同一状态库、Files 账户及 hash_name 的在途上传，返回相同结果或异常。
+        """共享同一状态库、Files 账户及 hash_name 的在途上传，成功返回同一资源。
 
         timeout 只限制本调用的等待；还有其他等待者时，超时/取消不影响上传。
         全部退出则取消任务并释放租约。任务自身受 upload_timeout 限制，不自动重试。
         force 绕过已完成映射，但仍复用正在进行的上传。命中映射不读取图片文件。
         content 借用本轮已读取的同一原件，避免重复读取；原始输入先进入 file_cache。
+
+        成功返回 MediaRef，不以 None 表示失败。等待或共享任务超时抛 TimeoutError，
+        人工取消抛 CancelledError；读取/上传异常原样传播，由上层 Provider 策略处理。
         """
         async with asyncio.timeout(timeout):
-            return await self._join_upload(ref, settings, send, force, category, content)
+            result = await self._join_upload(ref, settings, send, force, category, content)
+
+        return result
 
     async def _join_upload(
         self,
@@ -286,7 +296,8 @@ class MediaService:
         force: bool,
         category: str,
         content: bytes | None,
-    ) -> MediaRef:
+    ) -> MediaRef:  # type: ignore
+        """内部共享任务协调；只有成功资源能返回，失败或取消均抛出，不返回 None。"""
         if isinstance(settings, FilesProvider):
             provider = settings
 
@@ -347,7 +358,9 @@ class MediaService:
     ) -> _SharedUpload:
         async def run() -> MediaRef:
             async with asyncio.timeout(self.upload_timeout):
-                return await self._upload_owned(ref, provider, send, task_key[1], force, content)
+                result = await self._upload_owned(ref, provider, send, task_key[1], force, content)
+
+            return result
 
         # 查表、创建和登记之间没有 await，不需要再增加一把进程内锁。
         client = send.gateway.client if isinstance(send, UploadSender) else None
@@ -551,6 +564,7 @@ class MediaService:
                 prompt.image_input = None
                 prompt.resource = MediaRef(hash_name=prompt.hash_name, mime_type=mime,
                                            width=width, height=height)
+                prompt.refresh_fingerprints()
 
             resource = prompt.resource
             sources = [resource if resource and resource.hash_name == prompt.hash_name

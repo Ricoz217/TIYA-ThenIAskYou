@@ -664,7 +664,7 @@ def test_complete_module_defaults_validate_cleanly_and_include_comments(
 
     assert result.ok
     assert result.report.errors == ()
-    assert manager.get_llm_config().LLM_List == {}
+    assert "YourModelPresetName" in manager.get_llm_config().LLM_List
     assert manager.get_llm_config().schema_version == 2
     assert manager.get_setting_config().Relative.TFIDFVectorDimension == 262_144
     text = path.read_text(encoding="utf-8")

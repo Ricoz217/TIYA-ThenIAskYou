@@ -14,7 +14,6 @@ from TIYA.llm.model import (
     ToolInput,
     ToolResponse,
 )
-from TIYA.llm.provider.common import projection_fingerprint
 from TIYA.llm.usage import estimate
 
 
@@ -50,12 +49,12 @@ def test_cache_does_not_change_fingerprints_or_archives(encoded_texts):
     context = Context(prompt)
     prompts = context.message
     before = (context.signature, context.header_signature, prompts.signature,
-              projection_fingerprint(prompt), context.to_dict())
+              prompt.signature, context.to_dict())
     estimate(context)
     context.refresh_fingerprints(content_changed=False)
     prompts.refresh_fingerprints(content_changed=False)
     assert (context.signature, context.header_signature, prompts.signature,
-            projection_fingerprint(prompt), context.to_dict()) == before
+            prompt.signature, context.to_dict()) == before
     assert "estimated_tokens" not in vars(prompt)
 
 

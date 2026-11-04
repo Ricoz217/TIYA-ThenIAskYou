@@ -49,10 +49,123 @@ def test_cleanup_is_bounded_and_regular_access_runs_maintenance(tmp_path, monkey
     with store.db.transaction() as db:
         assert db.execute("SELECT count(*) FROM state").fetchone()[0] == 4
 
-    clock[0] = 1400
+    clock[0] = 5000
     store.put("media", "new", {})
     with store.db.transaction() as db:
         assert db.execute("SELECT count(*) FROM state").fetchone()[0] == 1
+
+
+def test_instances_share_one_hourly_cleanup_schedule(tmp_path, monkeypatch):
+    from TIYA.llm import state as module
+
+    clock = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    calls = []
+    real_cleanup = StateStore._cleanup
+
+    def cleanup(self, db, now, batch_size):
+        calls.append(self.db.path)
+        return real_cleanup(self, db, now, batch_size)
+
+    monkeypatch.setattr(StateStore, "_cleanup", cleanup)
+    first = StateStore(tmp_path / "state.db")
+    second = StateStore(tmp_path / "alias" / ".." / "state.db")
+    first.put("test", "first", {})
+    second.put("test", "second", {})
+    clock[0] += 3599
+    second.put("test", "third", {})
+    assert len(calls) == 1
+    clock[0] += 1
+    second.put("test", "fourth", {})
+    first.get("test", "first")
+    assert len(calls) == 2
+
+
+def test_concurrent_instances_do_not_repeat_cleanup(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from TIYA.llm import state as module
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: 1000.0)
+    calls = []
+    real_cleanup = StateStore._cleanup
+
+    def cleanup(self, db, now, batch_size):
+        calls.append(self)
+        return real_cleanup(self, db, now, batch_size)
+
+    monkeypatch.setattr(StateStore, "_cleanup", cleanup)
+    stores = [StateStore(tmp_path / "state.db") for _ in range(8)]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(lambda store: store.get("test", "missing"), stores))
+
+    assert len(calls) == 1
+
+
+def test_cleanup_cadence_can_be_daily_and_isolated_per_database(tmp_path, monkeypatch):
+    from TIYA.llm import state as module
+
+    clock = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    calls = []
+    real_cleanup = StateStore._cleanup
+
+    def cleanup(self, db, now, batch_size):
+        calls.append(self.db.path)
+        return real_cleanup(self, db, now, batch_size)
+
+    monkeypatch.setattr(StateStore, "_cleanup", cleanup)
+    first = StateStore(tmp_path / "first.db", cleanup_interval_seconds=86400)
+    other = StateStore(tmp_path / "other.db", cleanup_interval_seconds=86400)
+    first.get("test", "missing")
+    other.get("test", "missing")
+    assert len(calls) == 2
+    clock[0] += 86399
+    first.get("test", "missing")
+    assert len(calls) == 2
+    clock[0] += 1
+    first.get("test", "missing")
+    assert len(calls) == 3
+
+
+def test_manual_cleanup_updates_shared_schedule_without_double_sweep(tmp_path, monkeypatch):
+    from TIYA.llm import state as module
+
+    clock = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    calls = []
+    real_cleanup = StateStore._cleanup
+
+    def cleanup(self, db, now, batch_size):
+        calls.append(batch_size)
+        return real_cleanup(self, db, now, batch_size)
+
+    monkeypatch.setattr(StateStore, "_cleanup", cleanup)
+    first = StateStore(tmp_path / "state.db")
+    second = StateStore(tmp_path / "state.db")
+    assert first.cleanup(batch_size=3) == 0
+    second.get("test", "missing")
+    assert calls == [3]
+    clock[0] += 3600
+    second.get("test", "missing")
+    assert calls == [3, 500]
+
+
+def test_full_batch_does_not_trigger_cleanup_on_every_following_access(tmp_path, monkeypatch):
+    from TIYA.llm import state as module
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: 1000.0)
+    calls = []
+
+    def full_batch(self, db, now, batch_size):
+        calls.append(batch_size)
+        return batch_size
+
+    monkeypatch.setattr(StateStore, "_cleanup", full_batch)
+    first = StateStore(tmp_path / "state.db")
+    first.get("test", "missing")
+    StateStore(tmp_path / "state.db").get("test", "missing")
+    first.get("test", "missing")
+    assert calls == [500]
 
 
 def test_existing_state_database_gets_retention_without_losing_checkpoints(tmp_path, monkeypatch):
@@ -72,6 +185,12 @@ def test_existing_state_database_gets_retention_without_losing_checkpoints(tmp_p
 def test_invalid_retention_is_rejected(tmp_path, seconds):
     with pytest.raises(ValueError):
         StateStore(tmp_path / "state.db", retention_seconds=seconds)
+
+
+@pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])
+def test_invalid_cleanup_interval_is_rejected(tmp_path, seconds):
+    with pytest.raises(ValueError):
+        StateStore(tmp_path / "state.db", cleanup_interval_seconds=seconds)
 
 
 @pytest.mark.parametrize("dialect", ["openai", "deepseek", "anthropic"])

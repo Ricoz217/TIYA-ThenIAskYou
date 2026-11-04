@@ -14,25 +14,35 @@ from .config_model import JsonValue
 from .storage import Database
 
 
+# 按数据库共享维护时钟；访问发生在该库的 SQLite 写事务内，沿用已有串行化。
+_NEXT_CLEANUP_AT: dict[Path, float] = {}
+
+
 class StateStore:
     def __init__(
         self,
         path: str | Path,
         *,
         retention_seconds: float = 30 * 86400,
+        cleanup_interval_seconds: float = 3600,
     ) -> None:
         """保存可丢弃的通信元数据，默认回收闲置 30 天的状态。
 
         expires 表示远端或能力状态的绝对失效时间，读取不会延长它。
         retention_seconds 只限制本地元数据闲置时间，不控制文件缓存、远端文件或账本。
-        普通访问每五分钟触发一批清理，不启动额外后台任务。
+        同进程、同一数据库的所有实例共用维护时钟，普通访问默认每小时清理一批。
+        cleanup_interval_seconds 可设为 86400 使用一天间隔；同库应使用一致设置。
+        不启动后台任务；满批后也等待下个间隔，维护时可显式 cleanup 多批。
         """
         if not math.isfinite(retention_seconds) or retention_seconds <= 0:
             raise ValueError("retention_seconds 必须是有限正数")
 
+        if not math.isfinite(cleanup_interval_seconds) or cleanup_interval_seconds <= 0:
+            raise ValueError("cleanup_interval_seconds 必须是有限正数")
+
         self.retention_seconds = retention_seconds
+        self.cleanup_interval_seconds = cleanup_interval_seconds
         self._schema_ready = False
-        self._next_cleanup_at = 0.0
         self.db = Database(
             path,
             """
@@ -42,9 +52,15 @@ class StateStore:
           CREATE TABLE IF NOT EXISTS leases(key TEXT PRIMARY KEY,owner TEXT NOT NULL,expires REAL NOT NULL);
         """,
         )
+        self._cleanup_key = self.db.path.resolve()
 
     @contextmanager
-    def _transaction(self, now: float | None = None) -> Iterator[sqlite3.Connection]:
+    def _transaction(
+        self,
+        now: float | None = None,
+        *,
+        auto_cleanup: bool = True,
+    ) -> Iterator[sqlite3.Connection]:
         now = time.time() if now is None else now
         with self.db.transaction() as db:
             if not self._schema_ready:
@@ -58,9 +74,11 @@ class StateStore:
                 db.execute("CREATE INDEX IF NOT EXISTS state_touched ON state(touched)")
                 db.execute("CREATE INDEX IF NOT EXISTS leases_expires ON leases(expires)")
 
-            if time.monotonic() >= self._next_cleanup_at:
-                removed = self._cleanup(db, now, 500)
-                self._next_cleanup_at = time.monotonic() + (0 if removed >= 500 else 300)
+            if auto_cleanup:
+                tick = time.monotonic()
+                if tick >= _NEXT_CLEANUP_AT.get(self._cleanup_key, 0.0):
+                    self._cleanup(db, now, 500)
+                    _NEXT_CLEANUP_AT[self._cleanup_key] = tick + self.cleanup_interval_seconds
 
             yield db
 
@@ -93,10 +111,11 @@ class StateStore:
             raise ValueError("batch_size 必须大于零")
 
         now = time.time() if now is None else now
-        # 显式清理不先触发自动批次，保证调用者指定的批次上限。
-        self._next_cleanup_at = time.monotonic() + 300
-        with self._transaction(now) as db:
-            return self._cleanup(db, now, batch_size)
+        # 显式清理只执行指定批次，并更新同库所有实例共用的维护时钟。
+        with self._transaction(now, auto_cleanup=False) as db:
+            removed = self._cleanup(db, now, batch_size)
+            _NEXT_CLEANUP_AT[self._cleanup_key] = time.monotonic() + self.cleanup_interval_seconds
+            return removed
 
     def get(self, namespace: str, key: str, now: float | None = None) -> JsonValue:
         """同步读取 JSON 状态；不存在或已过期返回 None，now 为 Unix 秒。"""

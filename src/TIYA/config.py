@@ -131,7 +131,136 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "PixivLoginTLSKey": "",
         },
     },
-    TITLE_LLM: {"schema_version": 2, "Providers": {}, "LLM_List": {}},
+    TITLE_LLM: {
+        "schema_version": 2,
+        "Providers": {
+            "chat_completions": {
+                "deepseek": {
+                    "endpoint": "https://api.deepseek.com/chat/completions",
+                    "key": "YOUR_DEEPSEEK_API_KEY",
+                    "error_dialect": "deepseek",
+                    "chat_completions": {"image_file_format": "deepseek"},
+                    "llm_params": {"stream": True},
+                },
+                "openai": {
+                    "base_url": "https://api.openai.com/v1",
+                    "key": "YOUR_OPENAI_API_KEY",
+                    "llm_params": {"stream": True},
+                },
+                "local": {
+                    "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+                    "key": "sk-no-key-required",
+                    "llm_params": {"stream": True},
+                },
+            },
+            "responses_api": {
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1/responses",
+                    "key": "YOUR_OPENAI_API_KEY",
+                    "responses": {"supports_previous_response_id": True},
+                    "llm_params": {"stream": True},
+                },
+            },
+            "anthropic_api": {
+                "anthropic": {
+                    "endpoint": "https://api.anthropic.com/v1/messages",
+                    "key": "YOUR_ANTHROPIC_API_KEY",
+                    "error_dialect": "anthropic",
+                    "prompt_caching": True,
+                    "llm_params": {"stream": True},
+                },
+            },
+            "files_api": {
+                "deepseek": {
+                    "endpoint": "https://api.deepseek.com/files",
+                    "key": "YOUR_DEEPSEEK_API_KEY",
+                    "dialect": "deepseek",
+                    "error_dialect": "deepseek",
+                    "expires_after_seconds": 86400,
+                },
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1/files",
+                    "key": "YOUR_OPENAI_API_KEY",
+                    "dialect": "openai",
+                    "expires_after_seconds": 86400,
+                },
+                "anthropic": {
+                    "endpoint": "https://api.anthropic.com/v1/files",
+                    "key": "YOUR_ANTHROPIC_API_KEY",
+                    "dialect": "anthropic",
+                    "error_dialect": "anthropic",
+                    "anthropic_beta": "files-api-2025-04-14",
+                    "expires_after_seconds": None,
+                },
+            },
+            "image_generation": {
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1/images/generations",
+                    "edit_endpoint": "https://api.openai.com/v1/images/edits",
+                    "key": "YOUR_OPENAI_API_KEY",
+                },
+            },
+        },
+        "LLM_List": {
+            "YourModelPresetName": {
+                "auto_compress_rate": 0.7,
+                "proxy_mode": "",
+                "providers": [
+                    {
+                        "llm": "chat_completions:deepseek:YOUR_DEEPSEEK_MODEL_ID",
+                        "llm_params": {"max_tokens": 8192, "temperature": 0.7},
+                        "max_context": 128_000,
+                        "context_history_mode": "full",
+                        "files_api": "files_api:deepseek",
+                    },
+                ],
+            },
+            "Responses示例": {
+                "auto_compress_rate": 0.7,
+                "proxy_mode": "GlobalProxy",
+                "providers": [
+                    {
+                        "llm": "responses_api:openai:YOUR_OPENAI_MODEL_ID",
+                        "llm_params": {"max_output_tokens": 8192},
+                        "max_context": 128_000,
+                        "context_history_mode": "auto",
+                        "files_api": "files_api:openai",
+                    },
+                    {
+                        "llm": "chat_completions:openai:YOUR_OPENAI_MODEL_ID",
+                        "llm_params": {"max_completion_tokens": 8192},
+                        "max_context": 128_000,
+                        "context_history_mode": "full",
+                    },
+                ],
+            },
+            "Anthropic示例": {
+                "auto_compress_rate": 0.7,
+                "proxy_mode": "GlobalProxy",
+                "providers": [
+                    {
+                        "llm": "anthropic_api:anthropic:YOUR_ANTHROPIC_MODEL_ID",
+                        "llm_params": {"max_tokens": 8192},
+                        "max_context": 128_000,
+                        "context_history_mode": "full",
+                        "files_api": "files_api:anthropic",
+                    },
+                ],
+            },
+            "本地模型": {
+                "auto_compress_rate": 0.7,
+                "proxy_mode": "",
+                "providers": [
+                    {
+                        "llm": "chat_completions:local:YOUR_LOCAL_MODEL_ID",
+                        "llm_params": {"max_tokens": 8192, "temperature": 0.7},
+                        "max_context": 128_000,
+                        "context_history_mode": "full",
+                    },
+                ],
+            },
+        },
+    },
     TITLE_PRIVATE: {
         "Default": {
             "enable": True,
@@ -551,9 +680,105 @@ COMMENT: dict[str, Any] = {
     TITLE_LLM: {
         "_comment": {
             "schema_version": "LLM 配置格式版本，仅支持 2；旧配置须人工填写新版，不自动迁移。",
-            "Providers": "开放的连接配置字典，具体字段由使用该连接的模块解释。",
-            "LLM_List": "字典键为预设名，每个预设的 providers 列表按顺序配置候选。",
-        }
+            "Providers": "\n连接配置树。分类选择协议实现，连接名可自定；仅保留需要的示例，填写真实 Key 和模型 ID。\nendpoint 优先于 base_url；同一服务在不同分类下分别填写连接，不按连接名猜测供应商。",
+            "LLM_List": "\n字典键为预设名，供 chat_model/agent_model/MemoryModel 等引用。YourModelPresetName 对应上方默认引用，可改名后同步修改。\nmax_context 的 128000 仅为示例，按实际模型/网关填写；定价在独立数据库维护，不在这里填写 price。",
+        },
+        "Providers": {
+            "_comment": {
+                "chat_completions": "标准 Chat Completions；可用于现有主对话和 Memory。",
+                "responses_api": "Responses 协议；只对已确认有状态续接的连接启用父 response ID。",
+                "anthropic_api": "普通 Anthropic Messages，不使用托管 Agent/Session。",
+                "files_api": "独立上传连接，认证与模型连接分别填写；是否引用由预设决定。",
+                "image_generation": "独立生图/编辑连接，由 ImagesClient 使用，不作为 Chat 候选，也不启用 Responses 内置工具。",
+            },
+            "chat_completions": {
+                "deepseek": {
+                    "_comment": {
+                        "error_dialect": "选择供应商错误码表；连接名不参与判断。",
+                        "llm_params": "连接级原生请求参数默认值；预设同名字段覆盖，嵌套值整体替换。",
+                    },
+                    "chat_completions": {
+                        "_comment": {"image_file_format": "DeepSeek 的图片 file_id 内容块格式；不适用于官方 OpenAI Chat。"}
+                    },
+                },
+                "openai": {
+                    "_comment": {"base_url": "包含版本前缀，系统只追加 chat/completions；也可改用完整 endpoint。"}
+                },
+                "local": {
+                    "_comment": {"endpoint": "本地 OpenAI 兼容服务示例，按实际监听地址和路径修改。"}
+                },
+            },
+            "responses_api": {
+                "openai": {
+                    "responses": {
+                        "_comment": {"supports_previous_response_id": "仅服务明确支持时设 true；兼容 Responses 格式不代表支持续接。"}
+                    }
+                }
+            },
+            "anthropic_api": {
+                "anthropic": {
+                    "_comment": {
+                        "prompt_caching": "每次请求默认补充 cache_control，让服务端自动选择缓存点；已隐式缓存或不支持此参数的兼容服务可设 false。llm_params.cache_control 的显式值仍优先。"
+                    }
+                }
+            },
+            "files_api": {
+                "deepseek": {
+                    "_comment": {
+                        "dialect": "Files 请求/响应格式，与模型协议分类分开选择。",
+                        "expires_after_seconds": "远端 TTL，秒；示例保留一天，不影响本地 file_cache 的现有 TTL。",
+                    }
+                },
+                "openai": {
+                    "_comment": {"expires_after_seconds": "请求远端保留一天；不支持此参数的服务可显式填 null。"}
+                },
+                "anthropic": {
+                    "_comment": {
+                        "anthropic_beta": "Files beta 头，按使用的服务版本确认。",
+                        "expires_after_seconds": "该示例不发送远端过期参数；本地文件仍按现有 TTL 清理。",
+                    }
+                },
+            },
+            "image_generation": {
+                "openai": {
+                    "_comment": {
+                        "edit_endpoint": "编辑接口独立地址；模型 ID（如所需的 image 2.5）和生成参数由 ImageGenerateRequest/ImageEditRequest 传入。"
+                    }
+                }
+            },
+        },
+        "LLM_List": {
+            "YourModelPresetName": {
+                "_comment": {
+                    "auto_compress_rate": "交给上游业务的压缩水位比例；Runtime 不自动压缩或截断。",
+                    "proxy_mode": "空字符串表示不使用代理；也可填 BOT基本配置.Proxies 中的名字，如 GlobalProxy。",
+                    "providers": "有序候选列表，首项首选，其后按顺序 fallback；只用一个服务就保留一项。",
+                },
+                "providers": [
+                    {
+                        "_comment": {
+                            "llm": "分类:连接名:模型ID；前两段定位 Providers，剩余部分是完整模型 ID。",
+                            "llm_params": "目标接口的原生请求参数，直接发送；不把 max_token 自动改名。",
+                            "max_context": "本候选的上下文水位，token 数；按实际模型/服务填写。",
+                            "context_history_mode": "full 发送完整历史；auto 仅在支持时续接；previous_response_id 显式请求续接。",
+                            "files_api": "分类:连接名；可删除此项以直接内联图片，上传失败按 Provider 策略回退。",
+                        }
+                    }
+                ],
+            },
+            "Responses示例": {
+                "_comment": {"providers": "演示 Responses → Chat Completions 的有序 fallback，按实际需求删除或调整。"},
+                "providers": [
+                    {
+                        "_comment": {
+                            "llm_params": "Responses 使用 max_output_tokens；不要照搬 Chat 的输出限制字段。",
+                            "context_history_mode": "auto 配合连接声明使用父 response，失效后按恢复策略回放。",
+                        }
+                    },
+                    {"_comment": {"llm": "备用 Chat 使用 URL/Base64 图片；官方 OpenAI Chat 不配置图片 file_id。"}},
+                ],
+            },
+        },
     },
     TITLE_PRIVATE: {
         "Default": {

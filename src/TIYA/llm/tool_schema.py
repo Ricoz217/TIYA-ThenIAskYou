@@ -2,12 +2,43 @@ from __future__ import annotations
 import inspect
 import types
 from enum import Enum
-from typing import Any, Annotated, Literal, Union, get_args, get_origin, get_type_hints
+from collections.abc import Callable
+from typing import Any, Annotated, Literal, NotRequired, TypedDict, Union, get_args, get_origin, get_type_hints
+
+from .config_model import Params
 
 _UNION_TYPE = getattr(types, "UnionType", None)
 
 
-def build_tool_payloads(func: Any) -> dict[str, dict[str, Any]]:
+class ToolFunction(TypedDict):
+    """由 callable 生成的固定工具描述；parameters/returns 为开放 JSON Schema。"""
+
+    name: str
+    description: str
+    parameters: Params
+    returns: NotRequired[Params]
+
+
+class OpenAITool(TypedDict):
+    type: str
+    function: ToolFunction
+
+
+class AnthropicTool(TypedDict):
+    name: str
+    description: str
+    input_schema: Params
+    returns: NotRequired[Params]
+
+
+class ToolPayloads(TypedDict):
+    """同一 callable 的两种协议 schema；持有者缓存后按只读数据使用。"""
+
+    openai: OpenAITool
+    anthropic: AnthropicTool
+
+
+def build_tool_payloads(func: Callable) -> ToolPayloads:
     """Build OpenAI/Anthropic tool payloads from a Python callable.
 
     Works for regular functions and ``async def`` coroutine functions. For tool
@@ -271,7 +302,7 @@ def build_tool_payloads(func: Any) -> dict[str, dict[str, Any]]:
     if required:
         params_schema["required"] = required
 
-    openai = {
+    openai: OpenAITool = {
         "type": "function",
         "function": {
             "name": func.__name__,
@@ -282,7 +313,7 @@ def build_tool_payloads(func: Any) -> dict[str, dict[str, Any]]:
     if return_schema:
         openai["function"]["returns"] = return_schema
 
-    anthropic = {
+    anthropic: AnthropicTool = {
         "name": func.__name__,
         "description": description,
         "input_schema": params_schema,

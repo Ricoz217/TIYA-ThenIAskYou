@@ -462,3 +462,70 @@ def test_new_waiter_waits_for_cancelled_upload_cleanup_before_starting(tmp_path,
         assert (await replacement).value == "new"
 
     asyncio.run(run())
+
+
+def test_direct_runtime_deadline_limits_only_its_wait_for_shared_upload(tmp_path, image_bytes, monkeypatch):
+    from llm_config_fixtures import candidate, configuration
+    from TIYA.llm.gateway import Gateway
+    from TIYA.llm.model import Context, ImagePrompt, Prompts
+    from TIYA.llm.runtime import Runtime
+    from TIYA.llm.usage import Ledger
+
+    started = asyncio.Event()
+    joined = asyncio.Event()
+    release = asyncio.Event()
+    count = 0
+    real_upload = MediaService.upload
+
+    async def upload(self, *args, **kwargs):
+        nonlocal count
+        count += 1
+        if count == 2:
+            joined.set()
+
+        return await real_upload(self, *args, **kwargs)
+
+    monkeypatch.setattr(MediaService, "upload", upload)
+
+    async def handler(request):
+        if request.url.path == "/files":
+            started.set()
+            await release.wait()
+            return httpx.Response(200, json={"id": "shared"})
+
+        return httpx.Response(200, json={"output": []})
+
+    async def run():
+        ledger = Ledger(tmp_path / "usage.db")
+        first = Runtime(StateStore(tmp_path / "state.db"), ledger)
+        second = Runtime(StateStore(tmp_path / "state.db"), ledger)
+        config = configuration("main", [candidate(
+            "responses_api:a:m", "responses_api", "a", "m", {"endpoint": "https://model/responses"},
+            {"stream": False}, files_settings={"endpoint": "https://files/files"},
+        )])
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            async def gateway(route):
+                return Gateway(client)
+
+            owner = asyncio.create_task(first.execute(Context(), Prompts(ImagePrompt("user", image_bytes)),
+                                                       config, gateway, 0.5))
+            waiter = None
+            try:
+                await asyncio.wait_for(started.wait(), 5)
+                waiter = asyncio.create_task(second.execute(Context(), Prompts(ImagePrompt("user", image_bytes)),
+                                                            config, gateway, 5))
+                await asyncio.wait_for(joined.wait(), 5)
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(owner), 1.5)
+
+                assert owner.done() and not owner.cancelled()
+                assert not waiter.done()
+                release.set()
+                assert (await waiter).result.complete
+
+            finally:
+                release.set()
+                tasks = [owner] + ([waiter] if waiter is not None else [])
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(run())

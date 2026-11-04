@@ -88,7 +88,6 @@ def test_explicit_refresh_after_prompt_edit_rejects_stale_response(tmp_path):
                    {"endpoint": "https://test/chat"}, {"stream": False})],
     )
     prompt = TextPrompt("user", "history")
-    prompt.native["custom"] = {"nested": ["old"]}
     context = Context(prompt)
 
     async def run():
@@ -101,7 +100,7 @@ def test_explicit_refresh_after_prompt_edit_rejects_stale_response(tmp_path):
 
             pending = await runtime.execute(context, Prompts(TextPrompt("user", "new")),
                                             config, gateway, 5)
-            prompt.native["custom"]["nested"].append("changed")
+            prompt.text = "changed"
             context.refresh_fingerprints()
             with pytest.raises(RuntimeError, match="Context"):
                 runtime.commit(context, pending)

@@ -8,15 +8,15 @@ import inspect
 import json
 import mimetypes
 import sqlite3
+import httpx
+
 from collections.abc import Awaitable, Callable
 from io import BytesIO
-
-import httpx
 from PIL import Image
+from typing import Any
 
 from TIYA.config import DATA_DIR
 from TIYA.utils import fingerprint, parse_proxies_to_httpx
-
 from .config_model import LLMConfig, Params
 from .gateway import Frame, Gateway
 from .media import MediaError, MediaService, inspect_image
@@ -39,13 +39,57 @@ from .workers import run_sync
 type PreviewCallback = Callable[[ImageResponseItem], Awaitable[None] | None]
 
 
+def _inspect_edit_image(content: bytes, guide: str | None = None) -> tuple[str, int, int]:
+    """在线程池内检查编辑输入；尺寸按 EXIF 方向读取，保留原始字节。
+
+    markup 扫描 alpha 确认实际透明像素；普通图片只检查格式和尺寸。
+    """
+    with Image.open(BytesIO(content)) as image:
+        mime = Image.MIME.get(image.format)
+        width, height = image.size
+        # PNG.getexif() 会尝试解码整图；只读取已有 EXIF，避免让普通 PNG 多解码一次。
+        exif = Image.Exif()
+        if image.info.get("exif"):
+            exif.load(image.info["exif"])
+
+        if exif.get(274) in (5, 6, 7, 8):
+            width, height = height, width
+
+        if guide and mime != "image/png":
+            raise ValueError(f"{guide} 必须是带透明信息的 PNG")
+
+        if guide == "markup":
+            if "A" in image.getbands():
+                alpha = image.getchannel("A")
+
+            elif "transparency" in image.info:
+                alpha = image.convert("RGBA").getchannel("A")
+
+            else:
+                raise ValueError("markup 必须包含实际透明像素")
+
+            if alpha.getextrema()[0] == 255:
+                raise ValueError("markup 必须包含实际透明像素")
+
+        else:
+            if guide == "mask" and "A" not in image.getbands():
+                raise ValueError("mask 必须是带 alpha 通道的 PNG")
+
+            image.verify()
+
+    if mime is None:
+        raise ValueError("未知图片格式")
+
+    return mime, width, height
+
+
 class ServiceClient:
     def __init__(
         self,
         settings: Params,
         *,
         client: httpx.AsyncClient | None = None,
-        client_params: dict[str, object] | None = None,
+        client_params: dict[str, Any] | None = None,
         ledger: Ledger | None = None,
         state: StateStore | None = None,
         prices: PriceCatalog | None = None,
@@ -61,11 +105,16 @@ class ServiceClient:
         self.prices = prices or PriceCatalog(DATA_DIR / "llm" / "pricing.sqlite3")
         self.media = MediaService(self.state)
 
-    async def _ensure_ledger(self):
-        if self.ledger is None:
+    async def _ensure_ledger(self) -> Ledger:
+        """返回可用账本，未注入时延迟加载共享账本；初始化失败直接抛出。"""
+        ledger = self.ledger
+        if ledger is None:
             from .usage_compat import _GLOBAL_USAGE
 
-            self.ledger = await run_sync(lambda: _GLOBAL_USAGE.ledger)
+            ledger = await run_sync(lambda: _GLOBAL_USAGE.ledger)
+            self.ledger = ledger
+
+        return ledger
 
     async def gateway(self) -> Gateway:
         """获取此服务的传输入口，HTTP 连接按需创建，不借用模型连接的认证头。"""
@@ -258,7 +307,9 @@ class ImagesClient(ServiceClient):
         preset: str = "",
         on_preview: PreviewCallback | None = None,
     ) -> ImagesResponse:
-        """执行一次独立编辑；images 首张为目标、其余为参考，mask 对应首张。
+        """执行一次独立编辑；images 首张为目标、其余为参考，mask/markup 对应首张。
+        mask 与 markup 互斥；本地 markup 验证 PNG、实际透明像素及可知尺寸。
+        JSON 的远端引用不额外下载，无法在本地读取的内容由服务端验证。
         参数语义同 generate，编辑失败不会降级为文字生图或自动再次生成。
         """
         if not isinstance(request, ImageEditRequest):
@@ -271,50 +322,79 @@ class ImagesClient(ServiceClient):
         route = self._candidate(request.model)
         provider = get_provider(route)
         gateway = await self.gateway()
-        images, mask = None, None
+        images = None
+        mask = None
+        markup = None
         if isinstance(request, ImageEditRequest):
+            provider.validate_edit_guides(request)
             if not request.images:
                 raise ValueError("编辑请求需要目标图片")
+
             images = []
             multipart = provider.uses_multipart
             dimensions = []
-            for ref in [*request.images, *([request.mask] if request.mask else [])]:
+            guide = request.mask or request.markup
+            guide_name = "mask" if request.mask else "markup"
+            inputs = [*request.images, *([guide] if guide else [])]
+            for index, ref in enumerate(inputs):
                 if not multipart and ref.kind in ("remote", "url"):
                     images.append(ref)
-                    dimensions.append(None)
+                    dimensions.append(
+                        (ref.width, ref.height)
+                        if ref.width is not None and ref.height is not None
+                        else None
+                    )
                     continue
+
                 content = await self.media.content(ref, gateway)
-                mime, width, height = await run_sync(inspect_image, content)
+                mime, width, height = await run_sync(
+                    _inspect_edit_image,
+                    content,
+                    guide_name if guide and index == len(request.images) else None,
+                )
                 dimensions.append((width, height))
                 images.append(
                     MediaRef("bytes", content, mime, width=width, height=height)
                 )
-            if request.mask:
-                mask = images.pop()
+
+            if guide:
+                prepared_guide = images.pop()
                 if (
                     dimensions[-1] is not None
                     and dimensions[0] is not None
                     and dimensions[-1] != dimensions[0]
                 ):
-                    raise ValueError("mask 尺寸必须与第一张图片一致")
-                if mask.kind == "bytes":
-                    with Image.open(BytesIO(mask.value)) as image:
-                        if mask.mime_type != "image/png" or "A" not in image.getbands():
-                            raise ValueError("mask 必须是带 alpha 通道的 PNG")
-            if not multipart:
+                    raise ValueError(f"{guide_name} 尺寸必须与第一张图片一致")
 
-                async def prepare(ref):
+                if request.mask:
+                    mask = prepared_guide
+
+                else:
+                    markup = prepared_guide
+
+            if not multipart:
+                file_settings = self.settings.get("files_api")
+                files = None
+                if file_settings:
+                    if not isinstance(file_settings, dict):
+                        raise TypeError("files_api 需要连接配置字典")
+
+                    files = FilesClient(
+                        file_settings,
+                        client=self._client,
+                        ledger=self.ledger,
+                        state=self.state,
+                        prices=self.prices,
+                    )
+
+                async def prepare(ref: MediaRef) -> MediaRef:
                     if ref.kind != "bytes":
                         return ref
-                    if self.settings.get("files_api"):
-                        files = FilesClient(
-                            self.settings["files_api"],
-                            client=self._client,
-                            ledger=self.ledger,
-                            state=self.state,
-                        )
+
+                    if files is not None:
                         uploaded = await files.upload(ref)
                         return MediaRef("remote", uploaded.file_id, ref.mime_type)
+
                     import base64
 
                     return MediaRef(
@@ -323,7 +403,9 @@ class ImagesClient(ServiceClient):
 
                 images = [await prepare(ref) for ref in images]
                 mask = await prepare(mask) if mask else None
-        wire = provider.encode_operation(request, images, mask)
+                markup = await prepare(markup) if markup else None
+
+        wire = provider.encode_operation(request, images, mask, markup)
         operation = (
             "images_edit"
             if isinstance(request, ImageEditRequest)
@@ -452,16 +534,28 @@ class ImagesClient(ServiceClient):
         )
 
     async def recover_images(self, error: MediaError) -> ImagesResponse:
-        """使用异常保留的响应，仅重试下载/落盘，不再次调用生成接口或重新计生成费用。"""
-        if not isinstance(error, MediaError) or not getattr(
-            error, "pending_response", None
-        ):
+        """重试异常保存的图片响应，仅接收/落盘，不重新生成或重复记生成用量。
+
+        使用原 request_id 和同一账本；再次失败时，新 MediaError 继续携带该响应，
+        调用方可再次恢复。响应按引用复用，不深复制图片载荷。
+        """
+        if not isinstance(error, MediaError) or not error.pending_response:
             raise ValueError("该错误不包含可重试的图片响应")
-        result = await self._materialize(
-            error.pending_response, error.request_id, await self.gateway()
-        )
+
+        pending_response = error.pending_response
+        ledger = await self._ensure_ledger()
+        try:
+            result = await self._materialize(
+                pending_response, error.request_id, await self.gateway()
+            )
+
+        except MediaError as exc:
+            exc.request_id = error.request_id
+            exc.pending_response = pending_response
+            raise
+
         await run_sync(
-            self.ledger.finish_request,
+            ledger.finish_request,
             error.request_id,
             "completed",
             remote_state="completed",

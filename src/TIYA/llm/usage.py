@@ -26,7 +26,6 @@ from .model import (
 )
 from .pricing import PriceCatalog
 from .storage import Database
-from .tool_schema import build_tool_payloads
 from .usage_model import RequestUsageRecord
 from .workers import run_sync
 
@@ -96,7 +95,7 @@ def _estimate_prompt(prompt: BasePrompt) -> int:
 
     elif isinstance(prompt, ToolInput):
         text = json.dumps(
-            build_tool_payloads(prompt.function)["openai"],
+            prompt.tool_payloads["openai"],
             ensure_ascii=False,
             default=str,
         )

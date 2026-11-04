@@ -51,6 +51,8 @@ settings = ChatConfig([LLMConfig(
 
 需要隔离嵌套数据时明确使用 `copy.deepcopy()`，这些对象通过各自的 `__deepcopy__(memo)` 实现。Context 的深复制保留消息、轮次和系统提示之间原有的引用关系；工具 callable 和配置 logger 是借用的业务资源，仍保留原引用。
 
+递归使用同一个 memo：Context/Prompts 将新对象先登记，再深复制其属性；同一 Prompt 同时出现在消息列表和轮次列表时只产生一个副本。ImagePrompt 使用 Python 默认复制协议，包含 __dict__ 和 slots；分片 ID 列表、native 字典等可变容器独立复制，bytes、base64 字符串、缓存 ID 和指纹等不可变值复用原对象。Path 只复制路径对象，不读文件；MediaRef 当前会创建新的小型元数据对象，不复制文件内容。不会调用图片 to_dict/load_image、文件读取或重新编码。大批嵌套容器仍需遍历和分配，不能将深复制视为零成本。
+
 `Context.copy()` 继续创建新的会话 ID，作为独立会话入口；`copy.deepcopy(context)` 保留会话 ID，适用于同一会话的请求快照。TokenUsage 浅复制沿用旧约定生成新快照 ID，深复制保留原 ID；两者都不重新分配账本请求 ID。
 
 Runtime 每次调用只深复制一次历史 Context，另复制本轮输入；规范化只重建容器和替换需修补的消息。重试复用工作上下文，提交只复制外层容器，不再次深复制历史。Chat 安装配置时隔离调用方数据；请求借用已安装的配置，更新通过安装新对象完成。`Chat.config` 仍返回独立配置快照。
@@ -61,11 +63,17 @@ Runtime 每次调用只深复制一次历史 Context，另复制本轮输入；�
 
 ## 指纹与修改入口
 
-`LLMConfig.scope/revision`、HTTP 连接身份、`ChatConfig.revision` 和 `Context` 的内容/头部/消息前缀指纹均在对象内缓存；`Prompts.signature` 同样缓存。框架的配置安装、参数更新、历史追加/回滚/清空/删除和图片准备完成后，显式调用相应 `refresh_fingerprints()` 清除缓存，下一次读取才重算。指纹的计算内容保持原规则，已有检查点不会因单纯增加缓存而失效。
+`BasePrompt.signature` 是消息签名的统一入口，首次读取计算，之后缓存，直到显式调用 `refresh_fingerprints()`。签名包含 ID、角色、时间和消息内容，排除 native 协议附件与运行期缓存。框架不监听属性或嵌套对象写入；直接修改后未刷新时，一致性由调用方承担。
+
+`Prompts.signature` 组合角色和成员签名；`Context.message_fingerprints` 只按历史顺序读取成员签名，`Context.signature/header_signature` 分别组合消息/工具和 system/工具的签名。上层不再展开成员内容重复哈希。容器增删、回滚、清空只清理聚合缓存；显式修改内容时刷新对应消息及所属容器。框架的图片准备等内容修改入口自行刷新，业务正常调用无需额外操作。
+
+`LLMConfig.scope/revision`、HTTP 连接身份与 `ChatConfig.revision` 仍由配置对象缓存并显式刷新。这次消息与聚合签名的格式变化会使旧格式检查点匹配失败，首次完整回放后建立新检查点；不转换或猜测旧签名。
 
 通用 `fingerprint()` 和 `plain()` 位于全局 `TIYA.utils`；LLM 专用的 `stable()` 位于 `llm/model.py`，负责字节摘要和 callable 工具 schema 等内容转换。`llm/config.py` 只解析连接配置，不再提供这些通用工具。原 `snapshot.py` 已删除，消息前缀和上下文签名直接读取 Context 属性。
 
 不监控业务对 Prompt 字段、嵌套 dict 或 `Chat.model["parameter"]` 的直接修改。需要框架识别这些变化时，应通过正式更新入口，或显式刷新相应对象及所属配置/上下文的指纹；不能把业务的任意原地修改当成通信层自动保护范围。
+
+原生回放保存消息的 ID 和当时 `signature` 的快照，校验时直接读取同一属性；不再维护 projection_fingerprint/projection_hashes。记录缺少统一签名快照时使用通用消息编码，不猜测旧格式。Responses/Anthropic 每次编码只构建一次消息 ID 索引，不逐条原生记录重建整份历史索引。`ToolInput.tool_payloads` 缓存同一工具的协议 schema，供编码、估算和签名共用；请求快照借用这份只读缓存，Provider 设置别名或删除协议字段时只复制需要修改的字典层。显式替换 callable/注解后调用 `tool.refresh_schema()`，并刷新所属 Context；普通容器增删不重建 schema。
 
 ## 配置 v2
 
@@ -127,6 +135,14 @@ Files 是独立能力，有配置且模型协议支持图片文件引用时优�
 
 每个实际候选按自己的 max_context 检查完整逻辑上下文。当前候选窗口不足，或服务端明确返回上下文超限时，立即抛出 ContextOverflowError 给上层；不自动跳到窗口更大的候选，不压缩或删除历史，也不把某个候选的超限归因为“所有候选都超限”。
 
+## 启用服务端 Prompt 缓存
+
+OpenAI 和 DeepSeek 的常用对话接口默认构建前缀缓存，Chat/Responses Provider 不额外注入缓存开关；调用方显式配置的原生缓存参数仍按原规则透传。[OpenAI 官方说明](https://developers.openai.com/api/docs/guides/prompt-caching)、[DeepSeek 官方说明](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)。其他兼容服务需按实际连接和模型确认，不按域名、连接名或缓存命中为零猜测能力。
+
+Anthropic Messages Provider 每次请求默认补充顶层 `cache_control: {type: ephemeral}`，让服务端自动选取缓存点，不遍历历史安放断点，也不建立本地 KV 缓存状态。[Anthropic 官方说明](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。已有 `llm_params.cache_control` 优先，原生 TTL 等字段原样保留，不默认要求更长保存期。兼容连接已自动缓存或不支持此字段时，在该连接配置 `prompt_caching: false`，只关闭默认补充；调用方显式提供的原生字段仍会发送。默认配置模板已标明这一选项。
+
+这只请求使用服务端缓存，不保证每轮命中；前缀一致、模型阈值和服务端有效期仍需满足。真实 cache read/write 继续按响应 usage 记入账本，不根据已发送开关推测命中。此逻辑只影响 Provider payload，业务 Context、rounds、原生历史和 Responses 续接检查点均不变。
+
 ## Provider 错误契约
 
 `provider/base.py` 的 `Failure` 明确区分错误事实和处理建议；未填写的权限默认 False，恢复动作默认 `none`。
@@ -143,6 +159,10 @@ Files 是独立能力，有配置且模型协议支持图片文件引用时优�
 恢复动作包括：`context_overflow` 向上抛出窗口错误；`rebuild_parent` 重建一次完整上下文；`refresh_file` 只重传明确失效的文件；`inline_images` 改传内联；`disable_files` 改传内联并暂存不支持文件引用的证据。`none` 不做专项恢复。改变请求内容的恢复完成后才再发，不盲目重复旧 payload。
 
 模型 Provider 的 `failure(status, body, headers)` 解释 HTTP/业务错误，`transport_failure(error)` 解释传输异常；统一入口 `classify_failure(error)` 保留已解码的 ProviderFailure。默认实现复用现有 error_dialect 码表，各 Provider 可覆盖上述方法给出不同权限或恢复动作，不需要 Runtime 识别供应商原始错误码。
+
+供应商码表集中于 `provider/error_codes.py`：`ErrorDialect` 声明错误对象路径、码字段、成功码和明确的 HTTP 覆盖规则，`ErrorRule` 声明分类、远端状态、重试/切换权限、恢复动作及资源字段。依次匹配业务码、方言 HTTP 规则和通用 HTTP 规则；未知方言不借用其他供应商业务码。未明确覆盖时，带未知业务码的 429 不直接当作可重试限流；DeepSeek 官方 429 按其文档解释为请求速率/并发限制，500/503 仍保持执行状态不明、不自动重发。连接配置只选择 `error_dialect`，不需要携带整份码表。特殊协议仍可覆盖 Provider 方法。
+
+对话解码器 `feed()` 返回本事件新增的 `StreamText`（或无文本），Runtime 将其写入当前 logger 的 `LLM：` 日志流，遵循 `log_off`，在完成、异常和取消时关闭。推理到正文的切换提示沿用旧行为，不写入图片载荷或工具参数。Chat 流只缓存收到的片段，结束时用 join 拼接文本/推理/工具字段；图文混排仅合并相邻文本，保留图片位置，不深复制收到的内容块。
 
 Runtime 的 `_recover()` 只执行恢复动作，`_retry_candidate()` 只管理被允许的重试次数及等待。取消、部分输出、已观察到真实消耗、已创建但终态不明的后台任务，以及已完成生成后的本地错误，都不会自动重建生成请求；Provider 的允许字段不能覆盖这些事实。账本诊断保留 Provider 的 retryable/fallback_allowed/recovery 和实际 resend_safe，不修改异常中原始 Provider 建议。
 
@@ -169,11 +189,21 @@ async with ImagesClient(settings) as images:
         images=[MediaRef(hash_name=target_id), MediaRef(hash_name=reference_id)],
         mask=MediaRef(hash_name=mask_id),
     ))
+    # 使用透明标注图层时改传 markup，不能与 mask 同时使用。
+    marked = await images.edit(ImageEditRequest(
+        model="YOUR_IMAGE_2_5_MODEL_ID", prompt="修改红圈内的物体，参考第二张的风格",
+        images=[MediaRef(hash_name=target_id), MediaRef(hash_name=reference_id)],
+        markup=MediaRef(hash_name=markup_id),
+    ))
 ```
 
-模型 ID 原样发送。生成和编辑分别使用明确的 endpoint，不从生成 URL 猜编辑 URL；配置了 `base_url` 时可按标准路径追加。默认编辑走 multipart；`images: {edit_format: json}` 启用 JSON 的 images/mask 引用。参考图保持顺序，mask 对应第一张目标图，必须保持 PNG alpha 且尺寸一致。不会把编辑降级成纯文字生成，也不调用 Responses 内置生图工具。
+模型 ID 原样发送。生成和编辑分别使用明确的 endpoint，不从生成 URL 猜编辑 URL；配置了 `base_url` 时可按标准路径追加。默认编辑走 multipart；`images: {edit_format: json}` 启用 JSON 的 images/mask/markup 引用。参考图保持顺序，mask/markup 均对应第一张目标图，二者互斥。mask 是 PNG alpha 遮罩；markup 是单独的透明 PNG 标注图层，必须含实际透明像素，不能只给不透明原图添加 alpha 通道。两者尺寸均须与首张目标图匹配（按 EXIF 方向读取），框架保留输入字节，不合成、不缩放。
+
+markup 与其他图片一样接受 `MediaRef(hash_name=...)`、本地路径、bytes、base64；JSON 还可直接使用 URL 或远端 file_id。JSON 的本地输入配置了 files_api 时先上传，否则转为 data URL。校验在上传前完成；远端引用不为校验额外下载，可知尺寸在本地比对，其余内容由服务端校验。不会把编辑降级成纯文字生成，也不调用 Responses 内置生图工具。
 
 最终 URL/Base64 图片在通信层下载、验证并进入现有 `file_cache` 后才返回。业务获得缓存 ID、MIME 和可用尺寸。没有永久保留或新的清理机制。`MediaError.stage` 区分下载/解码和验证/缓存失败；错误中保留 request_id，可调用 `images.recover_images(error)` 只重试接收落盘，不重复生图。
+
+`MediaError.pending_response: Params | None` 明确保存待恢复的原生响应，默认为 None。接收失败时按引用保留响应，不深复制 base64 等大载荷；恢复再次失败，新异常继续保留同一响应和 request_id。恢复使用原账本记录，不新增生成请求或重复统计用量；换 ImagesClient 实例恢复时仍须使用同一账本。
 
 本地文件直接填写 `MediaRef(hash_name=...)`，无需判断 `kind/value`；后两者仅用于原始 path/bytes/base64/url 输入和远端 file_id。远端引用也可携带原件的 hash_name。`ImagePrompt("user", hash_name=...)` 支持直接使用缓存 ID；旧的 Path/bytes/base64 构造方式保留，准备后将原件存入 file_cache，并清空 image_input。`image` 仍是旧版有序分片 ID 列表。新图片请构造新的 ImagePrompt，不依赖偷偷替换已准备对象的 image_input。
 
@@ -182,6 +212,10 @@ async with ImagesClient(settings) as images:
 `MediaService.upload()` 在同一事件循环内，按状态库路径、Files 账户作用域和 hash_name 共享正在进行的上传 Task，跨 MediaService/Chat 实例复用。后来者直接等待相同的 MediaRef 或失败异常，不轮询本地 SQLite，也不在等待层自行重传。`force=True` 绕过已完成映射，但仍加入当前上传。Task 完成后从内存表移除，成功后的长期复用仍查询状态库；跨进程继续使用原有租约和持久结果。
 
 `upload(timeout=...)` 限制单个调用的全部等待时间；`MediaService(upload_timeout=300)` 限制共享任务自身的执行时间，单位均为秒。单个等待者超时/取消不会取消其他人的上传；最后一个退出时取消任务并释放租约。SQLite claim 在线程中执行，取消时也必须处理其最终结果，避免后台线程稍后取得无人持有的租约。
+
+`upload()` / `_join_upload()` 成功时只返回 MediaRef；等待或共享任务超时抛 TimeoutError，取消抛 CancelledError，其他读取/上传错误继续传播。None 只用于内部 `_cached_upload()` 表示未命中，不是上传失败的返回值。`prepare_prompt()` 捕获超时等上传错误，再由 Files Provider 判断是否降级，不在公开上传入口吞成 None。
+
+Runtime 按本轮 deadline 限制媒体准备及等待，直接调用 execute 时同样有效；本轮截止后直接抛 TimeoutError，不切换候选继续等待，不取消仍被其他调用等待的共享上传。
 
 Runtime 的 `UploadSender` 固定首次发起者的 call_id/连接，并使用独立上传时限和 Gateway 状态。真正发送的 Files 请求只记一笔账，归首次发起的 call_id，等待者不重复生成请求账目。Chat 取消或 keep_alive=False 释放连接时，仍被共享上传使用的客户端延后关闭，最后一个使用它的上传完成后关闭；复用现有连接池，不为每次上传创建新池。直接传入自定义 send 回调时，借用资源和网络时限仍由回调调用方负责。
 
@@ -201,9 +235,11 @@ Files 上传默认请求远端保留 86400 秒，可通过 `expires_after_second
 - 独立定价目录：`data/llm/pricing.sqlite3`。
 - 业务历史和原生回放项：原有 Context 存档。读取旧存档不要求新增状态存在。
 
-`StateStore` 只清理通信元数据：普通访问每五分钟触发有上限的清理批次，删除明确过期的状态和租约；没有到期信息的状态也按闲置 30 天回收，活跃读取续本地保留期。`retention_seconds` 可在构造状态库时调整。远端 `expires` 不随读取延长，冷却状态在截止时间后可直接回收。旧数据库首次增加访问时间字段时保留原状态并给予完整保留期。
+`StateStore` 只清理通信元数据：同进程、同一数据库的所有实例共享模块级维护时钟，普通访问默认每小时触发一批清理，不启动后台任务。`cleanup_interval_seconds=86400` 可改为一天；同库实例应使用一致设置。每批最多清理 500 条状态和 500 条租约，满批后也等待下个间隔，避免把积压连续摊给后续请求；大量积压可在维护时显式多次 cleanup。读取单条状态仍立即检查过期，申请租约仍立即检查该 key，不因批量回收延后而使用失效数据。
 
-可同步调用 `StateStore.cleanup(now=..., batch_size=500)` 执行一批清理，异步代码通过 `run_sync` 调用。清理不扫描/删除本地图片，不调用远端删除，不触碰用量账本；SQLite 空闲页供后续写入复用，不在请求链路执行 VACUUM。
+明确到期的状态和租约会被删除；没有到期信息的状态也按闲置 30 天回收，活跃读取续本地保留期。`retention_seconds` 可在构造状态库时调整。远端 `expires` 不随读取延长，冷却状态在截止时间后可直接回收。旧数据库首次增加访问时间字段时保留原状态并给予完整保留期。
+
+可同步调用 `StateStore.cleanup(now=..., batch_size=500)` 执行一批清理，异步代码通过 `run_sync` 调用；显式清理更新同库共享时钟，不额外叠加自动批次。清理不扫描/删除本地图片，不调用远端删除，不触碰用量账本；SQLite 空闲页供后续写入复用，不在请求链路执行 VACUUM。
 
 账本每次真实尝试分配独立 request_id，同一逻辑调用共享 call_id；平台 request ID、response ID 分开记录。先持久化初始估算，再发送网络请求。reported 与 estimated 分别保存，effective 逐字段优先采用 reported。缺失真实值不填成真实零值。观察幂等，费用修订不会增加请求数量；确认未执行的拒绝保留初始估算证据，并以新的估算观察注明拒绝状态。
 

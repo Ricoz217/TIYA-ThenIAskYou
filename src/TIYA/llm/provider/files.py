@@ -32,6 +32,19 @@ class FileMetadata:
 
 
 class FilesProvider:
+    def __init__(self, settings: Params) -> None:
+        """读取独立 Files 连接及显式 dialect，不继承模型认证或猜测地址。"""
+        self.settings = settings
+        dialect = settings.get("dialect", "openai")
+        if not isinstance(dialect, str) or dialect not in ("openai", "deepseek", "anthropic"):
+            raise ValueError(f"未知 Files dialect: {dialect}")
+
+        self.dialect = dialect
+        self.endpoint = endpoint(settings, "files_api")
+        self.scope = fingerprint(settings)
+        # 默认请求远端保留一天；中转不支持该字段时可显式配置 null。
+        self.expires_after_seconds = settings.get("expires_after_seconds", 86400)
+
     def failure(
         self, status: int, body: Params, headers: dict[str, str] | None = None
     ) -> Failure:
@@ -66,19 +79,6 @@ class FilesProvider:
 
         return self.transport_failure(error)
 
-    def __init__(self, settings: Params) -> None:
-        """读取独立 Files 连接及显式 dialect，不继承模型认证或猜测地址。"""
-        self.settings = settings
-        dialect = settings.get("dialect", "openai")
-        if not isinstance(dialect, str) or dialect not in ("openai", "deepseek", "anthropic"):
-            raise ValueError(f"未知 Files dialect: {dialect}")
-
-        self.dialect = dialect
-        self.endpoint = endpoint(settings, "files_api")
-        self.scope = fingerprint(settings)
-        # 默认请求远端保留一天；中转不支持该字段时可显式配置 null。
-        self.expires_after_seconds = settings.get("expires_after_seconds", 86400)
-
     def headers(self) -> dict[str, str]:
         """构造文件服务自己的认证头及需要的版本/beta 头。"""
         if self.dialect == "anthropic":
@@ -90,8 +90,10 @@ class FilesProvider:
             }
             if self.settings.get("anthropic_beta"):
                 headers["anthropic-beta"] = self.settings["anthropic_beta"]
+
         else:
             headers = {"Authorization": f"Bearer {credential(self.settings)}"}
+
         return merge_headers(headers, self.settings.get("headers"))
 
     def upload_request(self, content: bytes, filename: str, mime: str) -> WireRequest:
@@ -107,8 +109,10 @@ class FilesProvider:
                         "expires_after[seconds]": str(ttl),
                     }
                 )
+
         elif self.expires_after_seconds is not None:
             data["expires_in_seconds"] = str(self.expires_after_seconds)
+
         return WireRequest(
             self.endpoint,
             headers=self.headers(),
@@ -129,8 +133,10 @@ class FilesProvider:
                 params=params,
                 isolate_headers=True,
             )
+
         if not file_id:
             raise ValueError("需要 file_id")
+
         base = self.endpoint.rstrip("/") + "/" + quote(file_id, safe="")
         suffix = (
             self.settings.get("download_suffix", "/content")
@@ -148,14 +154,17 @@ class FilesProvider:
         """将各家文件 ID、大小和到期时间转为统一元数据；缺少 ID 则失败。"""
         if body.get("error") or body.get("base_resp", {}).get("status_code"):
             raise ProviderFailure(self.failure(200, body))
+
         body = body.get("file", body)
         if not isinstance(body.get("id", body.get("file_id")), str):
             raise ValueError("Files 响应缺少 file id")
+
         expiry = body.get("expires_at")
         if isinstance(expiry, str):
             expiry = datetime.datetime.fromisoformat(
                 expiry.replace("Z", "+00:00")
             ).timestamp()
+
         if expiry is None and self.expires_after_seconds is not None:
             created = body.get("created_at")
             if isinstance(created, str):
@@ -165,6 +174,7 @@ class FilesProvider:
                 created = time.time()
 
             expiry = created + self.expires_after_seconds
+
         return FileMetadata(
             body.get("id", body.get("file_id")),
             expiry,
@@ -180,6 +190,8 @@ def get_files_provider(settings: Params, category: str = "files_api") -> FilesPr
     """按显式分类注册表选择 Files 实现，连接名不参与选择。"""
     try:
         factory = REGISTRY[category]
+
     except KeyError:
         raise ValueError(f"未注册的 Files Provider 分类: {category}") from None
+
     return factory(settings)

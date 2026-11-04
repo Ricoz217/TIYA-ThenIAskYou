@@ -254,3 +254,40 @@ def test_anthropic_stream_retains_thinking_signature_and_tool_arguments():
     assert result.prompts[0].arguments == {"value": "x"}
     replay = provider.encode(Context(result.prompts), {})
     assert replay["messages"][0]["content"][0]["thinking"] == "opaque"
+
+
+@pytest.mark.parametrize("category", ["chat_completions", "anthropic_api"])
+@pytest.mark.parametrize("response_kind", ["incremental", "full", "empty"])
+def test_optional_final_response_does_not_bypass_stream_aggregation(category, response_kind):
+    provider = get_provider(candidate("", category, "test", "model", {}))
+    stream = provider.stream_decoder()
+    # Optional 字段存在但无完整响应时，finish 必须继续聚合增量。
+    stream.final = None
+    if response_kind == "incremental":
+        if category == "chat_completions":
+            stream.feed({"choices": [{"delta": {"content": "answer"}}]})
+            stream.feed({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+
+        else:
+            stream.feed({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
+            stream.feed({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "answer"}})
+            stream.feed({"type": "message_stop"})
+
+    elif response_kind == "full":
+        if category == "chat_completions":
+            stream.feed({"id": "response-id", "choices": [{"message": {"content": "answer"}}], "usage": {"prompt_tokens": 10}})
+
+        else:
+            stream.feed({"type": "message", "id": "response-id", "content": [{"type": "text", "text": "answer"}], "usage": {"input_tokens": 10}})
+
+    result = stream.finish()
+    assert result.complete is (response_kind != "empty")
+    if response_kind == "empty":
+        assert not result.prompts
+
+    else:
+        assert result.prompts[0].text == "answer"
+
+    if response_kind == "full":
+        assert result.response_id == "response-id"
+        assert result.usage["input"] == 10

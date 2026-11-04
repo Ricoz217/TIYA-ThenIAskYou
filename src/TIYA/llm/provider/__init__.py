@@ -1,11 +1,13 @@
 """Forward category registry. Connection names and hostnames never select implementations."""
 
+from typing import Callable
+
 from .openai_chat import ChatCompletions
 from .openai_responses import Responses
 from .anthropic import Messages
 from .openai_images import Images
 
-REGISTRY = {
+REGISTRY: dict[str, Callable | type] = {
     "chat_completions": ChatCompletions,
     "responses_api": Responses,
     "anthropic_api": Messages,
@@ -13,9 +15,10 @@ REGISTRY = {
 }
 
 
-def register(category, factory):
+def register(category: str, factory: Callable | type):
     if not isinstance(category, str) or not callable(factory):
         raise TypeError("需要分类名和 Provider factory")
+
     REGISTRY[category] = factory
 
 

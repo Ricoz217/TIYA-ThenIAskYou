@@ -421,18 +421,23 @@ class Runtime:
             )
 
             try:
-                media_changed = await self._prepare_media(
-                    send_context,
-                    candidate.provider,
-                    send_file,
-                    candidate.media,
-                    candidate.inline,
-                    candidate.force,
-                )
+                async with asyncio.timeout_at(call.deadline):
+                    media_changed = await self._prepare_media(
+                        send_context,
+                        candidate.provider,
+                        send_file,
+                        candidate.media,
+                        candidate.inline,
+                        candidate.force,
+                    )
                 if media_changed:
                     call.planned.refresh_fingerprints(content_changed=False)
                     if send_context is not call.planned:
                         send_context.refresh_fingerprints(content_changed=False)
+
+            except TimeoutError:
+                # 本轮等待已到期，直接结束；仍有其他等待者的共享上传继续执行。
+                raise
 
             except (MediaError, OSError, ProviderFailure) as exc:
                 call.attempts += 1
@@ -565,6 +570,65 @@ class Runtime:
         candidate.gateway.last_request_id = ""
         return _Attempt(request_id, payload)
 
+    async def _receive_stream(
+        self,
+        call: _Call,
+        candidate: _Candidate,
+        attempt: _Attempt,
+        wire: WireRequest,
+        remaining: float,
+    ) -> Result:
+        """实时解码并输出增量日志；正常、失败或取消都关闭本次日志流。
+
+        Provider 只产生可读文本，不依赖 logger。log_off 只控制展示，不影响解码、
+        usage 或执行状态；不输出图片 base64、原生签名或工具参数。
+        """
+        decoder = candidate.provider.stream_decoder()
+        attempt.decoder = decoder
+        handle = None
+        if self.logger is not None and not call.config.log_off:
+            handle = self.logger.info("LLM：", stream=True)
+
+        answer_started = False
+        try:
+            async for frame in candidate.gateway.stream(wire, remaining):
+                attempt.platform_request_id = candidate.gateway.last_request_id
+                if isinstance(frame, Frame):
+                    if not frame.data.strip():
+                        continue
+
+                    if frame.data == "[DONE]":
+                        decoder.complete = True
+                        continue
+
+                    body = json.loads(frame.data)
+
+                else:
+                    body = frame
+
+                attempt.raw_body = body
+                updates = decoder.feed(body)
+                if handle is None or not updates:
+                    continue
+
+                for update in updates:
+                    if update.reasoning:
+                        if not answer_started:
+                            handle.write(update.text)
+
+                    else:
+                        if not answer_started:
+                            handle.write("\n\n思维链结束，最终回答: \n\n")
+                            answer_started = True
+
+                        handle.write(update.text)
+
+            return decoder.finish()
+
+        finally:
+            if handle is not None:
+                handle.close()
+
     async def _send_attempt(
         self,
         call: _Call,
@@ -585,26 +649,7 @@ class Runtime:
         )
         async with asyncio.timeout(max(0.001, call.deadline - time.monotonic())):
             if attempt.payload.get("stream"):
-                attempt.decoder = candidate.provider.stream_decoder()
-                async for frame in candidate.gateway.stream(wire, remaining):
-                    attempt.platform_request_id = candidate.gateway.last_request_id
-                    if isinstance(frame, Frame):
-                        if not frame.data.strip():
-                            continue
-
-                        if frame.data == "[DONE]":
-                            attempt.decoder.complete = True
-                            continue
-
-                        body = json.loads(frame.data)
-
-                    else:
-                        body = frame
-
-                    attempt.raw_body = body
-                    attempt.decoder.feed(body)
-
-                result = attempt.decoder.finish()
+                result = await self._receive_stream(call, candidate, attempt, wire, remaining)
                 attempt.result = result
 
             else:
@@ -696,6 +741,7 @@ class Runtime:
             image_prompt.resource = cached.image
             image_prompt.hash_name = cached.image.hash_name
             image_prompt.image_input = None
+            image_prompt.refresh_fingerprints()
 
         result.images.clear()
         await self._db(
