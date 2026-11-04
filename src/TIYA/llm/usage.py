@@ -28,6 +28,7 @@ from .model import (
 from .pricing import PriceCatalog
 from .storage import Database
 from .usage_model import RequestUsageRecord, TokenUsage
+from .usage_summary import MonthlySummary, _empty_summary, notify_ledger_change
 from .workers import run_sync
 
 
@@ -282,6 +283,7 @@ class Ledger:
                     time.time(),
                 ),
             )
+        notify_ledger_change(self.db.path, request_id)
         return request_id
 
     def observe_usage(
@@ -352,6 +354,7 @@ class Ledger:
                 (uuid4().hex, request_id, observation_id, encoded, time.time()),
             )
             db.execute("UPDATE requests SET charge=? WHERE id=?", (encoded, request_id))
+        notify_ledger_change(self.db.path, request_id)
         self._notify()
         return observation_id
 
@@ -466,6 +469,7 @@ class Ledger:
                 "remote_state=excluded.remote_state,diagnostic=excluded.diagnostic,charge=excluded.charge",
                 encoded,
             )
+        notify_ledger_change(self.db.path, row["id"])
         self._notify()
 
     def query_requests(
@@ -537,6 +541,7 @@ class Ledger:
                 "INSERT OR IGNORE INTO aggregates VALUES(?,?)",
                 (source, json.dumps(data.get("storage", {}))),
             )
+        notify_ledger_change(self.db.path)
 
     def summarize(self, start: float = 0, end: float | None = None) -> Params:
         """同步汇总 Unix 时间范围内用量，区分真实/估算、币种费用和未知费用请求。"""
@@ -579,7 +584,25 @@ class Ledger:
                     result["cost"][currency] = result["cost"].get(
                         currency, 0.0
                     ) + float(charge["amount"])
+        imported = self._summarize_imports(start, end)
+        for key in ("input", "output", "cached"):
+            for source in ("verified", "estimate"):
+                result[key][source] += imported[key][source]
+
+        for meter in ("input", "cached"):
+            result["cache_basis"][meter] += imported["cache_basis"][meter]
+
+        for currency, amount in imported["cost"].items():
+            result["cost"][currency] = result["cost"].get(currency, 0) + amount
+
+        return result
+
+    def _summarize_imports(self, start: float, end: float | None) -> MonthlySummary:
+        """仅汇总旧版导入数据；月度视图在首次加载/导入变化后调用。"""
+        result = _empty_summary()
+        with self.db.transaction() as db:
             aggregates = db.execute("SELECT data FROM aggregates").fetchall()
+
         for aggregate in aggregates:
             for year, months in json.loads(aggregate["data"]).items():
                 for month, days in months.items():

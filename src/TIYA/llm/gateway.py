@@ -8,8 +8,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+from TIYA.logger import get_logger
 from TIYA.utils import parse_proxies_to_httpx
 from .config_model import JsonValue, Params
+
+
+_log = get_logger()
 
 
 @dataclass
@@ -64,9 +68,14 @@ class HTTPFailure(Exception):
     def __init__(
         self, status: int, body: Params, headers: dict[str, str] | None = None
     ) -> None:
-        """保留 HTTP 状态、响应体和请求头，供 Provider 分类；不在此判断可否重试。"""
-        super().__init__(f"HTTP {status}")
-        self.status, self.body, self.headers = status, body, dict(headers or {})
+        """保留 HTTP 状态、响应体和响应头，供 Provider 分类；不判断可否重试。"""
+        error = body.get("error") if isinstance(body, dict) else None
+        message = error.get("message") if isinstance(error, dict) else error
+        detail = f": {message}" if isinstance(message, str) and message else ""
+        super().__init__(f"HTTP {status}{detail}")
+        self.status = status
+        self.body = body
+        self.headers = dict(headers or {})
 
 
 class Gateway:
@@ -135,14 +144,18 @@ class Gateway:
         if response.status_code == 204:
             return {}
 
+        if response.status_code >= 300:
+            self._log_error_response(response)
+
         try:
             body = response.json()
 
         except ValueError as exc:
             if response.status_code < 300:
+                self._log_error_response(response)
                 raise ValueError("HTTP 成功响应不是有效 JSON") from exc
 
-            body = {"transport_error": "non_json_response"}
+            body = {"transport_error": "non_json_response", "response_text": response.text}
 
         if response.status_code >= 300:
             raise HTTPFailure(
@@ -165,8 +178,23 @@ class Gateway:
                 request.method, request.url, **self._kwargs(request, timeout)
             )
 
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+
+        except httpx.HTTPStatusError:
+            self._log_error_response(response)
+            raise
+
         return response.content
+
+    @staticmethod
+    def _log_error_response(response: httpx.Response) -> None:
+        """失败响应完整写入 DEBUG 文件；不记录请求正文或认证头。"""
+        request_id = response.headers.get("x-request-id", response.headers.get("request-id", ""))
+        _log.debug(
+            f"LLM HTTP 错误: HTTP {response.status_code}; server_request_id={request_id}\n"
+            f"原始响应:\n{response.text}"
+        )
 
     @staticmethod
     def _isolated_request(request: WireRequest, timeout: float):
@@ -210,17 +238,25 @@ class Gateway:
             self._remember(response)
             if response.status_code >= 300:
                 await response.aread()
+                self._log_error_response(response)
                 try:
                     body = response.json()
 
                 except ValueError:
-                    body = {"transport_error": "non_json_response"}
+                    body = {"transport_error": "non_json_response", "response_text": response.text}
 
                 raise HTTPFailure(response.status_code, body, response.headers)
 
             if "application/json" in response.headers.get("content-type", ""):
                 await response.aread()
-                yield response.json()
+                try:
+                    body = response.json()
+
+                except ValueError:
+                    self._log_error_response(response)
+                    raise
+
+                yield body
                 return
 
             async for frame in frames(response.aiter_lines()):
@@ -238,5 +274,11 @@ class Gateway:
             follow_redirects=True, timeout=timeout, **options
         ) as download_client:
             response = await download_client.get(url)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+
+            except httpx.HTTPStatusError:
+                self._log_error_response(response)
+                raise
+
             return response.content

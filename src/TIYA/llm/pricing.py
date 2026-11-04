@@ -8,10 +8,11 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
-from TIYA.utils import fingerprint, plain
+from TIYA.utils import plain
 
 from .config_model import Params
 from .storage import Database
+from .usage_summary import notify_price_change
 
 
 class PriceCatalog:
@@ -29,22 +30,18 @@ class PriceCatalog:
 
     def publish(
         self,
-        identity: dict[str, str],
+        ref: str,
         rules: Params,
         *,
         source: str,
         effective: float | None = None,
     ) -> str:
-        """发布价格版本并返回版本 ID。identity 含 preset/scope/model/operation；
+        """按配置中的 分类:连接名:模型ID 发布价格版本，返回独立的版本 UUID。
+
         rules 定义币种、计量单位及阶梯，source 记录核对来源，effective 为生效 Unix 秒。
-        不覆盖旧版本，不写回 YAML，也不修改已冻结的请求价格。
+        不依赖预设名、凭证或账户 scope；不覆盖旧版本，也不修改已冻结的请求价格。
         """
-        if (
-            not all(k in identity for k in ("preset", "scope", "model", "operation"))
-            or not identity.get("scope")
-            or not identity.get("operation")
-        ):
-            raise ValueError("价格绑定需要 preset/scope/model/operation")
+        self._validate_ref(ref)
         self._validate(rules)
         version = uuid4().hex
         with self.db.transaction() as db:
@@ -52,14 +49,24 @@ class PriceCatalog:
                 "INSERT INTO plans VALUES(?,?,?,?,?,?)",
                 (
                     version,
-                    fingerprint(identity),
-                    json.dumps(identity),
+                    ref,
+                    json.dumps({"ref": ref}),
                     json.dumps(rules),
                     source,
                     time.time() if effective is None else effective,
                 ),
             )
+        notify_price_change(self.db.path)
         return version
+
+    @staticmethod
+    def _validate_ref(ref: str) -> None:
+        if not isinstance(ref, str):
+            raise ValueError("价格 ID 必须是 分类:连接名:模型ID")
+
+        parts = ref.split(":", 2)
+        if len(parts) != 3 or not all(parts):
+            raise ValueError("价格 ID 必须是 分类:连接名:模型ID")
 
     @staticmethod
     def _validate(rules):
@@ -105,13 +112,14 @@ class PriceCatalog:
             raise ValueError("计价单位必须为正")
 
     def snapshot(
-        self, identity: dict[str, str], at: float | None = None
+        self, ref: str, at: float | None = None
     ) -> Params | None:
-        """同步读取 at 时刻生效的版本及规则；无匹配价格返回 None。"""
+        """按完整配置引用读取 at 时刻生效的价格；不猜连接名或回退到其他模型。"""
+        self._validate_ref(ref)
         with self.db.transaction() as db:
             row = db.execute(
-                "SELECT * FROM plans WHERE binding=? AND effective<=? ORDER BY effective DESC LIMIT 1",
-                (fingerprint(identity), time.time() if at is None else at),
+                "SELECT * FROM plans WHERE binding=? AND effective<=? ORDER BY effective DESC,rowid DESC LIMIT 1",
+                (ref, time.time() if at is None else at),
             ).fetchone()
         if row is None:
             return None
@@ -119,10 +127,41 @@ class PriceCatalog:
         self._validate(rules)
         return {
             "version": row["id"],
-            "identity": json.loads(row["identity"]),
+            "ref": row["binding"],
             "rules": rules,
             "source": row["source"],
         }
+
+    def active_snapshots(self, *, at: float | None = None) -> tuple[list[Params], float | None]:
+        """读取各配置引用当前生效的价格及下一次生效时间，供月度展示缓存使用。
+
+        只在价格失效或定时生效边界读取价库，不按历史请求逐条查价。
+        返回规则快照，不修改任何请求当时冻结的价格。
+        """
+        now = time.time() if at is None else at
+        with self.db.transaction() as db:
+            rows = db.execute(
+                "SELECT * FROM (SELECT *, ROW_NUMBER() OVER ("
+                "PARTITION BY binding ORDER BY effective DESC,rowid DESC) AS rank "
+                "FROM plans WHERE effective<=?) WHERE rank=1",
+                (now,),
+            ).fetchall()
+            next_change = db.execute(
+                "SELECT MIN(effective) FROM plans WHERE effective>?", (now,)
+            ).fetchone()[0]
+
+        snapshots = []
+        for row in rows:
+            rules = json.loads(row["rules"])
+            self._validate(rules)
+            snapshots.append({
+                "version": row["id"],
+                "ref": row["binding"],
+                "rules": rules,
+                "source": row["source"],
+            })
+
+        return snapshots, next_change
 
     @staticmethod
     def calculate(snapshot: Params | None, usage: Params) -> Params:

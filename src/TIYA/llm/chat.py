@@ -454,7 +454,7 @@ class Chat:
             task.outcome = getattr(
                 exc, "llm_outcome", CallOutcome("failed", category=type(exc).__name__)
             )
-            self._config.logger.error(f"LLM 请求停止: {type(exc).__name__}")
+            self._config.logger.error(f"LLM 请求停止: {type(exc).__name__}: {exc}")
             return None
 
     async def _execute_task(self, task: AskTask) -> Prompts | None:
@@ -484,7 +484,7 @@ class Chat:
 
             logger = self._config.logger
             if logger is not None:
-                logger.error(f"LLM 结果已提交，后续收尾失败: {type(exc).__name__}")
+                logger.error(f"LLM 结果已提交，后续收尾失败: {type(exc).__name__}: {exc}")
 
             return task.response
 
@@ -499,7 +499,7 @@ class Chat:
 
                     logger = self._config.logger
                     if logger is not None:
-                        logger.error(f"LLM 结果已提交，连接清理失败: {type(exc).__name__}")
+                        logger.error(f"LLM 结果已提交，连接清理失败: {type(exc).__name__}: {exc}")
 
             self._running_task_id = ""
             self._running.set()

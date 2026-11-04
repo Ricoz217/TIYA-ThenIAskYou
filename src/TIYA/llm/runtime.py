@@ -564,7 +564,7 @@ class Runtime:
             try:
                 price = await self._db(
                     self.prices.snapshot,
-                    {k: identity[k] for k in ("preset", "scope", "model", "operation")},
+                    candidate.route.ref,
                 )
 
             except (sqlite3.Error, OSError, ValueError):
@@ -957,6 +957,7 @@ class Runtime:
             else cancel_status or failure.remote_state,
             category=failure.category,
             code=failure.code,
+            error=raw_error,
             partial=attempt.partial,
             platform_request_id=attempt.platform_request_id
             or candidate.gateway.last_request_id,

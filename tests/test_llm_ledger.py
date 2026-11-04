@@ -1,8 +1,5 @@
 from decimal import Decimal
 
-import pytest
-
-
 def test_partial_reported_values_replace_estimates_per_field_and_survive_restart(
     tmp_path,
 ):
@@ -36,7 +33,7 @@ def test_missing_and_explicit_zero_prices_and_tiers(tmp_path):
     from TIYA.llm.pricing import PriceCatalog
 
     prices = PriceCatalog(tmp_path / "pricing.sqlite3")
-    identity = {"preset": "MAIN", "scope": "account", "model": "m", "operation": "chat"}
+    identity = "chat_completions:account:m"
     rules = {
         "currency": "CNY",
         "tier_mode": "whole",
@@ -61,7 +58,7 @@ def test_missing_and_explicit_zero_prices_and_tiers(tmp_path):
         ]
         == "CNY"
     )
-    assert prices.snapshot({**identity, "scope": "different"}) is None
+    assert prices.snapshot("chat_completions:different:m") is None
     assert prices.calculate(None, {"input": 200})["amount"] is None
 
 
@@ -138,12 +135,7 @@ def test_standalone_image_price_and_explicit_free_plan_need_no_fake_preset(tmp_p
     from TIYA.llm.pricing import PriceCatalog
 
     catalog = PriceCatalog(tmp_path / "prices.sqlite3")
-    identity = {
-        "preset": "",
-        "scope": "account",
-        "model": "image-2.5",
-        "operation": "images_generate",
-    }
+    identity = "image_generation:account:image-2.5"
     catalog.publish(
         identity,
         {"currency": "CNY", "tiers": [{"rates": {"input": "0", "output": "0"}}]},

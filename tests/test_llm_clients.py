@@ -9,6 +9,44 @@ from PIL import Image
 from TIYA.llm.model import ImageGenerateRequest, ImageEditRequest, MediaRef
 
 
+@pytest.mark.parametrize("role", [None, "user"])
+def test_images_response_to_prompts_reuses_cached_images_in_order(role):
+    from TIYA.llm.model import ImagePrompt, ImageResponseItem, ImagesResponse, Prompts
+
+    resources = [
+        MediaRef(hash_name="first", mime_type="image/png", width=16, height=16),
+        MediaRef(hash_name="second", mime_type="image/jpeg", width=32, height=32),
+    ]
+    response = ImagesResponse(
+        data=[ImageResponseItem(image=resource) for resource in resources],
+        request_id="original-request",
+        usage={"output_tokens": 30},
+    )
+    prompts = response.to_prompts() if role is None else response.to_prompts(role=role)
+
+    assert isinstance(prompts, Prompts)
+    assert prompts.role == (role or "assistant")
+    assert [prompt.hash_name for prompt in prompts] == ["first", "second"]
+    for prompt, resource in zip(prompts, resources, strict=True):
+        assert isinstance(prompt, ImagePrompt)
+        assert prompt.role == (role or "assistant")
+        assert prompt.resource is resource
+        assert prompt.image_input is None
+
+    assert response.request_id == "original-request"
+    assert response.usage == {"output_tokens": 30}
+
+
+def test_empty_images_response_to_prompts_returns_empty_container():
+    from TIYA.llm.model import ImagesResponse, Prompts
+
+    prompts = ImagesResponse().to_prompts()
+
+    assert isinstance(prompts, Prompts)
+    assert not prompts
+    assert prompts.role == "assistant"
+
+
 def image():
     data = BytesIO()
     Image.new("RGBA", (16, 16)).save(data, "PNG")

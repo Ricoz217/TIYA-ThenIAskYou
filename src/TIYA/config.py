@@ -176,13 +176,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
                     "key": "YOUR_DEEPSEEK_API_KEY",
                     "dialect": "deepseek",
                     "error_dialect": "deepseek",
-                    "expires_after_seconds": 86400,
+                    "expires_after_seconds": 10800,
                 },
                 "openai": {
                     "endpoint": "https://api.openai.com/v1/files",
                     "key": "YOUR_OPENAI_API_KEY",
                     "dialect": "openai",
-                    "expires_after_seconds": 86400,
+                    "expires_after_seconds": 10800,
                 },
                 "anthropic": {
                     "endpoint": "https://api.anthropic.com/v1/files",
@@ -608,7 +608,6 @@ DEFAULT_SETTING: dict[str, Any] = {
         "TFIDFVectorDimension": 262_144,
     },
 }
-
 COMMENT: dict[str, Any] = {
     TITLE_BASE: {
         "BotInfo": {
@@ -679,23 +678,23 @@ COMMENT: dict[str, Any] = {
     },
     TITLE_LLM: {
         "_comment": {
-            "schema_version": "LLM 配置格式版本，仅支持 2；旧配置须人工填写新版，不自动迁移。",
-            "Providers": "\n连接配置树。分类选择协议实现，连接名可自定；仅保留需要的示例，填写真实 Key 和模型 ID。\nendpoint 优先于 base_url；同一服务在不同分类下分别填写连接，不按连接名猜测供应商。",
+            "schema_version": "不要改",
+            "Providers": "以下配置 endpoint 和 base_url 二选一，优选写确定的 endpoint，因为自动拼接不一定对",
             "LLM_List": "\n字典键为预设名，供 chat_model/agent_model/MemoryModel 等引用。YourModelPresetName 对应上方默认引用，可改名后同步修改。\nmax_context 的 128000 仅为示例，按实际模型/网关填写；定价在独立数据库维护，不在这里填写 price。",
         },
         "Providers": {
             "_comment": {
-                "chat_completions": "标准 Chat Completions；可用于现有主对话和 Memory。",
-                "responses_api": "Responses 协议；只对已确认有状态续接的连接启用父 response ID。",
-                "anthropic_api": "普通 Anthropic Messages，不使用托管 Agent/Session。",
-                "files_api": "独立上传连接，认证与模型连接分别填写；是否引用由预设决定。",
-                "image_generation": "独立生图/编辑连接，由 ImagesClient 使用，不作为 Chat 候选，也不启用 Responses 内置工具。",
+                "chat_completions": "标准 Chat Completions API，大部分兼容",
+                "responses_api": "Responses API。",
+                "anthropic_api": "Anthropic Messages API",
+                "files_api": "Files API",
+                "image_generation": "目前主要做了 openai image 2.5 的适配，其他生图要自己拓展 provider 实现逻辑",
             },
             "chat_completions": {
                 "deepseek": {
                     "_comment": {
-                        "error_dialect": "选择供应商错误码表；连接名不参与判断。",
-                        "llm_params": "连接级原生请求参数默认值；预设同名字段覆盖，嵌套值整体替换。",
+                        "error_dialect": "不要改，也不要删",
+                        "llm_params": "API 要求的其他参数，按照 API 文档写",
                     },
                     "chat_completions": {
                         "_comment": {"image_file_format": "DeepSeek 的图片 file_id 内容块格式；不适用于官方 OpenAI Chat。"}
@@ -718,7 +717,7 @@ COMMENT: dict[str, Any] = {
             "anthropic_api": {
                 "anthropic": {
                     "_comment": {
-                        "prompt_caching": "每次请求默认补充 cache_control，让服务端自动选择缓存点；已隐式缓存或不支持此参数的兼容服务可设 false。llm_params.cache_control 的显式值仍优先。"
+                        "prompt_caching": "一般不用动"
                     }
                 }
             },
@@ -726,16 +725,12 @@ COMMENT: dict[str, Any] = {
                 "deepseek": {
                     "_comment": {
                         "dialect": "Files 请求/响应格式，与模型协议分类分开选择。",
-                        "expires_after_seconds": "远端 TTL，秒；示例保留一天，不影响本地 file_cache 的现有 TTL。",
+                        "expires_after_seconds": "远端 TTL，秒",
                     }
-                },
-                "openai": {
-                    "_comment": {"expires_after_seconds": "请求远端保留一天；不支持此参数的服务可显式填 null。"}
                 },
                 "anthropic": {
                     "_comment": {
                         "anthropic_beta": "Files beta 头，按使用的服务版本确认。",
-                        "expires_after_seconds": "该示例不发送远端过期参数；本地文件仍按现有 TTL 清理。",
                     }
                 },
             },
@@ -750,8 +745,8 @@ COMMENT: dict[str, Any] = {
         "LLM_List": {
             "YourModelPresetName": {
                 "_comment": {
-                    "auto_compress_rate": "交给上游业务的压缩水位比例；Runtime 不自动压缩或截断。",
-                    "proxy_mode": "空字符串表示不使用代理；也可填 BOT基本配置.Proxies 中的名字，如 GlobalProxy。",
+                    "auto_compress_rate": "允许可使用的最大上下文比例，内部会截断至最大值 0.9",
+                    "proxy_mode": "代理预设，留空为不使用代理",
                     "providers": "有序候选列表，首项首选，其后按顺序 fallback；只用一个服务就保留一项。",
                 },
                 "providers": [
@@ -759,7 +754,7 @@ COMMENT: dict[str, Any] = {
                         "_comment": {
                             "llm": "分类:连接名:模型ID；前两段定位 Providers，剩余部分是完整模型 ID。",
                             "llm_params": "目标接口的原生请求参数，直接发送；不把 max_token 自动改名。",
-                            "max_context": "本候选的上下文水位，token 数；按实际模型/服务填写。",
+                            "max_context": "模型支持的最大上下文，如实填写就行",
                             "context_history_mode": "full 发送完整历史；auto 仅在支持时续接；previous_response_id 显式请求续接。",
                             "files_api": "分类:连接名；可删除此项以直接内联图片，上传失败按 Provider 策略回退。",
                         }
@@ -767,7 +762,6 @@ COMMENT: dict[str, Any] = {
                 ],
             },
             "Responses示例": {
-                "_comment": {"providers": "演示 Responses → Chat Completions 的有序 fallback，按实际需求删除或调整。"},
                 "providers": [
                     {
                         "_comment": {

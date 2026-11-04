@@ -27,6 +27,7 @@ from .config_model import (
 )
 
 type MediaKind = Literal["path", "url", "bytes", "base64", "remote"]
+type Role = Literal["user", "tool", "assistant", "function", "system"]
 
 
 def stable(value: object) -> dict | list | object:
@@ -88,11 +89,11 @@ class BasePrompt:
 
     estimated_tokens: int | None  # 当前进程的 o200k 估算缓存，非供应商 usage。
 
-    def __init__(self, role: str, contain_type: str, create_time: str = None):
+    def __init__(self, role: Role, contain_type: str, create_time: str = None):
         if create_time is None:
             create_time = str(time.time())
 
-        self.role: str = role
+        self.role: Role = role
         self.contain_type: str = contain_type
         self.time: str = create_time
         self.id: str = str(next_time_id())
@@ -195,7 +196,7 @@ class SystemPrompt(BasePrompt):
 
 class TextPrompt(BasePrompt):
     def __init__(
-        self, role: str, text: str, reasoning_content: str = "", create_time: str = None
+        self, role: Role, text: str, reasoning_content: str = "", create_time: str = None
     ):
         super().__init__(role, "TEXT", create_time)
         self.text: str = text
@@ -254,7 +255,7 @@ class ImagePrompt(BasePrompt):
 
     def __init__(
         self,
-        role: str,
+        role: Role,
         image: str | Path | bytes | None = None,
         name: str = "",
         create_time: str = None,
@@ -1336,3 +1337,17 @@ class ImagesResponse:
     quality: str | None = None
     size: str | None = None
     safety_identifier: str | None = None
+
+    def to_prompts(self, role: Role = "assistant") -> Prompts:
+        """按结果顺序将已缓存图片包装为 ImagePrompt，返回新的 Prompts。
+
+        只复用缓存 ID 和不可变 MediaRef，不读取文件、不重新入库或写入 Context。
+        usage、request_id 等请求信息保留在本响应中；无图片时返回空容器。
+        """
+        prompts = Prompts(role=role)
+        for item in self.data:
+            image = ImagePrompt(role, hash_name=item.image.hash_name)
+            image.resource = item.image
+            prompts.append(image)
+
+        return prompts

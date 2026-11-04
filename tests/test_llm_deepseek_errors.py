@@ -16,10 +16,10 @@ from TIYA.llm.usage import Ledger
 
 @pytest.mark.parametrize("code", [None, "invalid_request_error", "rate_limit_exceeded", "vendor_detail"])
 @pytest.mark.parametrize("status,category,safe,retryable,fallback", [
-    (400, "invalid_request", True, False, True),
+    (400, "invalid_request", True, False, False),
     (401, "authentication", True, False, True),
     (402, "quota", True, False, True),
-    (422, "invalid_request", True, False, True),
+    (422, "invalid_request", True, False, False),
     (429, "rate_limit", True, True, True),
     (500, "unavailable", False, False, False),
     (503, "unavailable", False, False, False),

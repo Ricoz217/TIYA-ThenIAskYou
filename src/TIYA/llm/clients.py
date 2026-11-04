@@ -287,17 +287,9 @@ class ImagesClient(ServiceClient):
         candidate.refresh_fingerprints()
         return candidate
 
-    def pricing_identity(
-        self, model: str, *, operation: str = "images_generate", preset: str = ""
-    ) -> dict[str, str]:
-        """取得定价目录所需绑定；生成/编辑分别使用 images_generate/images_edit。"""
-        route = self._candidate(model)
-        return {
-            "preset": preset,
-            "scope": route.scope,
-            "model": model,
-            "operation": operation,
-        }
+    def pricing_identity(self, model: str) -> str:
+        """返回 分类:连接名:模型ID，与 Chat 的价格查询使用同一契约。"""
+        return f"{self.provider_ref}:{model}"
 
     async def generate(
         self,
@@ -436,13 +428,14 @@ class ImagesClient(ServiceClient):
         )
         identity = {
             "preset": preset,
+            "provider": route.ref,
             "scope": route.scope,
             "model": request.model,
             "operation": operation,
         }
         call_id = await run_sync(self.ledger.begin_call, preset)
         try:
-            snapshot = await run_sync(self.prices.snapshot, identity)
+            snapshot = await run_sync(self.prices.snapshot, route.ref)
         except (sqlite3.Error, OSError, ValueError):
             snapshot = None
         request_id = await run_sync(

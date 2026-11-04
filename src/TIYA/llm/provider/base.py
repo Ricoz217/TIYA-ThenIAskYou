@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import asyncio
+import json
 import math
 import httpx
 
@@ -9,10 +10,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import NoReturn, Protocol
 
+from TIYA.logger import get_logger
+
 from ..config_model import JsonValue, LLMConfig, Params
 from ..gateway import HTTPFailure, WireRequest
 from ..model import Context, ImagePrompt, MediaRef, Prompts
 from .error_codes import RecoveryAction, extract_error, match_error
+
+
+_log = get_logger()
 
 
 def merge_headers(*mappings: Mapping[str, str] | None) -> dict[str, str]:
@@ -56,6 +62,11 @@ class ProviderFailure(Exception):
         """携带已归一化的供应商失败，保留原始证据供账本和恢复使用。"""
         super().__init__(f"{failure.category}: {failure.code}")
         self.failure = failure
+        if failure.raw:
+            _log.debug(
+                f"LLM Provider 错误: category={failure.category}; code={failure.code}\n"
+                f"原始错误:\n{json.dumps(failure.raw, ensure_ascii=False, default=str)}"
+            )
 
 
 def classify_error(

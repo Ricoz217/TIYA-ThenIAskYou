@@ -44,7 +44,8 @@ UNKNOWN = ErrorRule("unknown", remote_state="unknown")
 QUOTA = ErrorRule("quota", fallback_allowed=True)
 RATE_LIMIT = ErrorRule("rate_limit", retryable=True, fallback_allowed=True)
 AUTHENTICATION = ErrorRule("authentication", fallback_allowed=True)
-INVALID_REQUEST = ErrorRule("invalid_request", fallback_allowed=True)
+# 非法消息/参数应由上层修正或回滚；换模型通常仍会携带同一份非法上下文。
+INVALID_REQUEST = ErrorRule("invalid_request")
 UNAVAILABLE = ErrorRule("unavailable", remote_state="unknown")
 CONTEXT_OVERFLOW = ErrorRule("context_overflow", recovery="context_overflow")
 PARENT_INVALID = ErrorRule(

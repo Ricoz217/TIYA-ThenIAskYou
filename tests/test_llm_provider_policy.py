@@ -21,7 +21,7 @@ from TIYA.utils import fingerprint
     (429, "rate_limit_exceeded", True, True, "none"),
     (429, "insufficient_quota", False, True, "none"),
     (401, "invalid_api_key", False, True, "none"),
-    (400, "invalid_request_error", False, True, "none"),
+    (400, "invalid_request_error", False, False, "none"),
     (400, "context_length_exceeded", False, False, "context_overflow"),
     (400, "invalid_previous_response_id", False, True, "rebuild_parent"),
     (400, "file_expired", False, True, "refresh_file"),

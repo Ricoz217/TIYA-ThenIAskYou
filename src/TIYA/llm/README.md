@@ -174,6 +174,10 @@ Anthropic Messages Provider 每次请求默认补充顶层 `cache_control: {type
 
 供应商码表集中于 `provider/error_codes.py`：`ErrorDialect` 声明错误对象路径、码字段、成功码和明确的 HTTP 覆盖规则，`ErrorRule` 声明分类、远端状态、重试/切换权限、恢复动作及资源字段。依次匹配业务码、方言 HTTP 规则和通用 HTTP 规则；未知方言不借用其他供应商业务码。未明确覆盖时，带未知业务码的 429 不直接当作可重试限流；DeepSeek 官方 429 按其文档解释为请求速率/并发限制，500/503 仍保持执行状态不明、不自动重发。连接配置只选择 `error_dialect`，不需要携带整份码表。特殊协议仍可覆盖 Provider 方法。
 
+普通 `invalid_request`（如 HTTP 400/422 的非法消息或参数）默认不原样重试、不 fallback，也不推进会话 CD。Chat 返回 None 并保留未提交状态，由上游业务决定回滚或修正上下文；底层不擅自删除历史。父 response/file 引用失效等明确的专项错误仍按各自 Provider 规则恢复。HTTP 错误日志包含状态与服务端 message，生成请求账本的 `diagnostic.error` 保留原始错误体，便于定位具体的 role/tool_call_id/参数错误。
+
+失败响应的完整详情写入 Logger 的 `debug.log`：HTTP 状态、服务端请求 ID 和原始响应文本都保留，覆盖 JSON、流式、文件与图片下载；非 JSON 错误页面还保存在 HTTPFailure.body.response_text。ProviderFailure 的原始业务错误对象也会写 DEBUG。即使之后恢复/重试/fallback 成功，先前的失败详情仍保留；不记录正常请求报文、请求正文或认证头。ERROR 保留终止错误的简短说明，月度状态栏格式不变。日志目录仍取决于启动工作目录，手动烟测从 scripts/manual_tests 启动时写入该目录下的 logs。
+
 对话解码器 `feed()` 返回本事件新增的 `StreamText`（或无文本），Runtime 将其写入当前 logger 的 `LLM：` 日志流，遵循 `log_off`，在完成、异常和取消时关闭。推理到正文的切换提示沿用旧行为，不写入图片载荷或工具参数。Chat 流只缓存收到的片段，结束时用 join 拼接文本/推理/工具字段；图文混排仅合并相邻文本，保留图片位置，不深复制收到的内容块。
 
 Runtime 的 `_recover()` 只执行恢复动作，`_retry_candidate()` 只管理被允许的重试次数及等待。取消、部分输出、已观察到真实消耗、已创建但终态不明的后台任务，以及已完成生成后的本地错误，都不会自动重建生成请求；Provider 的允许字段不能覆盖这些事实。账本诊断保留 Provider 的 retryable/fallback_allowed/recovery 和实际 resend_safe，不修改异常中原始 Provider 建议。
@@ -196,6 +200,7 @@ async with ImagesClient(settings) as images:
         model="YOUR_IMAGE_2_5_MODEL_ID", prompt="生成一张图片", output_format="png",
     ))
     cache_id = response.data[0].image.hash_name
+    prompts = response.to_prompts()  # 按顺序包装为 assistant ImagePrompt，无文件读写。
     edited = await images.edit(ImageEditRequest(
         model="YOUR_IMAGE_2_5_MODEL_ID", prompt="根据参考图修改目标图的局部",
         images=[MediaRef(hash_name=target_id), MediaRef(hash_name=reference_id)],
@@ -239,7 +244,7 @@ FilesClient/ImagesClient 的 client_params 按连接节点默认值与构造参�
 
 Files 上传默认请求远端保留 86400 秒，可通过 `expires_after_seconds` 覆盖；显式设为 `null` 不发送自动到期参数，适用于不支持 TTL 的中转。OpenAI/DeepSeek 使用 `expires_after[anchor/seconds]`，Anthropic 使用 `expires_in_seconds`。以服务端返回的 `expires_at` 为准；没有返回时，以创建时间和请求 TTL 计算本地引用的保守刷新时间，不表示已确认服务端执行了删除。协议参考：[OpenAI](https://developers.openai.com/api/reference/resources/files/methods/create)、[DeepSeek](https://api-docs.deepseek.com/api/create-file/)、[Anthropic](https://platform.claude.com/docs/en/build-with-claude/files)。
 
-`ImagesClient(settings, provider_ref="image_generation:连接名")` 可沿用配置树中的连接引用；`settings` 仍须显式传入该连接节点，`provider_ref` 选择协议实现并标识定价作用域，不自动读取全局配置。默认使用 `image_generation:direct`。`images.pricing_identity(model, operation="images_generate", preset="")` 返回实际使用的定价绑定。生成与编辑分别使用 images_generate/images_edit。流式预览回调接收的也是已缓存的 `ImageResponseItem`，预览不会计为最终图片。
+`ImagesClient(settings, provider_ref="image_generation:连接名")` 可沿用配置树中的连接引用；`settings` 仍须显式传入该连接节点，`provider_ref` 选择协议实现并作为价格引用前缀，不自动读取全局配置。默认使用 `image_generation:direct`。`images.pricing_identity(model)` 返回 `image_generation:连接名:模型ID`，生成与编辑按同一模型引用查询价格；账本仍用 images_generate/images_edit 区分操作。流式预览回调接收的也是已缓存的 `ImageResponseItem`，预览不会计为最终图片。
 
 ## 状态与记账
 
@@ -261,6 +266,12 @@ Runtime 的账本 estimated 使用 characters-div3-image1440-v1：字符数约�
 
 `Ledger` 提供 begin_call/begin_request/observe_usage/finish_request、分页 query_requests/query_observations 和 summarize。旧 `LLM_usage` 的日志和统计入口通过适配器读取 SQLite。JSON 仅首次备份并导入历史聚合，不将历史聚合伪造成逐请求记录，也不重复累计 last_record。
 
+状态栏和 `usage_now()` 的月度展示通过 `MonthlyOverview` 汇总：首次或跨月读取当月明细，之后只重读本进程正式接口修改的请求。每次用量观察/请求结束刷新，价格发布也会刷新；不逐 token 更新，不启动周期任务。进程内只缓存当月的汇总贡献及无单价请求所需计量，重启从账本重建。旧聚合导入结果单独缓存，仅在新增导入后重读；多个账本实例操作同一文件时共享失效通知，不承诺感知其他进程或手工 SQL 改动。
+
+当月原本没有价格快照的请求，按当前匹配单价临时估价，按每条请求的用量分别选择阶梯。展示的 `cost` 包含这部分费用，`temporary_cost` 在数据中单列其金额；状态栏保持旧版格式，只显示用量、缓存命中率和金额，不额外展示估算或未知提示。新增单价不回填原始 `price_snapshot/charge`，原来已有价格的请求仍使用冻结费用。临时结果只驻留内存，不修改原始用量、观察证据或费用记录。旧版导入聚合缺少完整连接身份，沿用原统计，不猜测新价格绑定。
+
+`LLMUsage.overview("MONTH")` 使用上述展示口径；`Ledger.summarize()` 以及 DAY/YEAR/ALL 查询继续反映账本原始费用，便于审计。自定义 `LLMUsage(..., prices=catalog)` 可显式绑定展示价库；全局日志默认绑定 `data/llm/pricing.sqlite3`。通过 `PriceCatalog.publish()` 发布后立即刷新已建立的月度视图，未来生效价格在之后首次刷新到达生效时间时启用。
+
 业务返回的 `Prompts.usage` 和累计 `Context.usage` 使用新版 `TokenUsage`，定义在 `usage_model.py`，原导入入口保持不变。它保存已消费响应的用量快照，完整失败尝试与长期费用仍查询账本。
 
 - `input_t/output_t/cache_hit_t/total_t`：原业务读取方式，按每次请求的有效值累计；缺失时兼容返回零。
@@ -273,24 +284,25 @@ Runtime 的账本 estimated 使用 characters-div3-image1440-v1：字符数约�
 
 用量存档 v2 保留旧扁平字段并新增 samples。旧 Context 的扁平用量按 unknown 读取，不补造历史请求 ID。Context 追加和协议规范化保留各轮的用量归属，不重复累计；Memory 源码无需修改。
 
-定价通过 `PriceCatalog.publish(identity, rules, source=...)` 维护，不写回连接 YAML。文本请求 identity 使用已转换配置中的实际候选：
+定价通过 `PriceCatalog.publish(ref, rules, source=...)` 维护，不写回连接 YAML。`ref` 就是配置中的完整 `分类:连接名:模型ID`，Runtime 按实际选中的候选自动查价，不需要额外绑定，也不依赖预设名、Key 或账户 scope。例如：
 
 ```python
-settings = parse_llm_setting(name)
-candidate = settings.candidates[index]
-identity = {"preset": name, "scope": candidate.scope, "model": candidate.model, "operation": candidate.provider_type}
+from TIYA.config import DATA_DIR
+from TIYA.llm.pricing import PriceCatalog
+
+catalog = PriceCatalog(DATA_DIR / "llm" / "pricing.sqlite3")
+ref = "chat_completions:deepseek:deepseek-flash"
 rules = {
     "currency": "CNY", "tier_mode": "whole", "threshold": "input",
     "units": {"input_uncached": 1000000, "cached": 1000000, "output": 1000000},
     "tiers": [
-        {"up_to": 128000, "rates": {"input_uncached": "1", "cached": "0", "output": "2"}},
-        {"rates": {"input_uncached": "2", "cached": "0", "output": "4"}},
+        {"rates": {"input_uncached": "2", "cached": "0.04", "output": "8"}},
     ],
 }
-catalog.publish(identity, rules, source="经核对的价格来源")
+catalog.publish(ref, rules, source="经核对的价格来源")
 ```
 
-以上数字只是示例。whole 按完整输入所处区间选择整次请求价格；progressive 按同一个计量项逐段计费。输入/输出总量与子项不能重复定价。可使用 images、input_image、output_image 等计量项；没有匹配价格时费用未知，仍然记账。每次请求冻结价格版本，后续调价不改旧请求。异步调用方通过 `llm.workers.run_sync()` 执行同步维护/查询，避免阻塞事件循环。
+同一完整引用可被多个预设共用；协议分类或连接名不同就是不同的价格 ID，不猜域名、不跨服务商套用。DS 当前固定采用高峰价，不实现峰谷切换。whole 按完整输入所处区间选择整次请求价格；progressive 按同一个计量项逐段计费。输入/输出总量与子项不能重复定价。可使用 images、input_image、output_image 等计量项；没有匹配价格时费用未知，仍然记账。每次请求冻结价格版本，后续调价不改旧请求。异步调用方通过 `llm.workers.run_sync()` 执行同步维护/查询，避免阻塞事件循环。
 
 ## 线程资源与 Runtime 阅读入口
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,10 @@ from copy import deepcopy
 from TIYA.config import DATA_DIR
 from TIYA.logger import get_logger
 from TIYA.utils import fingerprint
+from .pricing import PriceCatalog
 from .usage import Ledger
+from .usage_summary import MonthlyOverview, MonthlySummary
+from .config_model import Params
 import shutil
 import threading
 
@@ -250,15 +254,24 @@ class UsageStorage:
 class LLMUsage:
     """Legacy aggregate/log API backed by a durable request ledger."""
 
-    def __init__(self, data_file: Path, update_callback=None):
+    def __init__(
+        self,
+        data_file: Path,
+        update_callback: Callable[[], None] | None = None,
+        *,
+        prices: PriceCatalog | None = None,
+    ) -> None:
+        """借用可选价库，仅为月度展示临时估价；原始账本不补写价格。"""
         self.data_file = Path(data_file)
         self.callback = update_callback
-        self._ledger = None
+        self.prices = prices
+        self._ledger: Ledger | None = None
         self._ledger_lock = threading.Lock()
-        self._last_record = {}
+        self._last_record: dict[str, UsageStorage] = {}
+        self._monthly_overview: MonthlyOverview | None = None
 
     @property
-    def ledger(self):
+    def ledger(self) -> Ledger:
         with self._ledger_lock:
             if self._ledger is None:
                 path = self.data_file.with_suffix(".sqlite3")
@@ -396,8 +409,23 @@ class LLMUsage:
             "last_record": {k: v.to_dict() for k, v in self._last_record.items()},
         }
 
-    def overview(self, period="MONTH"):
+    def overview(self, period: str = "MONTH") -> MonthlySummary | Params:
+        """MONTH 使用增量展示视图（含临时估价）；其余范围保持原账本查询。"""
         now = datetime.now()
+        if period == "MONTH":
+            ledger = self.ledger
+            with self._ledger_lock:
+                if self._monthly_overview is None:
+                    self._monthly_overview = MonthlyOverview(
+                        ledger,
+                        self.prices,
+                        callback=lambda: self.callback() if self.callback else None,
+                    )
+
+                view = self._monthly_overview
+
+            return view.summary(at=now.timestamp())
+
         starts = {
             "DAY": now.replace(hour=0, minute=0, second=0, microsecond=0),
             "MONTH": now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
@@ -447,7 +475,10 @@ class LLMUsage:
 
 
 _GLOBAL_FILE = DATA_DIR / "token_usage" / "usage.json"
-_GLOBAL_USAGE = LLMUsage(_GLOBAL_FILE)
+_GLOBAL_USAGE = LLMUsage(
+    _GLOBAL_FILE,
+    prices=PriceCatalog(DATA_DIR / "llm" / "pricing.sqlite3"),
+)
 
 
 def _auto_flush():
@@ -463,21 +494,16 @@ def _auto_flush():
     output += f"输入(命中缓存): [{cached_t:,}]; "
     reported_input = usage.get("cache_basis", {}).get("input", 0)
     reported_cached = usage.get("cache_basis", {}).get("cached", 0)
-    output += f"缓存命中率(已报告): [{reported_cached / reported_input if reported_input else 0:.2%}]"
-    estimated = usage.get("input", {}).get("estimate", 0) + usage.get("output", {}).get(
-        "estimate", 0
-    )
-    if estimated:
-        output += f"; 含本地估算Token: [{estimated:,}]"
-    if usage.get("unknown_cost_requests"):
-        output += f"; 费用未知: [{usage['unknown_cost_requests']:,} 请求]"
+    output += f"缓存命中率: [{reported_cached / reported_input if reported_input else 0:.2%}]"
 
     if cost:
         output += " | "
-        if CNY := cost.get("CNY", 0):
+        if "CNY" in cost:
+            CNY = cost["CNY"]
             output += f"CNY: [{CNY:,.2f}]"
 
-        if USD := cost.get("USD", 0):
+        if "USD" in cost:
+            USD = cost["USD"]
             output += f"USD: [{USD:,.2f}]"
 
     _status.update(output)
