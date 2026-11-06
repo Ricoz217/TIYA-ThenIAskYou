@@ -489,6 +489,10 @@ class Chat:
             return task.response
 
         finally:
+            if not task.committed and not self.log_off:
+                elapsed = max(0.0, time.monotonic() - task.created_monotonic)
+                self._config.logger.info(f"耗时：[{elapsed:.2f}]秒")
+
             if not self._config.keep_alive:
                 try:
                     await self._close_clients()
@@ -505,17 +509,31 @@ class Chat:
             self._running.set()
 
     def _publish_committed(self, task: AskTask, response: Prompts) -> None:
-        """内存提交回调：同步发布成功结果，不等待检查点和连接清理。"""
-        response._duration = max(0.0, time.time() - float(task.prompts.time))
+        """发布成功结果与本轮摘要；耗时截至结果可用，不等待检查点和连接清理。"""
+        response._duration = max(0.0, time.monotonic() - task.created_monotonic)
         task.response = response
         task.committed = True
         task.outcome.status = "completed"
         task.outcome.committed = True
         self._last_usage = response.usage.copy() if response.usage is not None else TokenUsage()
-        self._context_use = self._last_usage.total_t
+        usage = self._last_usage.effective
+        self._context_use = int(usage.get("total") or 0)
         self._usage_context_signature = self._context.signature
         self._usage_scope = task.pending.route.scope
         task.event.set()
+
+        if not self.log_off:
+            # 复用 Runtime 已选好的真实/估算计量，不为显示再次估算或查询账本。
+            input_t = int(usage.get("input") or 0)
+            output_t = int(usage.get("output") or 0)
+            cached_t = int(usage.get("cached") or 0)
+            self._config.logger.info(
+                f"本轮消耗 | 总tokens: [{self._context_use:,}]; "
+                f"输入: [{input_t:,}]; 输出: [{output_t:,}]; "
+                f"输入(缓存): [{cached_t:,}]; "
+                f"缓存命中率: [{cached_t / input_t if input_t else 0:.2%}]"
+            )
+            self._config.logger.info(f"耗时：[{response._duration:.2f}]秒")
 
     def _current_context_usage(self) -> TokenUsage | None:
         """借用仍对应当前历史的最近计量；模型/连接来源由实际候选再校验。"""
@@ -571,6 +589,7 @@ class Chat:
         :param timeout: 超时/秒
         :return: 响应的 Prompts 对象
         """
+        started_at = time.monotonic()
         if self._closed or not new_ask:
             return None
 
@@ -604,6 +623,7 @@ class Chat:
             identifier = uuid4().hex
 
         task = AskTask(copy.deepcopy(new_ask), timeout, identifier)
+        task.created_monotonic = started_at
         self._ask_tasks[identifier] = task
         self._sequence += 1
         self._queue.put_nowait((0 if no_wait else 1, self._sequence, task))

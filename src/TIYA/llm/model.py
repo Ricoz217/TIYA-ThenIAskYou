@@ -1230,9 +1230,7 @@ class CallOutcome:
 
 @dataclass(slots=True)
 class AskTask:
-    """
-    装饰请求任务
-    """
+    """调度中的一次请求；单调时钟起点用于包含排队时间的总耗时，不随消息存档。"""
 
     prompts: Prompts
     timeout: float
@@ -1245,6 +1243,7 @@ class AskTask:
     cancelled: bool = False
     committed: bool = False
     outcome: CallOutcome | None = None
+    created_monotonic: float = field(default_factory=time.monotonic, init=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
