@@ -13,9 +13,10 @@ import httpx
 from collections.abc import Awaitable, Callable
 from io import BytesIO
 from PIL import Image
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from TIYA.config import DATA_DIR
+from TIYA.logger import get_logger
 from TIYA.utils import fingerprint, parse_proxies_to_httpx
 from .config_model import LLMConfig, Params
 from .gateway import Frame, Gateway
@@ -35,6 +36,11 @@ from .settings import model_config_from_settings
 from .state import StateStore
 from .usage import Ledger
 from .workers import run_sync
+
+if TYPE_CHECKING:
+    from .usage_compat import LLMUsage
+
+_log = get_logger()
 
 type PreviewCallback = Callable[[ImageResponseItem], Awaitable[None] | None]
 
@@ -248,8 +254,12 @@ class ImagesClient(ServiceClient):
         ledger: Ledger | None = None,
         state: StateStore | None = None,
         prices: PriceCatalog | None = None,
+        usage_record: list[LLMUsage] | None = None,
     ) -> None:
-        """settings 为显式连接节点；provider_ref 为分类:连接名，用于选实现及定价身份。"""
+        """settings 为显式连接节点；provider_ref 为分类:连接名，用于选实现及定价身份。
+
+        usage_record 可将生图请求镜像到附加账本，不包含关联 Files 的辅助操作。
+        """
         super().__init__(
             settings,
             client=client,
@@ -263,6 +273,7 @@ class ImagesClient(ServiceClient):
             raise ValueError("图片连接引用必须是 分类:连接名")
         self.provider_ref = provider_ref
         self._files_client: FilesClient | None = None
+        self._usage_record = usage_record if usage_record is not None else []
 
     async def close(self) -> None:
         """关闭自建的图片/Files 连接；借入的客户端仍由调用方关闭。"""
@@ -361,7 +372,7 @@ class ImagesClient(ServiceClient):
                 )
                 dimensions.append((width, height))
                 images.append(
-                    MediaRef("bytes", content, mime, width=width, height=height)
+                    MediaRef("bytes", content, mime, width=width, height=height, filename=ref.filename)
                 )
 
             if guide:
@@ -407,7 +418,7 @@ class ImagesClient(ServiceClient):
                         return ref
 
                     if files is not None:
-                        uploaded = await files.upload(ref)
+                        uploaded = await files.upload(ref, filename=ref.filename or "image")
                         return MediaRef("remote", uploaded.file_id, ref.mime_type)
 
                     import base64
@@ -444,7 +455,7 @@ class ImagesClient(ServiceClient):
             identity,
             {
                 "algorithm": "image-request-v1",
-                "images": request.n or 1,
+                "images": int((wire.json or wire.data or {}).get("n") or 1),
                 "completeness": "output_unknown",
             },
             price_snapshot=snapshot,
@@ -516,6 +527,30 @@ class ImagesClient(ServiceClient):
             raise
         finally:
             await run_sync(self.ledger.finish_call, call_id, "finished")
+            await self._mirror_usage(request_id)
+
+    async def _mirror_usage(self, request_id: str) -> None:
+        """镜像本次生图账目到附加账本；失败不覆盖结果、不触发重发。"""
+        if not self._usage_record:
+            return
+
+        try:
+            row = await run_sync(self.ledger.get_request, request_id)
+
+        except Exception as exc:
+            _log.warning(f"附加用量镜像读取失败，主账本已保留 request={request_id}: {type(exc).__name__}: {exc}")
+            return
+
+        for subscriber in tuple(self._usage_record):
+            try:
+                target = await run_sync(lambda: subscriber.ledger)
+                if target.db.path.resolve() == self.ledger.db.path.resolve():
+                    continue
+
+                await run_sync(target.mirror_request, row)
+
+            except Exception as exc:
+                _log.warning(f"附加用量记录器写入失败，主账本已保留 request={request_id}: {type(exc).__name__}: {exc}")
 
     async def _usage(self, request_id, raw, provider):
         values = provider.usage_values(raw)

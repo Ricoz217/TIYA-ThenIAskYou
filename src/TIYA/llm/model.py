@@ -1263,6 +1263,7 @@ class MediaRef:
     height: int | None = None
     expires_at: float | None = None
     hash_name: str = ""  # file_cache 的内容标识，不再二次哈希文件内容。
+    filename: str | None = None  # 上传文件名，不参与内容身份；省略时由传输层命名。
 
 
 @dataclass

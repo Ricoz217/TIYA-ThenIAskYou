@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import fields
+from pathlib import Path
 
 from TIYA.utils import fingerprint
 
@@ -133,11 +134,15 @@ class Images(Provider):
             if ref.kind != "bytes":
                 raise ValueError("multipart 图片尚未物化")
 
+            filename = ref.filename or f"image_{index}"
+            if not Path(filename).suffix:
+                filename += "." + (ref.mime_type or "image/png").split("/")[-1]
+
             files.append(
                 (
                     "image[]",
                     (
-                        f"image_{index}.{ref.mime_type.split('/')[-1]}",
+                        filename,
                         ref.value,
                         ref.mime_type,
                     ),

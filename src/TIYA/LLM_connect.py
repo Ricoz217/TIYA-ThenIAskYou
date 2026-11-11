@@ -28,6 +28,7 @@ from .llm.model import (
 )
 from .llm.chat import Chat
 from .llm.clients import ImagesClient, FilesClient
+from .llm.image_generator import ImageGen
 from .llm.tool_schema import build_tool_payloads
 from .llm.settings import parse_llm_setting
 from .llm.legacy_media import (
@@ -64,6 +65,7 @@ __all__ = [
     "ImageResponseItem",
     "ImagesResponse",
     "ImagesClient",
+    "ImageGen",
     "FilesClient",
     "build_tool_payloads",
     "parse_llm_setting",
