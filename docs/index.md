@@ -2,7 +2,7 @@
 
 TIYA（Then I Ask You）是一个以 QQ 群聊和私聊为交互环境的个人 AGI 工程 Demo。它的重点不是提供一个开箱即用的聊天机器人产品，而是验证一组可以组合工作的工程能力：Agent 主控、异步任务机、上下文压缩、长期记忆、Persona，以及按需加载的 SKILL。
 
-本项目当前对接 NapCat / OneBot 消息环境，使用兼容 OpenAI Chat Completions 接口的模型作为主要推理后端。
+本项目对接 NapCat / OneBot 消息环境。模型通信层支持 Chat Completions、Responses 和 Anthropic Messages，并提供独立的 Files 与 Images 客户端。
 
 ## 项目看点
 
@@ -22,8 +22,8 @@ TIYA（Then I Ask You）是一个以 QQ 群聊和私聊为交互环境的个人 
 5. [群聊相关性与轻量 NLP](relatedness.md)：了解消息图、话题、新词、对话链与低配适应。
 6. [SKILL 系统](skills.md)：了解能力如何被描述、发现、加载并注册为工具。
 7. [真实运行与持续演进](real-world-operation.md)：了解在线 Bot、会话隔离和测试反馈循环。
-8. [Agent 容错机制：真实运行日志审计](fault-tolerance-log-audit-2026-07-31-to-2026-08-02.md)：用近三天真实日志展示参数纠错、有限重试、失败跳过和上下文恢复。
-9. [综合任务执行展示：GitHub Agent Memory 调研与群文件交付](agent-memory-research-task-audit-2026-07-31.md)：展示按需加载、并行检索、异步回收、Markdown 生成、群文件交付和用户验收。
+8. [容错案例：参数纠错、有限重试与上下文恢复](agent-fault-tolerance-cases.md)：通过脱敏运行案例了解各层如何处理失败及其能力边界。
+9. [任务案例：并行调研与群文件交付](agent-task-delivery-case.md)：通过脱敏运行案例了解按需加载、并行检索、异步结果汇合与文件交付。
 10. [快速开始](quickstart.md)：在本地启动最小可运行实例。
 11. [配置说明](configuration.md)：填写模型、NapCat、群聊和私聊配置。
 

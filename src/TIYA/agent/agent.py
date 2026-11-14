@@ -35,7 +35,7 @@ from TIYA.agent.agent_skill import SkillManager
 from TIYA.agent.web_search import WebSearch
 from .agent_scheduler import AsyncSchedulerManager, _AGENTS
 from TIYA.time_id import next_time_id
-from TIYA.LLM_connect import (Chat, ChatConfig, Prompts, Context, ContextOverflowError, ContextEmptyError,
+from TIYA.LLM_connect import (Chat, Prompts, Context, ContextOverflowError, ContextEmptyError,
                               ToolCall, TextPrompt, build_tool_payloads, ToolInput, SystemPrompt,
                               ToolResponse, ImagePrompt, parse_llm_setting)
 
@@ -72,6 +72,7 @@ class BaseAgent:
             data_path: Path,
             llm_preset: str = "",
             agent_name: str = "",
+            agent_level: str = "UNDEFINED",
             system_prompt: SystemPrompt | AgentPrompt | str | Path = None,
             initiate_prompt: AgentPrompt | Path = None,
             control_timeout: float = -1,
@@ -87,6 +88,7 @@ class BaseAgent:
         self.id = str(next_time_id())
         self.display_uid = host_id
         self.name = agent_name
+        self.level = agent_level
         self._data_path = data_path
         self._data_path.mkdir(parents=True, exist_ok=True)
         self.control_timeout = control_timeout
@@ -103,7 +105,13 @@ class BaseAgent:
         self._schedule_tasks = AgentScheTaskManage()
         self._context = AgentContext()
         self._scheduler = AsyncSchedulerManager(self.id, self._schedule_tasks, self._history.schedule_task_file)
-        self._skills = SkillManager(self._data_path, self.register_function, self.uninstall_tools_source, self._upload_image)
+        self._skills = SkillManager(
+            self._data_path,
+            self.level,
+            self.register_function,
+            self.uninstall_tools_source,
+            self._upload_image
+        )
         self._websearch = WebSearch()
 
         # 容器
@@ -889,7 +897,7 @@ class BaseAgent:
             function_name = function.__name__
 
         if source is not None:
-            h = blake2b(function_name.encode(), digest_size=4)
+            h = blake2b(str(source).encode(), digest_size=4)
             call_name = function_name + f"_{h.hexdigest()}"
 
         else:
@@ -1145,6 +1153,11 @@ class BaseAgent:
     # 主入口
     # =========================================================
 
+    @staticmethod
+    def _can_retry_communication(client) -> bool:
+        outcome = getattr(client, "last_outcome", None)
+        return getattr(outcome, "retry_allowed", True) is not False
+
     async def run(self, prompts: Prompts | TextPrompt, from_user=True) -> Prompts | None:
         """Agent主请求入口，返回主控返回的原始内容，但已自带处理逻辑"""
         if not self._initiated:
@@ -1218,6 +1231,8 @@ class BaseAgent:
                 try:
                     _log.debug(str(prompts))
                     response = await self.control.ask(prompts, timeout=self.control_timeout)
+                    if response is None and not self._can_retry_communication(self.control):
+                        break
 
                 except ContextOverflowError:
                     prompts = await self.compress_context(prompts)
@@ -2370,8 +2385,7 @@ class BaseAgent:
         summary_chat = self.control.copy()
         model_params = summary_chat.model.get("parameter", {})
         model_params.setdefault("response_format", {}).update({'type': 'json_object'})
-        new_set = ChatConfig(model_params=model_params, keep_alive=False)
-        summary_chat.setting(new_set)
+        summary_chat.update_config(model_params=model_params, keep_alive=False)
         summary_system_prompt = self.get_last_version_prompt("base_summary_context_system")
         if summary_system_prompt is None:
             summary_system_prompt = self.register_prompt(
@@ -2389,6 +2403,8 @@ class BaseAgent:
             try:
                 response = await summary_chat.ask(input_prompt, timeout=SETTING_CFG.Agent.AgentCompressContextTimeout)  # 默认900
                 if response is None:
+                    if not self._can_retry_communication(summary_chat):
+                        break
                     continue
 
             except Exception as E:
@@ -2462,8 +2478,7 @@ class BaseAgent:
         summary_chat = self.control.copy()
         model_params = summary_chat.model.get("parameter", {})
         model_params.setdefault("response_format", {}).update({'type': 'json_object'})
-        new_set = ChatConfig(model_params=model_params, keep_alive=False)
-        summary_chat.setting(new_set)
+        summary_chat.update_config(model_params=model_params, keep_alive=False)
         summary_system_prompt = self.get_last_version_prompt("base_summary_context_system")
         if summary_system_prompt is None:
             summary_system_prompt = self.register_prompt(
@@ -2482,6 +2497,8 @@ class BaseAgent:
                 response = await summary_chat.ask(input_prompt,
                                                   timeout=SETTING_CFG.Agent.AgentCompressContextTimeout)  # 默认900
                 if response is None:
+                    if not self._can_retry_communication(summary_chat):
+                        break
                     continue
 
             except Exception as E:

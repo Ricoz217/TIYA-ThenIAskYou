@@ -63,11 +63,11 @@ config/config.yaml
 程序会在提示配置未完成后退出。打开生成的文件，至少填写：
 
 1. NapCat WebSocket 地址和 token。
-2. 一个 LLM 预设的 `model`、`endpoint` 和 `token`。
+2. `LLM模型配置.Providers` 中一个连接的 `endpoint` 或 `base_url` 以及 `key`，并在 `LLM_List` 预设的 `providers` 中填写 `协议分类:连接名:模型ID`。
 3. `Agents` 使用的模型预设名称。
 4. 群聊默认配置和私聊默认配置中的 `chat_model`、`agent_model`。
 
-完整字段参见[配置说明](configuration.md)。
+生成配置中的默认引用是 `YourModelPresetName`。保留这个预设名可以直接沿用默认引用。更换预设名时，同步更新上述业务配置中的引用。完整示例见[配置说明](configuration.md#llm-预设)。已有实例使用旧版 LLM 配置时，见[从旧版升级](configuration.md#从旧版升级)。
 
 ## 配置 NapCat
 

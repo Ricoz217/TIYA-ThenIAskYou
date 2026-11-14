@@ -151,6 +151,7 @@ class AutoMapping(Generic[_V]):
         self._enable = False
         self._draining_expire = False
         self._persist_awake = False
+        self._first_rebuild_heap = False  # 用于延迟导入 TTL 配置
 
         # SQLite
         self._connection: sqlite3.Connection | None = None
@@ -177,8 +178,6 @@ class AutoMapping(Generic[_V]):
 
         else:
             self._load_data_from_database()
-
-        self._rebuild_heap()
 
         with _INITIATE_LOCK:
             if not _ACCEPT_NEW_INSTANCE:
@@ -321,8 +320,10 @@ class AutoMapping(Generic[_V]):
         with self._data_lock:
             if not isinstance(key, str):
                 raise TypeError("AutoMapping 仅支持字符串作为键")
+
             if key not in self._dirty_data:
                 need_persist = True
+
             self._touch_locked(key)
 
         if need_persist:
@@ -805,6 +806,10 @@ class AutoMapping(Generic[_V]):
                 # 不取锁检查，加速
                 if self._dirty_data:
                     self._drain_dirty()
+
+                if not self._first_rebuild_heap:  # 20260918: 这里逻辑很怪，但最好别动。涉及到配置的延迟加载问题
+                    self._rebuild_heap()
+                    self._first_rebuild_heap = True
 
                 if self._expire_seconds > 0 and self._expiry_heap and self._expiry_heap[0][0] <= time.time():
                     self._drain_expire()  # 唤醒 TTL 检查

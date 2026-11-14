@@ -28,6 +28,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from TIYA.global_vars import QQ_GROUPS
 from TIYA.logger import get_logger
+from TIYA.utils import plain as _plain
 
 if TYPE_CHECKING:
     from TIYA.mybot import MyBot
@@ -70,6 +71,13 @@ TITLE_LLM = "LLM模型配置"
 TITLE_GROUPS = "群聊设置"
 TITLE_PRIVATE = "私聊设置"
 TITLE_SETTING = "其他参数配置，请勿随意更改"
+_PUBLIC_CONFIG_NAMES = {
+    TITLE_BASE: "BASE_CFG",
+    TITLE_LLM: "LLM_CFG",
+    TITLE_GROUPS: "GROUPS_CFG",
+    TITLE_PRIVATE: "PRIVATE_CFG",
+    TITLE_SETTING: "SETTING_CFG",
+}
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -124,37 +132,134 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     TITLE_LLM: {
-        "LLM_List": [
-            {
-                "preset_name": "这是一个LLM模板",
-                "model": "LLMTemplate",
-                "endpoint": "https://api.siliconflow.cn/v1/chat/completions",
-                "token": "你的SK",
-                "api_type": "openai",
-                "proxy_mode": "GlobalProxy",
-                "max_context": 128_000,
-                "auto_compress_rate": 0.7,
-                "price": {
-                    "currency": "CNY",
-                    "input_token": 2,
-                    "cache_hit": 0.2,
-                    "output_token": 3,
+        "schema_version": 2,
+        "Providers": {
+            "chat_completions": {
+                "deepseek": {
+                    "endpoint": "https://api.deepseek.com/chat/completions",
+                    "key": "YOUR_DEEPSEEK_API_KEY",
+                    "error_dialect": "deepseek",
+                    "chat_completions": {"image_file_format": "deepseek"},
+                    "llm_params": {"stream": True},
                 },
-                "extra_parameter": {"max_token": 8192, "temperature": 0.7},
+                "openai": {
+                    "base_url": "https://api.openai.com/v1",
+                    "key": "YOUR_OPENAI_API_KEY",
+                    "llm_params": {"stream": True},
+                },
+                "local": {
+                    "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+                    "key": "sk-no-key-required",
+                    "llm_params": {"stream": True},
+                },
             },
-            {
-                "preset_name": "本地模型",
-                "model": "localmodel",
-                "endpoint": "http://127.0.0.1:8080",
-                "token": "sk-no-key-required",
-                "api_type": "openai",
-                "proxy_mode": "GlobalProxy",
-                "max_context": 128_000,
+            "responses_api": {
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1/responses",
+                    "key": "YOUR_OPENAI_API_KEY",
+                    "responses": {"supports_previous_response_id": True},
+                    "llm_params": {"stream": True},
+                },
+            },
+            "anthropic_api": {
+                "anthropic": {
+                    "endpoint": "https://api.anthropic.com/v1/messages",
+                    "key": "YOUR_ANTHROPIC_API_KEY",
+                    "error_dialect": "anthropic",
+                    "prompt_caching": True,
+                    "llm_params": {"stream": True},
+                },
+            },
+            "files_api": {
+                "deepseek": {
+                    "endpoint": "https://api.deepseek.com/files",
+                    "key": "YOUR_DEEPSEEK_API_KEY",
+                    "dialect": "deepseek",
+                    "error_dialect": "deepseek",
+                    "expires_after_seconds": 10800,
+                },
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1/files",
+                    "key": "YOUR_OPENAI_API_KEY",
+                    "dialect": "openai",
+                    "expires_after_seconds": 10800,
+                },
+                "anthropic": {
+                    "endpoint": "https://api.anthropic.com/v1/files",
+                    "key": "YOUR_ANTHROPIC_API_KEY",
+                    "dialect": "anthropic",
+                    "error_dialect": "anthropic",
+                    "anthropic_beta": "files-api-2025-04-14",
+                    "expires_after_seconds": None,
+                },
+            },
+            "image_generation": {
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1/images/generations",
+                    "edit_endpoint": "https://api.openai.com/v1/images/edits",
+                    "key": "YOUR_OPENAI_API_KEY",
+                },
+            },
+        },
+        "LLM_List": {
+            "YourModelPresetName": {
                 "auto_compress_rate": 0.7,
-                "price": {},
-                "extra_parameter": {"max_token": 8192, "temperature": 0.7},
+                "proxy_mode": "",
+                "providers": [
+                    {
+                        "llm": "chat_completions:deepseek:YOUR_DEEPSEEK_MODEL_ID",
+                        "llm_params": {"max_tokens": 8192, "temperature": 0.7},
+                        "max_context": 128_000,
+                        "context_history_mode": "full",
+                        "files_api": "files_api:deepseek",
+                    },
+                ],
             },
-        ]
+            "Responses示例": {
+                "auto_compress_rate": 0.7,
+                "proxy_mode": "GlobalProxy",
+                "providers": [
+                    {
+                        "llm": "responses_api:openai:YOUR_OPENAI_MODEL_ID",
+                        "llm_params": {"max_output_tokens": 8192},
+                        "max_context": 128_000,
+                        "context_history_mode": "auto",
+                        "files_api": "files_api:openai",
+                    },
+                    {
+                        "llm": "chat_completions:openai:YOUR_OPENAI_MODEL_ID",
+                        "llm_params": {"max_completion_tokens": 8192},
+                        "max_context": 128_000,
+                        "context_history_mode": "full",
+                    },
+                ],
+            },
+            "Anthropic示例": {
+                "auto_compress_rate": 0.7,
+                "proxy_mode": "GlobalProxy",
+                "providers": [
+                    {
+                        "llm": "anthropic_api:anthropic:YOUR_ANTHROPIC_MODEL_ID",
+                        "llm_params": {"max_tokens": 8192},
+                        "max_context": 128_000,
+                        "context_history_mode": "full",
+                        "files_api": "files_api:anthropic",
+                    },
+                ],
+            },
+            "本地模型": {
+                "auto_compress_rate": 0.7,
+                "proxy_mode": "",
+                "providers": [
+                    {
+                        "llm": "chat_completions:local:YOUR_LOCAL_MODEL_ID",
+                        "llm_params": {"max_tokens": 8192, "temperature": 0.7},
+                        "max_context": 128_000,
+                        "context_history_mode": "full",
+                    },
+                ],
+            },
+        },
     },
     TITLE_PRIVATE: {
         "Default": {
@@ -239,6 +344,7 @@ DEFAULT_SETTING: dict[str, Any] = {
         "AgentTaskRetryLimit": 3,  # 默认的任务最大重试次数
         "AgentControlRetryLimit": 3,  # 默认主控最大请求重试次数
         "AgentInitInputMessages": 100,  # 默认的主控输入聊天消息数
+        "DefaultHookObjectTTL": 3600,  # 默认的对象工具托管对象TTL，秒
         "ExpiredDays": 7,  # 历史文件保存天数
         "FileDownloadTimeout": 1800,  # 下载文件超时
         "ForceSaveMemoryRetry": 3,  # 强制保存记忆重试限制
@@ -502,7 +608,6 @@ DEFAULT_SETTING: dict[str, Any] = {
         "TFIDFVectorDimension": 262_144,
     },
 }
-
 COMMENT: dict[str, Any] = {
     TITLE_BASE: {
         "BotInfo": {
@@ -572,38 +677,102 @@ COMMENT: dict[str, Any] = {
         },
     },
     TITLE_LLM: {
-        "LLM_List": [
-            {
-                "extra_parameter": {
+        "_comment": {
+            "schema_version": "不要改",
+            "Providers": "以下配置 endpoint 和 base_url 二选一，优选写确定的 endpoint，因为自动拼接不一定对",
+            "LLM_List": "\n字典键为预设名，供 chat_model/agent_model/MemoryModel 等引用。YourModelPresetName 对应上方默认引用，可改名后同步修改。\nmax_context 的 128000 仅为示例，按实际模型/网关填写；定价在独立数据库维护，不在这里填写 price。",
+        },
+        "Providers": {
+            "_comment": {
+                "chat_completions": "标准 Chat Completions API，大部分兼容",
+                "responses_api": "Responses API。",
+                "anthropic_api": "Anthropic Messages API",
+                "files_api": "Files API",
+                "image_generation": "目前主要做了 openai image 2.5 的适配，其他生图要自己拓展 provider 实现逻辑",
+            },
+            "chat_completions": {
+                "deepseek": {
                     "_comment": {
-                        "max_token": "此项尽量填写，根据你使用的模型的最大值填写即可。默认8192。type: int",
-                        "temperature": "默认0.7。type: float",
-                    }
+                        "error_dialect": "不要改，也不要删",
+                        "llm_params": "API 要求的其他参数，按照 API 文档写",
+                    },
+                    "chat_completions": {
+                        "_comment": {"image_file_format": "DeepSeek 的图片 file_id 内容块格式；不适用于官方 OpenAI Chat。"}
+                    },
                 },
-                "price": {
-                    "_comment": {
-                        "currency": "货币单位",
-                        "input_token": "输入单价/百万token。 type: float",
-                        "cache_hit": "命中缓存单价/百万token。 type: float",
-                        "output_token": "输出单价/百万token。 type: float",
-                    }
+                "openai": {
+                    "_comment": {"base_url": "包含版本前缀，系统只追加 chat/completions；也可改用完整 endpoint。"}
                 },
-                "_comment": {
-                    "preset_name": "用于区分LLM的别名，想写什么就写什么，但不要重复。type: str",
-                    "model": "你使用的LLM用于请求用的模型名，不是你自己随便写一个名字。type: str",
-                    "endpoint": "LLMAPI终结点的URL，示例是哈基流动的。type: str",
-                    "token": "认证密钥(secret key、token)。type: str",
-                    "api_type": "API类型，目前仅支持Openai Chat Completion API和Anthropic API，Response API暂不支持。type: str, Literal: ['openai', 'anthropic']",
-                    "proxy_mode": "代理选项，默认是全局代理预设（即不启用代理），可填入一个字典强制覆盖代理。type: str | dict",
-                    "max_context": "模型最大上下文长度，必须填，很重要。 type: int",
-                    "auto_compress_rate": "触发自动压缩context的百分比，默认为0.7，取值[0.3, 0.9]。过大会造成LLM幻觉和输入费用大，过小则影响长期任务性能或无法充足利用kv cache导致费用大。type: float",
-                    "price": "花费统计功能，若为空则不统计。 type: dict",
-                    "extra_parameter": "请求额外参数，根据你的服务商提供的参数填写。",
+                "local": {
+                    "_comment": {"endpoint": "本地 OpenAI 兼容服务示例，按实际监听地址和路径修改。"}
                 },
             },
-            {"_comment": {"endpoint": "改为你自己本地模型的接口"}},
-            ["LLM模型预设模板，请根据此项自行添加", "\n本地模型预留预设，请勿删除"],
-        ]
+            "responses_api": {
+                "openai": {
+                    "responses": {
+                        "_comment": {"supports_previous_response_id": "仅服务明确支持时设 true；兼容 Responses 格式不代表支持续接。"}
+                    }
+                }
+            },
+            "anthropic_api": {
+                "anthropic": {
+                    "_comment": {
+                        "prompt_caching": "一般不用动"
+                    }
+                }
+            },
+            "files_api": {
+                "deepseek": {
+                    "_comment": {
+                        "dialect": "Files 请求/响应格式，与模型协议分类分开选择。",
+                        "expires_after_seconds": "远端 TTL，秒",
+                    }
+                },
+                "anthropic": {
+                    "_comment": {
+                        "anthropic_beta": "Files beta 头，按使用的服务版本确认。",
+                    }
+                },
+            },
+            "image_generation": {
+                "openai": {
+                    "_comment": {
+                        "edit_endpoint": "编辑接口独立地址；模型 ID（如所需的 image 2.5）和生成参数由 ImageGenerateRequest/ImageEditRequest 传入。"
+                    }
+                }
+            },
+        },
+        "LLM_List": {
+            "YourModelPresetName": {
+                "_comment": {
+                    "auto_compress_rate": "允许可使用的最大上下文比例，内部会截断至最大值 0.9",
+                    "proxy_mode": "代理预设，留空为不使用代理",
+                    "providers": "有序候选列表，首项首选，其后按顺序 fallback；只用一个服务就保留一项。",
+                },
+                "providers": [
+                    {
+                        "_comment": {
+                            "llm": "分类:连接名:模型ID；前两段定位 Providers，剩余部分是完整模型 ID。",
+                            "llm_params": "目标接口的原生请求参数，直接发送；不把 max_token 自动改名。",
+                            "max_context": "模型支持的最大上下文，如实填写就行",
+                            "context_history_mode": "full 发送完整历史；auto 仅在支持时续接；previous_response_id 显式请求续接。",
+                            "files_api": "分类:连接名；可删除此项以直接内联图片，上传失败按 Provider 策略回退。",
+                        }
+                    }
+                ],
+            },
+            "Responses示例": {
+                "providers": [
+                    {
+                        "_comment": {
+                            "llm_params": "Responses 使用 max_output_tokens；不要照搬 Chat 的输出限制字段。",
+                            "context_history_mode": "auto 配合连接声明使用父 response，失效后按恢复策略回放。",
+                        }
+                    },
+                    {"_comment": {"llm": "备用 Chat 使用 URL/Base64 图片；官方 OpenAI Chat 不配置图片 file_id。"}},
+                ],
+            },
+        },
     },
     TITLE_PRIVATE: {
         "Default": {
@@ -680,6 +849,13 @@ def _path_text(path: Sequence[PathPart]) -> str:
             output += ("." if output else "") + part
 
     return output
+
+
+def _runtime_path_text(path: Sequence[PathPart]) -> str:
+    if path and path[0] in _PUBLIC_CONFIG_NAMES:
+        return _path_text((_PUBLIC_CONFIG_NAMES[path[0]], *path[1:]))
+
+    return _path_text(path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -867,10 +1043,10 @@ class ConfigMap(dict[str, Any]):
         try:
             return self[key]
 
-        except KeyError as exc:
+        except KeyError:
             raise AttributeError(
-                f"configuration key '{_path_text(self._path + (key,))}' does not exist"
-            ) from exc
+                f"configuration attribute '{_runtime_path_text(self._path + (key,))}' does not exist"
+            ) from None
 
     def __setattr__(self, key: str, value: Any) -> None:
         if key in self._INTERNAL_NAMES:
@@ -1006,14 +1182,126 @@ class ConfigList(list[Any]):
         self._changed()
 
 
-def _plain(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {key: _plain(item) for key, item in value.items()}
+@dataclass(slots=True)
+class LLMPresetConfig(Mapping[str, object]):
+    """完整原始 LLM 配置快照及选中的预设名，不解释任何连接或协议字段。
 
-    if isinstance(value, list):
-        return [_plain(item) for item in value]
+    data/provider_definitions 保留配置原貌；旧字典入口只投影首个候选中
+    直接存在的值。没有 Provider 默认值继承、引用展开或凭据处理。
+    """
 
-    return copy.deepcopy(value)
+    preset_name: str
+    configuration: ConfigMap
+
+    def __post_init__(self):
+        if not isinstance(self.preset_name, str):
+            raise TypeError("LLM 预设名必须是字符串")
+
+        issues = _llm_format_issues(self.configuration, (TITLE_LLM,))
+        if issues:
+            raise ValueError(issues[0].message)
+
+        self.configuration = ConfigMap(_plain(self.configuration))
+        if self.preset_name not in self.configuration["LLM_List"]:
+            raise KeyError("LLM 预设不存在")
+
+    @property
+    def data(self) -> ConfigMap:
+        return self.configuration["LLM_List"][self.preset_name]
+
+    @property
+    def provider_definitions(self) -> ConfigMap:
+        return self.configuration["Providers"]
+
+    @property
+    def providers(self) -> ConfigList:
+        return self.data["providers"]
+
+    @property
+    def max_context(self) -> int | None:
+        # 只读取首项原始值，缺失就保持 None，绝不去连接配置中猜测。
+        return self.providers[0].get("max_context")
+
+    @property
+    def extra_parameter(self) -> ConfigMap | None:
+        return self.providers[0].get("llm_params")
+
+    @property
+    def auto_compress_rate(self) -> float | None:
+        return self.data.get("auto_compress_rate")
+
+    @property
+    def proxy_mode(self) -> str | ConfigMap | None:
+        return self.data.get("proxy_mode")
+
+    def __getitem__(self, key: str) -> object:
+        if key == "preset_name":
+            return self.preset_name
+
+        if key == "max_context":
+            return self.max_context
+
+        if key == "extra_parameter":
+            return self.extra_parameter
+
+        return self.data[key]
+
+    def __iter__(self):
+        return iter(
+            dict.fromkeys((*self.data, "preset_name", "max_context", "extra_parameter"))
+        )
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+
+def _llm_format_issues(raw: object, path: ConfigPath) -> list[ConfigIssue]:
+    """只检查文件结构和字段类型；连接是否存在/协议含义由 llm 层检查。"""
+
+    def issue(at, message):
+        return ConfigIssue(at, "invalid_llm_format", message=message)
+
+    if not isinstance(raw, Mapping):
+        return [issue(path, "LLM模型配置必须是字典")]
+    if isinstance(raw.get("schema_version"), bool) or raw.get("schema_version") != 2:
+        return [
+            issue(
+                path + ("schema_version",),
+                "仅支持新版 LLM 配置（schema_version: 2），请人工填写新配置；不自动转换旧版",
+            )
+        ]
+    errors = []
+    for key in ("Providers", "LLM_List"):
+        if not isinstance(raw.get(key), Mapping):
+            errors.append(issue(path + (key,), f"{key} 必须是字典"))
+    if errors:
+        return errors
+    for name, spec in raw["LLM_List"].items():
+        location = path + ("LLM_List", str(name))
+        if not isinstance(spec, Mapping):
+            errors.append(issue(location, "LLM 预设必须是字典"))
+            continue
+        candidates = spec.get("providers")
+        if not isinstance(candidates, list) or not candidates:
+            errors.append(issue(location + ("providers",), "providers 必须是非空列表"))
+            continue
+        for index, candidate in enumerate(candidates):
+            item = location + ("providers", index)
+            if not isinstance(candidate, Mapping):
+                errors.append(issue(item, "候选配置必须是字典"))
+                continue
+            if not isinstance(candidate.get("llm"), str):
+                errors.append(issue(item + ("llm",), "llm 必须是字符串"))
+            if candidate.get("max_context") is not None and (
+                isinstance(candidate["max_context"], bool)
+                or not isinstance(candidate["max_context"], int)
+            ):
+                errors.append(issue(item + ("max_context",), "max_context 必须是整数"))
+            if candidate.get("llm_params") is not None and not isinstance(
+                candidate["llm_params"], Mapping
+            ):
+                errors.append(issue(item + ("llm_params",), "llm_params 必须是字典"))
+    return errors
 
 
 def _merge_mapping(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
@@ -1307,6 +1595,9 @@ class Configer:
         materialize: bool,
         report_missing: bool = True,
     ) -> Any:
+        if path == (TITLE_LLM,):
+            errors.extend(_llm_format_issues(raw, path))
+            return _plain(raw) if isinstance(raw, Mapping) else _plain(default)
         if not _matches_type(raw, default):
             errors.append(
                 ConfigIssue(
@@ -1343,12 +1634,7 @@ class Configer:
                         )
                     continue
 
-                if path == (TITLE_LLM,) and key == "LLM_List":
-                    result[key] = self._resolve_llm_list(
-                        raw[key], default_value, child_path, errors
-                    )
-
-                elif path == (TITLE_GROUPS,) and key == "Groups":
+                if path == (TITLE_GROUPS,) and key == "Groups":
                     result[key] = self._resolve_groups(
                         raw[key], default_value, child_path, errors
                     )
@@ -1393,49 +1679,6 @@ class Configer:
             return list_result
 
         return copy.deepcopy(raw)
-
-    def _resolve_llm_list(
-        self,
-        raw: Any,
-        defaults: list[Any],
-        path: ConfigPath,
-        errors: list[ConfigIssue],
-    ) -> list[Any]:
-        if not isinstance(raw, list):
-            errors.append(
-                ConfigIssue(path, "type_error", "list", type(raw).__name__, _plain(raw), True)
-            )
-            return copy.deepcopy(defaults)
-
-        if not defaults:
-            return copy.deepcopy(raw)
-
-        repairs: list[ConfigIssue] = []
-        result: list[Any] = []
-        for index, item in enumerate(raw):
-            template = defaults[0]
-            if isinstance(item, Mapping):
-                for candidate in defaults:
-                    if not isinstance(candidate, Mapping):
-                        continue
-
-                    same_model = item.get("model") == candidate.get("model")
-                    same_preset = item.get("preset_name") == candidate.get("preset_name")
-                    if same_model or same_preset:
-                        template = candidate
-                        break
-
-            result.append(self._resolve_value(
-                item,
-                template,
-                path + (index,),
-                errors,
-                repairs,
-                materialize=False,
-                report_missing=True,
-            ))
-
-        return result
 
     def _resolve_groups(
         self,
@@ -1639,7 +1882,7 @@ class Configer:
     def _render_document(self, document: Mapping[str, Any]) -> str:
         """Keep one readable heading per known root, including legacy YAML files."""
         stream = StringIO()
-        self._yaml.dump(document, stream)
+        self._yaml.dump(copy.deepcopy(document), stream)
         lines = stream.getvalue().splitlines(keepends=True)
         titles = tuple(dict.fromkeys((*self._default_config, TITLE_SETTING)))
         heading_pattern = re.compile(
@@ -1763,31 +2006,17 @@ def get_proxy(proxy_name: str | Mapping[str, Any]) -> dict[str, Any]:
     return {"http": None, "https": None}
 
 
-def get_llm(preset_name: str) -> ConfigMap:
-    if not isinstance(preset_name, str):
-        raise TypeError("LLM 预设名必须是字符串")
-
-    try:
-        for model in LLM_CFG.LLM_List:
-            if isinstance(model, ConfigMap) and model.get("preset_name") == preset_name:
-                return model
-
-    except AttributeError:
-        pass
-
-    raise KeyError("LLM 预设不存在")
+def get_llm(preset_name: str) -> LLMPresetConfig:
+    """读取完整原始预设快照；兼容属性仅映射首项，不解释通信配置。"""
+    return LLMPresetConfig(preset_name, LLM_CFG)
 
 
 def get_llm_list() -> list[str]:
-    try:
-        return [
-            str(model.preset_name)
-            for model in LLM_CFG.LLM_List
-            if isinstance(model, ConfigMap) and model.get("preset_name") != "这是一个LLM模板"
-        ]
+    issues = _llm_format_issues(LLM_CFG, (TITLE_LLM,))
+    if issues:
+        raise ValueError(issues[0].message)
 
-    except AttributeError:
-        return []
+    return list(LLM_CFG["LLM_List"])
 
 
 def get_private_user_config(user_id: str) -> ConfigMap:
@@ -1870,7 +2099,7 @@ def initiate_config_2(*, group_list: Mapping[str, str]) -> ConfigWriteResult:
     template = groups.Group_Default_Setting
     for group_id, group_name in group_list.items():
         if group_id not in groups:
-            groups[group_id] = copy.deepcopy(template)
+            groups[group_id] = _plain(template)
             changed = True
 
         if groups[group_id].name != group_name:

@@ -10,12 +10,14 @@ import copy
 import os
 import math
 import json
+import hashlib
 import shutil
 import asyncio
 import re
 import random
 import threading
 from typing import Any, Callable, Literal, Generic, TypeVar, Optional, TypedDict
+from collections.abc import Mapping
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -1707,3 +1709,22 @@ def clean_json_text_from_llm(text: str, expect: Literal["OBJECT", "ARRAY"] = "OB
         return text[start:end + 1]
 
     return text
+
+def plain(value: object) -> dict | list | object:
+    """把折叠起来的支持展开的自定义类平铺开"""
+    if isinstance(value, Mapping):
+        return {k: plain(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [plain(v) for v in value]
+
+    return copy.deepcopy(value)
+
+
+def fingerprint(value: object) -> str:
+    """展开 Mapping 和序列，以固定 JSON 排序生成 SHA256；不修改输入数据。"""
+    return hashlib.sha256(
+        json.dumps(
+            plain(value), sort_keys=True, ensure_ascii=False, default=str
+        ).encode()
+    ).hexdigest()

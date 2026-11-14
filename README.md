@@ -14,6 +14,7 @@ TIYA 的重点不是提供开箱即用的聊天机器人产品，而是探索一
 - **长期记忆**：采用分层 bucket、递归查询、重排、版本、压缩、拆分和维护服务，而不是简单拼接聊天记录。
 - **渐进式 SKILL**：Agent 先发现能力摘要，再按标题读取所需说明，并可将附属 Python 函数注册为工具。
 - **群聊关系建模**：通过消息图、话题、对话连续性、成员兴趣和 Persona 参与发言决策。
+- **模型通信**：通过预设接入 Chat Completions、Responses 和 Anthropic Messages，并提供独立的文件上传、生图和修图接口。
 
 ## 架构概览
 
@@ -77,7 +78,7 @@ python -m TIYA
 首次运行会生成 `config/config.yaml` 并提示完成配置。至少需要填写：
 
 1. NapCat WebSocket 地址和 token。
-2. 一个 LLM 预设的模型、endpoint 和 API key。
+2. 在 `LLM模型配置.Providers` 填写 API 地址和密钥，再在 `LLM_List` 中用预设引用该连接和模型 ID。
 3. Agent、群聊和私聊引用的模型预设名称。
 
 完成后再次执行：
@@ -87,6 +88,8 @@ python -m TIYA
 ```
 
 Linux/macOS 命令及完整步骤参见[快速开始](docs/quickstart.md)，配置字段参见[配置说明](docs/configuration.md)。
+
+已有实例升级时，需要手工将旧版 LLM 列表改成 v2 配置。步骤见[从旧版升级](docs/configuration.md#从旧版升级)。
 
 ## 文档
 
