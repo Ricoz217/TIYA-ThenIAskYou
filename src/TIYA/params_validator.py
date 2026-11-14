@@ -5,7 +5,7 @@ __version__ = "0.1.0"
 import inspect
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Annotated, Literal, Union, get_args, get_origin, get_type_hints
+from typing import Any, Annotated, Literal, Union, get_args, get_origin, get_type_hints, is_typeddict
 
 
 # ============================================================================
@@ -38,8 +38,15 @@ class ParamValidationResult:
 _UNION_TYPE = getattr(__import__("types"), "UnionType", None)
 
 
-def _is_instance_of_enum_value(value: Any, enum_cls: type[Enum]) -> bool:
-    return any(value == member.value for member in enum_cls)
+def _matches_enum_value(value: object, allowed: object) -> bool:
+    if isinstance(value, bool) or isinstance(allowed, bool):
+        return value is allowed
+
+    return value == allowed
+
+
+def _is_instance_of_enum_value(value: object, enum_cls: type[Enum]) -> bool:
+    return any(_matches_enum_value(value, member.value) for member in enum_cls)
 
 
 def _check_type(value: Any, annotation: Any, path: str, issues: list[ParamValidationIssue]) -> bool:
@@ -52,6 +59,7 @@ def _check_type(value: Any, annotation: Any, path: str, issues: list[ParamValida
     - Literal
     - Enum
     - list[T] / tuple[T,...] / dict[K,V]
+    - TypedDict（按普通 dict 校验）
     - 基础类型（str/int/float/bool）
     """
     if annotation is Any:
@@ -59,6 +67,9 @@ def _check_type(value: Any, annotation: Any, path: str, issues: list[ParamValida
 
     if annotation is inspect.Signature.empty:
         return True
+
+    if is_typeddict(annotation):
+        annotation = dict
 
     origin = get_origin(annotation)
 
@@ -77,7 +88,7 @@ def _check_type(value: Any, annotation: Any, path: str, issues: list[ParamValida
     # Literal[...] 枚举值校验
     if origin is Literal:
         literal_values = get_args(annotation)
-        if value in literal_values:
+        if any(_matches_enum_value(value, allowed) for allowed in literal_values):
             return True
         issues.append(ParamValidationIssue(path, f"不在允许枚举内，允许值: {list(literal_values)}，实际: {value!r}"))
         return False
@@ -159,8 +170,21 @@ def _check_type(value: Any, annotation: Any, path: str, issues: list[ParamValida
 
     # 基础类型
     if inspect.isclass(annotation):
-        if isinstance(value, annotation):
+        if annotation is int:
+            if isinstance(value, int) and not isinstance(value, bool):
+                return True
+
+            # JSON 整数也可能写成 3.0 或 3e0，校验通过后保留原值。
+            if isinstance(value, float) and value.is_integer():
+                return True
+
+        elif annotation is float:
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return True
+
+        elif isinstance(value, annotation):
             return True
+
         issues.append(ParamValidationIssue(path, f"类型不匹配，期望 {annotation.__name__}，实际 {type(value).__name__}"))
         return False
 

@@ -11,7 +11,7 @@ TIYA 使用 `config/config.yaml` 保存本地运行配置。该文件由程序�
 | 区块 | 内容 |
 | --- | --- |
 | `BOT基本配置` | Bot、NapCat、代理、模块开关及各系统模型 |
-| `LLM模型配置` | 可复用的模型预设列表 |
+| `LLM模型配置` | Provider 连接及按名称索引的模型预设 |
 | `私聊设置` | 私聊默认值和用户级覆盖 |
 | `群聊设置` | 群默认值和群号级配置 |
 | `其他参数配置，请勿随意更改` | 超时、容量、缓存和内部运行参数 |
@@ -35,45 +35,68 @@ BOT基本配置:
 
 ## LLM 预设
 
-模型预设把业务模块使用的名称与具体 API 参数解耦：
+v2 配置把连接和预设分别放在 `Providers` 与 `LLM_List` 中。下例定义一个 Chat Completions 连接和一个使用该连接的聊天预设。
 
 ```yaml
 LLM模型配置:
+  schema_version: 2
+  Providers:
+    chat_completions:
+      main:
+        endpoint: https://example.com/v1/chat/completions
+        key: "replace-with-your-api-key"
+        llm_params:
+          stream: true
   LLM_List:
-    - preset_name: demo-model
-      model: your-model-name
-      endpoint: https://example.com/v1/chat/completions
-      token: "replace-with-your-api-key"
-      api_type: openai
-      proxy_mode: GlobalProxy
-      max_context: 128000
+    demo-model:
+      proxy_mode: ""
       auto_compress_rate: 0.7
-      price:
-        currency: CNY
-        input_token: 0
-        cache_hit: 0
-        output_token: 0
-      extra_parameter:
-        max_tokens: 8192
-        temperature: 0.7
+      providers:
+        - llm: "chat_completions:main:your-model-id"
+          max_context: 128000
+          llm_params:
+            temperature: 0.7
 ```
-
-关键字段：
 
 | 字段 | 说明 |
 | --- | --- |
-| `preset_name` | TIYA 内部引用名称，必须唯一 |
-| `model` | 发送给接口的模型 ID |
-| `endpoint` | 完整 Chat Completions 地址 |
-| `token` | API 密钥；本地无鉴权接口可使用非敏感占位值 |
-| `api_type` | 最小示例使用 `openai` |
-| `proxy_mode` | 引用 `Proxies` 中的代理配置 |
-| `max_context` | 模型上下文上限，用于请求前估算和压缩判断 |
-| `auto_compress_rate` | 达到窗口比例后自动压缩 Agent Context |
-| `price` | 每百万 token 单价，只影响本地用量统计 |
-| `extra_parameter` | 透传给模型的生成参数 |
+| `Providers.<协议分类>.<连接名>` | 协议分类选择适配器。连接名可自定义，同一连接可供多个模型引用。 |
+| `endpoint` / `base_url` | 完整操作地址，或包含版本前缀的 API 基础地址。两者都填时优先用 `endpoint`。 |
+| `key` | 连接使用的 API 密钥。 |
+| `LLM_List.<预设名>.providers` | 按优先顺序排列的候选连接。`llm` 的格式为 `协议分类:连接名:模型ID`。 |
+| `llm_params` | 目标接口的原生请求参数。候选中的同名参数覆盖连接默认值。 |
+| `proxy_mode` | 预设引用的 `Proxies` 配置名称。空字符串表示不使用 TIYA 的代理配置。 |
+| `max_context` | 候选模型的上下文窗口上限。示例值应按实际模型填写。 |
+| `auto_compress_rate` | Agent 自动压缩上下文的窗口比例。 |
 
-业务配置引用的是 `preset_name`，不是 `model`。如果名称写错，启动或首次请求时会提示找不到模型预设。
+`chat_model`、`agent_model`、`MemoryModel` 等业务配置填写预设名，例如 `demo-model`。多个聊天候选按列表顺序配置，是否重试或切换取决于实际错误。Responses、Anthropic Messages 和可选 Files 连接的字段见[通信层配置说明](../src/TIYA/llm/README.md#配置-v2)。
+
+## 从旧版升级
+
+升级前备份现有 `config/config.yaml`，手工将 `LLM模型配置` 改为 `schema_version: 2` 的结构。把旧预设中的连接地址和密钥移到 `Providers`，把 `extra_parameter` 中仍适用的原生参数移到候选的 `llm_params`。保留原有预设名即可沿用业务引用。代码和对应配置应一起部署，旧版列表没有自动转换。
+
+请求用量保存在 `data/token_usage/usage.sqlite3`。首次读取旧 `usage.json` 时会备份并导入历史汇总。单价单独维护在 `data/llm/pricing.sqlite3`，按完整模型引用匹配，配置中无需填写 `price`。部署到另一台机器时，随运行数据带上已有的价库才能沿用本地单价。缺少匹配单价时，系统仍会记录用量。更多细节见[状态与记账](../src/TIYA/llm/README.md#状态与记账)。
+
+## 生图和修图预设
+
+按需把下面的 `image_generation` 连接和 `demo-images` 预设加入对应字典。`endpoint` 用于文字生图，`edit_endpoint` 用于修图和带参考图的生图。
+
+```yaml
+LLM模型配置:
+  schema_version: 2
+  Providers:
+    image_generation:
+      openai:
+        endpoint: https://api.openai.com/v1/images/generations
+        edit_endpoint: https://api.openai.com/v1/images/edits
+        key: "replace-with-your-api-key"
+  LLM_List:
+    demo-images:
+      providers:
+        - llm: "image_generation:openai:your-image-model-id"
+```
+
+代码可通过 `ImageGen(config=parse_llm_setting("demo-images"))` 使用这个预设。`ImageGen` 使用首个候选。`Agents.ImageModel` 和 `ImageModelHigh` 配置的是图片理解模型。调用示例见[独立图片生成和编辑](../src/TIYA/llm/README.md#独立图片生成和编辑)。
 
 ## Agent 模型
 

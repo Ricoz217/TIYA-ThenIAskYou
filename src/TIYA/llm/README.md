@@ -1,6 +1,6 @@
 # LLM 通信接口
 
-业务继续从 `TIYA.LLM_connect` 导入 `Chat`、`Context`、Prompt、`ChatConfig`、`parse_llm_setting()`；这些入口重新导出内部的同一组类型。配置文件仅支持下文的 v2 字典结构，旧列表配置会提示人工填写新版，需与代码一起部署。
+业务从 `TIYA.LLM_connect` 导入 `Chat`、`Context`、各类 Prompt、`ChatConfig`、`ImageGen` 和 `parse_llm_setting()`。配置使用下文的 v2 字典结构。旧列表配置需要人工改写并与代码一起部署。
 
 兼容范围是调用接口、返回契约和业务行为。请求使用 Runtime → Provider → Gateway 链路。`get_llm()` 返回原始配置快照；`parse_llm_setting()` 通过该入口获取预设，再解释为供 Chat 使用的结构化配置。旧私有 `_payload_constructor()` 不再提供。
 
@@ -186,21 +186,29 @@ Files Provider 使用相同契约，但“改传 base64”和“切换模型候�
 
 ## 独立图片生成和编辑
 
-业务可直接使用无状态入口 `ImageGen`，复用现有预设解析：
+无状态入口 `ImageGen` 可以复用[生图预设](../../../docs/configuration.md#生图和修图预设)。
 
 ```python
 from pathlib import Path
 from TIYA.LLM_connect import ImageGen, parse_llm_setting
 
-async with ImageGen(config=parse_llm_setting("OPENAI_IMAGE_2.5")) as images:
+async with ImageGen(config=parse_llm_setting("demo-images")) as images:
     generated = await images.generate("根据参考图生成日常插画", Path("reference.png"))
-    edited = await images.edit("只修改标注区域", generated[0], markup=Path("markup.png"))
+    edited = await images.edit(
+        "移除红圈标出的挎包和肩带，补齐周围衣料，保留其余画面",
+        Path("original.png"),
+        markup=Path("markup.png"),
+    )
     cache_id = edited[0].hash_name
 ```
 
 `ImageGen` 只取预设首个候选，不保存上下文、不排队、不重试或 fallback。图片输入接受 `bytes`、`Path` 或 `ImagePrompt`；返回 `Prompts`，成员为已进入 file_cache 的 assistant `ImagePrompt`，`usage` 附带真实用量及账本请求 ID。`generate()` 无参考图走 generations，有参考图走 edits；`edit()` 始终将独立传入的 `base_image` 放在首位，其余参考图顺序不变。
 
-所有可选请求参数默认 `None`：方法非 None 参数覆盖对象 `model_params`，两处都为 None 就不发送该字段，让服务器决定。`False`、`0` 正常覆盖；`kwargs` 透传原生扩展参数。`timeout` 单位秒，覆盖输入准备、请求及落盘，不进入请求体。`keep_alive=False` 每次调用释放自己的连接，True 则复用到 `close()`；可用 async with 管理生命周期。需要直接查看原生响应或接收流式预览时，使用下面的底层 `ImagesClient`。
+方法中的可选请求参数默认 `None`。非 `None` 的方法参数覆盖 `model_params`，两处都为 `None` 时省略该字段。`False`、`0` 也可以覆盖。直接用 `endpoint`、`token` 和 `model` 构造时，`model_params` 中缺少 `stream` 会补为 `False`。`kwargs` 透传原生扩展参数。`timeout` 以秒为单位，覆盖输入准备、请求和落盘。`keep_alive=False` 每次调用后关闭连接，True 则复用到 `close()`。可用 `async with` 管理生命周期。
+
+`markup` 是覆盖在未标注底图上的透明 PNG。它指示编辑位置，文字 `prompt` 描述要做的修改。用户在原图上直接圈画时，可用 `TIYA.image_diff.extract_markup(original, annotated, tolerance=60, despeckle=True)` 提取图层。异步业务可以用 `await extract_markup_async(...)`。两个接口均接收 `Path` 或图片字节，返回的 PNG 字节可直接传给 `markup`。持有文件缓存 ID 时，可先用 `get_file_path_async()` 取路径。容差需按回传图的压缩程度调整。回传图全不透明时默认只比较 RGB，避免把丢失的透明度识别成标注。
+
+需要访问原生响应或接收流式预览时，可以使用底层 `ImagesClient`。
 
 ```python
 from TIYA.LLM_connect import ImagesClient, ImageGenerateRequest, ImageEditRequest, MediaRef

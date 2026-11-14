@@ -107,10 +107,12 @@ Agent 与 Speaker 分离是重要边界。Agent 可以选择不发言、先获�
 - `agent/agent_skill.py` 管理 SKILL 说明、附属工具和脚本。
 - `memory/` 提供分层长期记忆引擎。
 - `relatedness/` 为群聊计算消息关联、话题、连续性和成员兴趣。
-- `LLM_connect.py` 统一模型请求、工具调用、token 统计和上下文阈值。
+- `TIYA.LLM_connect` 是模型通信的公共导入入口，包含 `Chat`、`Context`、`ImageGen` 和独立的 Files、Images 客户端。
 - Web 搜索、图片识别、自动收藏与 Pixiv 等模块作为可选工具接入。
 
 其中 relatedness 是群聊体验的重要组成，而不是附属统计。它使用本地轻量 NLP 和有界消息图，在不调用实时 LLM 的情况下判断话题、兴趣与对话连续性。详细设计参见[群聊相关性与轻量 NLP](relatedness.md)。
+
+`Chat` 管理对话请求与上下文提交。`llm/` 下的 Runtime 根据预设选择候选并准备媒体，Provider 处理各自的请求格式和错误，Gateway 负责 HTTP 与流式传输。`ImageGen` 独立执行生图和修图，将生成图片存入文件缓存后返回缓存 ID 对应的图片消息。接口契约见[模型通信层](../src/TIYA/llm/README.md)。
 
 ## 一条群消息的处理路径
 
@@ -171,7 +173,9 @@ config/config.yaml                本地配置与密钥
 data/groups_data/<group-id>/      群历史、Agent、Persona、相关性等状态
 data/private_chats_data/<user-id>/ 私聊状态
 data/memory/                      长期记忆引擎
-data/token_usage/                 模型用量
+data/token_usage/usage.sqlite3    模型请求用量账本
+data/llm/pricing.sqlite3          模型价库
+data/llm/runtime.sqlite3          文件引用、续接检查点与路由状态
 logs/                             运行日志
 ```
 
@@ -181,7 +185,7 @@ Agent 还会单独保存事件历史、当前上下文、任务、定时任务�
 
 ## 当前边界
 
-TIYA 是个人 Demo，不是多租户服务，也没有将本地数据层抽象成数据库后端。当前实现优先验证 Agent 工程结构和长期运行行为，因此配置、状态和索引主要使用 YAML、JSON 与 NDJSON 文件。
+TIYA 是面向单实例运行的个人 Demo。配置和部分业务状态使用 YAML、JSON 与 NDJSON，模型账本、价库和通信状态使用本地 SQLite。
 
 外部接口、模型返回和 QQ 平台行为仍可能导致运行时错误。任务重试、超时、原子写入、检查点和降级路径用于提高可恢复性，但不等同于生产环境的高可用保证。
 

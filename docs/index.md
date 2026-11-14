@@ -2,7 +2,7 @@
 
 TIYA（Then I Ask You）是一个以 QQ 群聊和私聊为交互环境的个人 AGI 工程 Demo。它的重点不是提供一个开箱即用的聊天机器人产品，而是验证一组可以组合工作的工程能力：Agent 主控、异步任务机、上下文压缩、长期记忆、Persona，以及按需加载的 SKILL。
 
-本项目当前对接 NapCat / OneBot 消息环境，使用兼容 OpenAI Chat Completions 接口的模型作为主要推理后端。
+本项目对接 NapCat / OneBot 消息环境。模型通信层支持 Chat Completions、Responses 和 Anthropic Messages，并提供独立的 Files 与 Images 客户端。
 
 ## 项目看点
 

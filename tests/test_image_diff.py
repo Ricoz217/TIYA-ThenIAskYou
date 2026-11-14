@@ -4,7 +4,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from TIYA.image_diff import extract_markup, extract_markup_cached
+from TIYA.image_diff import extract_markup, extract_markup_async
 
 
 def encode(image, *, format="PNG", **kwargs):
@@ -155,35 +155,26 @@ def test_invalid_source_type_and_corrupt_images_are_not_guessed():
         extract_markup(b"not an image", b"not an image")
 
 
-def test_cached_entry_returns_png_id_and_propagates_missing_files(tmp_path, monkeypatch):
-    from TIYA import file_cache
-
-    cache = file_cache.FileCache(tmp_path / "files")
-    monkeypatch.setattr(file_cache, "_DEFAULT_CACHE", cache)
+def test_async_entry_returns_png_bytes_and_propagates_missing_files(tmp_path):
     original = Image.new("RGB", (8, 6), "white")
     marked = original.copy()
     marked.putpixel((3, 2), (80, 90, 0))
+    original_path = tmp_path / "original.png"
+    marked_path = tmp_path / "marked.png"
+    original.save(original_path)
+    marked.save(marked_path)
 
     async def run():
-        try:
-            original_id = await cache.add_file_async(encode(original), "IMAGE")
-            marked_id = await cache.add_file_async(encode(marked), "IMAGE")
-            markup_id = await extract_markup_cached(original_id, marked_id, tolerance=20)
-            assert isinstance(markup_id, str)
-            path = await cache.get_file_path_async(markup_id)
-            with Image.open(path) as layer:
-                assert layer.format == "PNG"
-                assert layer.getchannel("A").getbbox() == (3, 2, 4, 3)
+        markup = await extract_markup_async(original_path, marked_path, tolerance=20)
+        with Image.open(BytesIO(markup)) as layer:
+            assert layer.format == "PNG"
+            assert layer.getchannel("A").getbbox() == (3, 2, 4, 3)
 
-            cleaned_id = await extract_markup_cached(original_id, marked_id, despeckle=True)
-            cleaned_path = await cache.get_file_path_async(cleaned_id)
-            with Image.open(cleaned_path) as layer:
-                assert layer.getchannel("A").getbbox() is None
+        cleaned = await extract_markup_async(original_path, marked_path, despeckle=True)
+        with Image.open(BytesIO(cleaned)) as layer:
+            assert layer.getchannel("A").getbbox() is None
 
-            with pytest.raises(FileNotFoundError):
-                await extract_markup_cached("0" * 32, marked_id)
-
-        finally:
-            await cache.close()
+        with pytest.raises(FileNotFoundError):
+            await extract_markup_async(tmp_path / "missing.png", marked_path)
 
     asyncio.run(run())

@@ -78,6 +78,7 @@ async def extract_markup_async(
     compare_alpha: bool | None = None,
     despeckle: bool = False,
 ) -> bytes:
+    """在线程池执行 extract_markup()，接收图片路径或字节并返回 PNG 字节。"""
     extract = partial(
         extract_markup,
         original,
@@ -99,7 +100,7 @@ def _load_rgba(source: Path | bytes) -> Image.Image:
         input_file = source
 
     else:
-        raise TypeError("图片输入需要 Path 或 bytes；缓存 ID 请使用 extract_markup_cached()")
+        raise TypeError("图片输入需要 Path 或 bytes，请先将缓存 ID 转成文件路径")
 
     with Image.open(input_file) as image:
         ImageOps.exif_transpose(image, in_place=True)

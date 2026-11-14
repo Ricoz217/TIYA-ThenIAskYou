@@ -286,6 +286,7 @@ def test_direct_settings_forward_extensions_and_request_timeout_is_not_payload(s
     asyncio.run(run())
     assert json.loads(requests[0].content) == {
         "model": "direct", "prompt": "draw", "complexity": "high", "frame_count": 4, "frame_duration_ms": 200,
+        "stream": False,
     }
 
 
